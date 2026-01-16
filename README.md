@@ -1,7 +1,9 @@
 # QWED Open Responses
 
-[![PyPI version](https://badge.fury.io/py/qwed-open-responses.svg)](https://badge.fury.io/py/qwed-open-responses)
+[![PyPI](https://img.shields.io/pypi/v/qwed-open-responses?color=blue&label=PyPI)](https://pypi.org/project/qwed-open-responses/)
+[![npm](https://img.shields.io/npm/v/qwed-open-responses?color=green&label=npm)](https://www.npmjs.com/package/qwed-open-responses)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Tests](https://github.com/QWED-AI/qwed-open-responses/actions/workflows/ci.yml/badge.svg)](https://github.com/QWED-AI/qwed-open-responses/actions)
 
 **Verification guards for AI agent outputs. Verify before you execute.**
 
