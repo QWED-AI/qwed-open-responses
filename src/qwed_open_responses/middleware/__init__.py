@@ -12,4 +12,7 @@ def __getattr__(name):
     elif name == "VerifiedOpenAI":
         from .openai_sdk import VerifiedOpenAI
         return VerifiedOpenAI
+    elif name == "QWEDLlamaIndexHandler":
+        from .llamaindex import QWEDLlamaIndexHandler
+        return QWEDLlamaIndexHandler
     raise AttributeError(f"module 'qwed_open_responses.middleware' has no attribute '{name}'")
