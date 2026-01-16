@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qwed-open-responses"
-version = "0.2.1"
+version = "0.2.2"
 description = "Verification guards for OpenAI Responses API - Verify AI agent outputs before execution"
 readme = "README.md"
 license = {file = "LICENSE"}
