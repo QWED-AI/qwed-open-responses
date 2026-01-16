@@ -6,7 +6,7 @@ LangChain, LlamaIndex, and other AI agent frameworks.
 
 Usage:
     from qwed_open_responses import ResponseVerifier, ToolGuard, SchemaGuard
-    
+
     verifier = ResponseVerifier()
     result = verifier.verify(response, guards=[ToolGuard(), SchemaGuard()])
 """
