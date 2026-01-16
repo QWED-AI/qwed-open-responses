@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwed-open-responses"
+version = "0.1.0"
+description = "Verification guards for OpenAI Responses API - Verify AI agent outputs before execution"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.9"
+authors = [
+    {name = "QWED-AI", email = "team@qwedai.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = [
+    "ai", "verification", "openai", "responses-api", "agents", 
+    "tool-calling", "structured-outputs", "llm", "safety"
+]
+dependencies = [
+    "jsonschema>=4.17.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0.0"]
+langchain = ["langchain>=0.1.0", "langchain-core>=0.1.0"]
+llamaindex = ["llama-index>=0.10.0"]
+all = [
+    "openai>=1.0.0",
+    "langchain>=0.1.0",
+    "langchain-core>=0.1.0",
+    "llama-index>=0.10.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "mypy>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/QWED-AI/qwed-open-responses"
+Documentation = "https://docs.qwedai.com/docs/open-responses"
+Repository = "https://github.com/QWED-AI/qwed-open-responses"
+Issues = "https://github.com/QWED-AI/qwed-open-responses/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 88
+target-version = ['py39', 'py310', 'py311', 'py312']
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
