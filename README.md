@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://github.com/QWED-AI/qwed-open-responses/actions/workflows/ci.yml/badge.svg)](https://github.com/QWED-AI/qwed-open-responses/actions)
 [![GitHub stars](https://img.shields.io/github/stars/QWED-AI/qwed-open-responses?style=social)](https://github.com/QWED-AI/qwed-open-responses)
-[![Verified by QWED](https://img.shields.io/badge/Verified_by-QWED-00C853?style=flat&logo=checkmarx)](https://github.com/QWED-AI/qwed-verification)
+[![Verified by QWED](https://img.shields.io/badge/Verified_by-QWED-00C853?style=flat&logo=checkmarx)](https://github.com/QWED-AI/qwed-verification#%EF%B8%8F-what-does-verified-by-qwed-mean)
 
 **Verification guards for AI agent outputs. Verify before you execute.**
 
