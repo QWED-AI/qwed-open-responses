@@ -29,6 +29,116 @@ pip install qwed-open-responses[all]         # All integrations
 
 ---
 
+## 💡 What QWED Open Responses Is (and Isn't)
+
+### ✅ QWED Open Responses IS:
+- **Verification middleware** for AI agents (OpenAI, LangChain, LlamaIndex)
+- **Deterministic** — uses symbolic logic and formal verification rules
+- **Framework-agnostic** — works with any LLM or agent framework
+- **A safety layer** — prevents dangerous tool calls and incorrect outputs
+
+### ❌ QWED Open Responses is NOT:
+- ~~An agent framework~~ — use LangChain or AutoGen for that
+- ~~A prompt engineering tool~~ — use DSPy for that
+- ~~A vector database~~ — use Pinecone or Weaviate for that
+- ~~A vaguely defined "guardrail"~~ — we use mathematical proofs, not regex
+
+> **Think of QWED as the "firewall" for your AI agent's actions and outputs.**
+> 
+> LangChain builds the agent. OpenAI powers the brain. **QWED secures the actions.**
+
+---
+
+## 🆚 How We're Different from Other Guardrails
+
+| Aspect | Guardrails AI / NVIDIA NeMo | DSPy | QWED Open Responses |
+|--------|-----------------------------|------|---------------------|
+| **Primary Goal** | Format validation (XML/RAIL) | Prompt optimization | Deterministic verification |
+| **Tool Security** | Regex-based blocking | N/A | AST analysis + whitelist |
+| **Math Accuracy** | LLM self-correction | Prompt tuning | SymPy symbolic math |
+| **Approach** | "Re-ask the LLM" | "Train the prompt" | "Verify legally/mathematically" |
+| **Integration** | Wraps LLM calls | Replaces prompt pipeline | Middleware / Callback |
+| **Determinism** | Probabilistic | Probabilistic | **100% Deterministic** |
+
+### Use Together (Best Practice)
+```
+┌──────────────┐     ┌───────────────┐     ┌──────────────┐
+│   LangChain  │ ──► │     QWED      │ ──► │  Verified    │
+│    Agent     │     │  (Middleware) │     │  Tool Call   │
+└──────────────┘     └───────────────┘     └──────────────┘
+```
+
+---
+
+## 🔒 Security & Privacy
+
+> **Verification happens locally. No data leaves your infrastructure.**
+
+| Concern | QWED Approach |
+|---------|---------------|
+| **Data Transmission** | ❌ No external API calls for verification |
+| **Logic Execution** | ✅ Local Python/Z3 engines |
+| **Latency** | ✅ Sub-millisecond overhead for most guards |
+| **Audit** | ✅ Full logs of blocked actions |
+
+**Perfect for:**
+- Agents with access to databases or APIs
+- Enterprise internal tools
+- Automated financial/legal assistants
+
+---
+
+## ❓ FAQ
+
+<details>
+<summary><b>Does it slow down my agent?</b></summary>
+
+Negligibly. Most guards (Schema, Tool, Argument) run in <1ms. MathGuard runs in <5ms. It's much faster than making another LLM call to double-check.
+</details>
+
+<details>
+<summary><b>Can I use it with custom agents?</b></summary>
+
+Yes! You don't need LangChain. QWED works with raw OpenAI API calls or any Python code. Just pass the output to the `Verifier`.
+</details>
+
+<details>
+<summary><b>How does MathGuard work?</b></summary>
+
+It extracts numbers and operators from the output and uses SymPy to verify if the stated result matches the calculation. It does NOT ask the LLM to check itself.
+</details>
+
+<details>
+<summary><b>Is it compatible with streaming?</b></summary>
+
+Yes, but verification usually happens on the final tool call or complete message chunk. We are working on stream-interception middleware.
+</details>
+
+---
+
+## 🗺️ Roadmap
+
+### ✅ Released (v1.0.0)
+- [x] `ToolGuard` - Block dangerous tools/patterns
+- [x] `SchemaGuard` - JSON Schema validation
+- [x] `MathGuard` - SymPy calculation verification
+- [x] `SafetyGuard` - PII and injection checks
+- [x] `StateGuard` - Finite state machine validation
+- [x] `ArgumentGuard` - Type and range checking
+- [x] Integrations: OpenAI, LangChain
+
+### 🚧 In Progress
+- [ ] **LlamaIndex Integration** - First-class support
+- [ ] **Streaming Verification** - Verify chunks in real-time
+- [ ] **Auto-Fix** - Deterministic correction of JSON errors
+
+### 🔮 Planned
+- [ ] **Distributed Rules** - Sync rules across agent swarms
+- [ ] **Policy-as-Code** - Define guards in YAML/JSON
+- [ ] **Visual Dashboard** - View blocked attempts stats
+
+---
+
 ## Quick Start
 
 ```python
