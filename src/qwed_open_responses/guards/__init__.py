@@ -12,6 +12,7 @@ from .state_guard import StateGuard
 from .argument_guard import ArgumentGuard
 from .tax_guard import TaxGuard
 from .finance_guard import FinanceGuard
+from .legal_guard import LegalGuard
 
 __all__ = [
     "ToolGuard",
@@ -22,4 +23,5 @@ __all__ = [
     "ArgumentGuard",
     "TaxGuard",
     "FinanceGuard",
+    "LegalGuard",
 ]

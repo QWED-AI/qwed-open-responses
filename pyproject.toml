@@ -39,7 +39,8 @@ openai = ["openai>=1.0.0"]
 langchain = ["langchain>=0.1.0", "langchain-core>=0.1.0"]
 tax = ["qwed-tax>=0.3.0"]
 finance = ["qwed-finance>=0.2.0"]
-full = ["qwed-tax>=0.3.0", "qwed-finance>=0.2.0"]
+legal = ["qwed-legal>=0.2.0"]
+full = ["qwed-tax>=0.3.0", "qwed-finance>=0.2.0", "qwed-legal>=0.2.0"]
 llamaindex = ["llama-index>=0.10.0"]
 all = [
     "openai>=1.0.0",
@@ -48,6 +49,7 @@ all = [
     "llama-index>=0.10.0",
     "qwed-tax>=0.3.0",
     "qwed-finance>=0.2.0",
+    "qwed-legal>=0.2.0",
 ]
 dev = [
     "pytest>=7.0.0",

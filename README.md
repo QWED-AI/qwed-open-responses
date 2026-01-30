@@ -26,6 +26,7 @@ pip install qwed-open-responses[openai]      # OpenAI Responses API
 pip install qwed-open-responses[langchain]   # LangChain
 pip install qwed-open-responses[tax]         # Tax Verification (Payroll, Crypto)
 pip install qwed-open-responses[finance]     # Finance Verification (NPV, ISO 20022)
+pip install qwed-open-responses[legal]       # Legal Verification (Contracts, Jurisdictions)
 pip install qwed-open-responses[all]         # All integrations
 ```
 
