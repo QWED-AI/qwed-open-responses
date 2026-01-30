@@ -4,6 +4,7 @@ QWED Open Responses - Guards Package.
 Guards are verification checks applied to AI responses.
 """
 
+from .base import BaseGuard
 from .tool_guard import ToolGuard
 from .schema_guard import SchemaGuard
 from .math_guard import MathGuard
@@ -15,6 +16,7 @@ from .finance_guard import FinanceGuard
 from .legal_guard import LegalGuard
 
 __all__ = [
+    "BaseGuard",
     "ToolGuard",
     "SchemaGuard",
     "MathGuard",
