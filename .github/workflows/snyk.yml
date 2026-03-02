@@ -31,10 +31,10 @@ jobs:
           pip install -e .
 
       - name: Run Snyk to check for vulnerabilities
-        continue-on-error: true
+        continue-on-error: ${{ github.event_name == 'schedule' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk test --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk.sarif
+        run: snyk test --all-projects --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk.sarif
 
       - name: Upload Snyk results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
@@ -52,10 +52,10 @@ jobs:
         run: npm install -g snyk
 
       - name: Run Snyk Code test
-        continue-on-error: true
+        continue-on-error: ${{ github.event_name == 'schedule' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk code test --org=${{ secrets.SNYK_ORG_ID }} --sarif-file-output=snyk-code.sarif
+        run: snyk code test --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk-code.sarif
 
       - name: Upload Snyk Code results
         uses: github/codeql-action/upload-sarif@v4

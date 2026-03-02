@@ -50,7 +50,7 @@ body:
         ```python
         from qwed_open_responses import VerifiedOpenAI
         client = VerifiedOpenAI(api_key="...")
-        response = client.chat.completions.create(...)
+        response = client.responses.create(...)
         ```
     validations:
       required: true

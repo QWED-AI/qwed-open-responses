@@ -40,13 +40,15 @@ class OpenResponsesMiddleware:
     """
 
     # Tool types that require verification before yielding
-    VERIFIABLE_ITEM_TYPES = {"tool_call", "function_call"}
+    VERIFIABLE_ITEM_TYPES: frozenset = frozenset({"tool_call", "function_call"})
 
     def __init__(
         self,
         guards: Optional[List[BaseGuard]] = None,
         block_on_failure: bool = True,
-        on_blocked: Optional[Callable[[Dict[str, Any], VerificationResult], None]] = None,
+        on_blocked: Optional[
+            Callable[[Dict[str, Any], VerificationResult], None]
+        ] = None,
     ):
         """
         Initialise the streaming interceptor.
@@ -60,14 +62,15 @@ class OpenResponsesMiddleware:
         self._verifier = ResponseVerifier(default_guards=guards or [])
         self._block_on_failure = block_on_failure
         self._on_blocked = on_blocked
-        self._stats = {"total": 0, "verified": 0, "blocked": 0}
+        self._stats: Dict[str, int] = {"total": 0, "verified": 0, "blocked": 0}
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
     # ------------------------------------------------------------------ #
 
     async def verify_stream(
-        self, response_stream: AsyncGenerator[Dict[str, Any], None]
+        self,
+        response_stream: AsyncGenerator[Dict[str, Any], None],
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Monitor the stream for tool-call items, verifying each before yield.
@@ -102,7 +105,8 @@ class OpenResponsesMiddleware:
     # ------------------------------------------------------------------ #
 
     async def _verify_tool_call(
-        self, item: Dict[str, Any]
+        self,
+        item: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         """
         Run a single tool-call item through the guard stack.
@@ -114,11 +118,11 @@ class OpenResponsesMiddleware:
         tool_name = tool_call.get("name", "unknown")
         tool_args = tool_call.get("arguments", {})
 
-        # Build a verification payload
-        payload = {
+        # Build a verification payload — use "arguments" key for guard compat
+        payload: Dict[str, Any] = {
             "type": "tool_call",
             "tool_name": tool_name,
-            "tool_arguments": tool_args,
+            "arguments": tool_args,
             "raw_item": item,
         }
 
@@ -132,11 +136,19 @@ class OpenResponsesMiddleware:
         # Blocked
         self._stats["blocked"] += 1
         logger.warning(
-            "🛡️ Blocked tool call: %s — reason: %s", tool_name, result.block_reason
+            "🛡️ Blocked tool call: %s — reason: %s",
+            tool_name,
+            result.block_reason,
         )
 
         if self._on_blocked:
-            self._on_blocked(item, result)
+            try:
+                self._on_blocked(item, result)
+            except Exception:
+                logger.exception(
+                    "on_blocked callback failed for tool call '%s'",
+                    tool_name,
+                )
 
         if self._block_on_failure:
             return {
@@ -145,7 +157,8 @@ class OpenResponsesMiddleware:
                 "tool_name": tool_name,
                 "reason": f"QWED blocked {tool_name}: {result.block_reason}",
                 "verification": {
-                    "score": result.score,
+                    "guards_passed": result.guards_passed,
+                    "guards_failed": result.guards_failed,
                     "mechanism": "QWED Open Responses Streaming Interceptor",
                 },
             }
