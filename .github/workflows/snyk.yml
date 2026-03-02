@@ -10,6 +10,9 @@ jobs:
   snyk-dependencies:
     name: Snyk Dependency Scan
     runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.fork == false
     permissions:
       contents: read
       security-events: write
@@ -33,7 +36,8 @@ jobs:
         continue-on-error: ${{ github.event_name == 'schedule' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk test --all-projects --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk.sarif
+          SNYK_ORG: ${{ secrets.SNYK_ORG_ID }}
+        run: snyk test --all-projects --org="$SNYK_ORG" --severity-threshold=high --sarif-file-output=snyk.sarif
 
       - name: Upload Snyk results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
@@ -44,6 +48,9 @@ jobs:
   snyk-code:
     name: Snyk Code Analysis (SAST)
     runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.fork == false
     permissions:
       contents: read
       security-events: write
@@ -57,7 +64,8 @@ jobs:
         continue-on-error: ${{ github.event_name == 'schedule' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk code test --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk-code.sarif
+          SNYK_ORG: ${{ secrets.SNYK_ORG_ID }}
+        run: snyk code test --org="$SNYK_ORG" --severity-threshold=high --sarif-file-output=snyk-code.sarif
 
       - name: Upload Snyk Code results
         uses: github/codeql-action/upload-sarif@v4
