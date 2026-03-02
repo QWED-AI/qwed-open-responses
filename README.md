@@ -304,3 +304,9 @@ response = client.responses.create(...)
 ## License
 
 Apache 2.0 - See [LICENSE](LICENSE)
+
+---
+
+<div align="center">
+  <a href="https://snyk.io/test/github/QWED-AI/qwed-open-responses"><img src="https://snyk.io/test/github/QWED-AI/qwed-open-responses/badge.svg" alt="Known Vulnerabilities" /></a>
+</div>
