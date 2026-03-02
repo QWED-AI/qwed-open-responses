@@ -89,16 +89,12 @@ class TestPassthrough:
             {"type": "text", "content": "Hello"},
             {"type": "metadata", "model": "gpt-4"},
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert result == items
 
     def test_empty_stream(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream([])))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([]))))
         assert result == []
 
 
@@ -116,9 +112,7 @@ class TestVerifiedToolCalls:
                 "tool_call": {"name": "get_weather", "arguments": {"city": "NYC"}},
             }
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 1
         assert result[0]["type"] == "tool_call"
 
@@ -130,9 +124,7 @@ class TestVerifiedToolCalls:
                 "function_call": {"name": "calc", "arguments": {"x": 1}},
             }
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 1
 
     def test_stats_after_verified(self):
@@ -143,9 +135,7 @@ class TestVerifiedToolCalls:
                 "tool_call": {"name": "safe_tool", "arguments": {}},
             }
         ]
-        asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         stats = mw.get_stats()
         assert stats["total"] == 1
         assert stats["verified"] == 1
@@ -166,9 +156,7 @@ class TestBlockedToolCalls:
                 "tool_call": {"name": "rm_rf", "arguments": {}},
             }
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 1
         assert result[0]["type"] == "system_intervention"
         assert result[0]["status"] == "blocked"
@@ -185,9 +173,7 @@ class TestBlockedToolCalls:
                 "tool_call": {"name": "dangerous", "arguments": {}},
             }
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         # Non-blocking mode passes item through
         assert len(result) == 1
         assert result[0]["type"] == "tool_call"
@@ -200,9 +186,7 @@ class TestBlockedToolCalls:
                 "tool_call": {"name": "bad", "arguments": {}},
             }
         ]
-        asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         stats = mw.get_stats()
         assert stats["total"] == 1
         assert stats["verified"] == 0
@@ -230,9 +214,7 @@ class TestOnBlockedCallback:
                 "tool_call": {"name": "evil", "arguments": {}},
             }
         ]
-        asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(blocked_items) == 1
 
     def test_callback_exception_doesnt_crash(self):
@@ -249,9 +231,7 @@ class TestOnBlockedCallback:
             }
         ]
         # Should not raise
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 1
         assert result[0]["type"] == "system_intervention"
 
@@ -271,18 +251,14 @@ class TestEdgeCases:
                 "tool_call": {},
             }
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 1
 
     def test_missing_tool_call_key(self):
         """If tool_call is None, falls back to function_call."""
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
         items = [{"type": "tool_call"}]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 1
 
     def test_none_block_reason_fallback(self):
@@ -294,9 +270,7 @@ class TestEdgeCases:
                 "tool_call": {"name": "test", "arguments": {}},
             }
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 1
         assert "None" not in result[0]["reason"]
 
@@ -308,9 +282,7 @@ class TestEdgeCases:
                 "tool_call": {"name": "a", "arguments": {}},
             }
         ]
-        asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert mw.get_stats()["total"] == 1
         mw.reset_stats()
         assert mw.get_stats()["total"] == 0
@@ -325,9 +297,7 @@ class TestEdgeCases:
             },
             {"type": "text", "content": "Goodbye"},
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 3
         stats = mw.get_stats()
         assert stats["total"] == 3
@@ -341,9 +311,7 @@ class TestEdgeCases:
                 "tool_call": {"name": "anything", "arguments": {}},
             }
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            _collect(mw.verify_stream(_make_stream(items)))
-        )
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 1
         assert result[0]["type"] == "tool_call"
 
@@ -361,6 +329,7 @@ class TestLazyImport:
 
     def test_import_unknown_raises(self):
         import pytest
+        import qwed_open_responses.middleware as middleware
 
         with pytest.raises(AttributeError):
-            from qwed_open_responses.middleware import DoesNotExist  # noqa: F401
+            _ = middleware.DoesNotExist
