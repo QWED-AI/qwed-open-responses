@@ -1,0 +1,78 @@
+name: 🐛 Bug Report
+description: Report a bug in QWED Open Responses
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please fill in the details below.
+
+  - type: input
+    id: version
+    attributes:
+      label: QWED Open Responses Version
+      description: Run `pip show qwed-open-responses` to get this
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python Version
+      description: Run `python --version`
+      placeholder: "3.11.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which component is affected?
+      options:
+        - OpenAI Middleware
+        - LangChain Middleware
+        - LlamaIndex Middleware
+        - Open Responses Middleware (Streaming)
+        - Guards (Tool / Schema / Content)
+        - Core Verifier
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: input
+    attributes:
+      label: Input that caused the bug
+      description: Share the query/code that triggered the issue
+      placeholder: |
+        ```python
+        from qwed_open_responses import VerifiedOpenAI
+        client = VerifiedOpenAI(api_key="...")
+        response = client.responses.create(...)
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include full traceback if applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any other information that might help
