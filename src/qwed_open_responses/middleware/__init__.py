@@ -1,7 +1,8 @@
 """
 QWED Open Responses - Middleware Package.
 
-Framework integrations for LangChain, LlamaIndex, OpenAI SDK.
+Framework integrations for LangChain, LlamaIndex, OpenAI SDK,
+and Open Responses streaming protocol.
 """
 
 
@@ -19,6 +20,10 @@ def __getattr__(name):
         from .llamaindex import QWEDLlamaIndexHandler
 
         return QWEDLlamaIndexHandler
+    elif name == "OpenResponsesMiddleware":
+        from .streaming_interceptor import OpenResponsesMiddleware
+
+        return OpenResponsesMiddleware
     raise AttributeError(
         f"module 'qwed_open_responses.middleware' has no attribute '{name}'"
     )
