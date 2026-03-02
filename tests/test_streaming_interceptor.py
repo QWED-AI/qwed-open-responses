@@ -20,7 +20,7 @@ class PassGuard(BaseGuard):
     name = "pass_guard"
     description = "Always passes"
 
-    def check(self, response, context=None):
+    def check(self, _response, _context=None):
         return GuardResult(guard_name=self.name, passed=True, message="OK")
 
 
@@ -30,7 +30,7 @@ class FailGuard(BaseGuard):
     name = "fail_guard"
     description = "Always fails"
 
-    def check(self, response, context=None):
+    def check(self, _response, _context=None):
         return GuardResult(
             guard_name=self.name,
             passed=False,
@@ -45,7 +45,7 @@ class ExplodingGuard(BaseGuard):
     name = "exploding_guard"
     description = "Raises an error"
 
-    def check(self, response, context=None):
+    def check(self, _response, _context=None):
         raise RuntimeError("kaboom")
 
 
@@ -202,7 +202,7 @@ class TestOnBlockedCallback:
     def test_callback_invoked(self):
         blocked_items = []
 
-        def on_blocked(item, result):
+        def on_blocked(item, _result):
             blocked_items.append(item)
 
         mw = OpenResponsesMiddleware(
@@ -218,8 +218,8 @@ class TestOnBlockedCallback:
         assert len(blocked_items) == 1
 
     def test_callback_exception_doesnt_crash(self):
-        def bad_callback(item, result):
-            raise ValueError("callback error!")
+        def bad_callback(_item, _result):
+            raise ValueError()
 
         mw = OpenResponsesMiddleware(
             guards=[FailGuard()], block_on_failure=True, on_blocked=bad_callback
