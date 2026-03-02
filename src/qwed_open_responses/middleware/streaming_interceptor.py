@@ -57,6 +57,7 @@ class OpenResponsesMiddleware:
             guards: Guards to apply when a tool-call item arrives.
             block_on_failure: If True, dangerous items are replaced with
                 a ``system_intervention`` item instead of being yielded.
+                If False, failed items pass through unmodified (warn-only).
             on_blocked: Optional callback invoked when an item is blocked.
         """
         self._verifier = ResponseVerifier(default_guards=guards or [])
@@ -85,7 +86,7 @@ class OpenResponsesMiddleware:
             self._stats["total"] += 1
 
             if item.get("type") in self.VERIFIABLE_ITEM_TYPES:
-                verified_item = await self._verify_tool_call(item)
+                verified_item = self._verify_tool_call(item)
                 if verified_item is not None:
                     yield verified_item
             else:
@@ -104,7 +105,7 @@ class OpenResponsesMiddleware:
     #  Internals                                                           #
     # ------------------------------------------------------------------ #
 
-    async def _verify_tool_call(
+    def _verify_tool_call(
         self,
         item: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
@@ -112,9 +113,14 @@ class OpenResponsesMiddleware:
         Run a single tool-call item through the guard stack.
 
         Returns the original item if verified, a ``system_intervention``
-        item if blocked, or ``None`` if the item should be silently dropped.
+        item if blocked (when ``block_on_failure`` is True), or the
+        original item unmodified (when ``block_on_failure`` is False).
         """
-        tool_call = item.get("tool_call") or item.get("function_call", {})
+        # Use explicit None check — empty dicts are valid tool calls
+        tool_call = item.get("tool_call")
+        if tool_call is None:
+            tool_call = item.get("function_call", {})
+
         tool_name = tool_call.get("name", "unknown")
         tool_args = tool_call.get("arguments", {})
 
@@ -135,10 +141,11 @@ class OpenResponsesMiddleware:
 
         # Blocked
         self._stats["blocked"] += 1
+        block_reason = result.block_reason or "verification failed"
         logger.warning(
             "🛡️ Blocked tool call: %s — reason: %s",
             tool_name,
-            result.block_reason,
+            block_reason,
         )
 
         if self._on_blocked:
@@ -155,7 +162,7 @@ class OpenResponsesMiddleware:
                 "type": "system_intervention",
                 "status": "blocked",
                 "tool_name": tool_name,
-                "reason": f"QWED blocked {tool_name}: {result.block_reason}",
+                "reason": f"QWED blocked {tool_name}: {block_reason}",
                 "verification": {
                     "guards_passed": result.guards_passed,
                     "guards_failed": result.guards_failed,
@@ -163,5 +170,5 @@ class OpenResponsesMiddleware:
                 },
             }
 
-        # If not blocking, drop silently
-        return None
+        # Non-blocking mode: pass through unmodified (warn-only)
+        return item

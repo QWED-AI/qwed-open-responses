@@ -6,14 +6,13 @@ on:
   schedule:
     - cron: '0 9 * * 1'
 
-permissions:
-  contents: read
-  security-events: write
-
 jobs:
   snyk-dependencies:
     name: Snyk Dependency Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Snyk CLI
-        run: npm install -g snyk
+        run: npm install -g snyk@1.1297.2
 
       - name: Install dependencies
         run: |
@@ -45,11 +44,14 @@ jobs:
   snyk-code:
     name: Snyk Code Analysis (SAST)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Snyk CLI
-        run: npm install -g snyk
+        run: npm install -g snyk@1.1297.2
 
       - name: Run Snyk Code test
         continue-on-error: ${{ github.event_name == 'schedule' }}
