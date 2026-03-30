@@ -124,6 +124,22 @@ if (result.verified) {
 }
 ```
 
+## Security Advisory
+
+### `path-to-regexp` ReDoS (Express 5.x)
+
+If you use Express 5.x as your server framework, the transitive dependency `path-to-regexp@8.3.0` (via `express → router`) has a [ReDoS vulnerability](https://security.snyk.io/vuln/SNYK-JS-PATHTOREGEXP-15789765). Add the following override to **your project's** `package.json`:
+
+```json
+{
+  "overrides": {
+    "path-to-regexp": "^8.4.0"
+  }
+}
+```
+
+Then run `npm install` to apply. This is not required for Express 4.x users.
+
 ## Links
 
 - **GitHub:** [QWED-AI/qwed-open-responses](https://github.com/QWED-AI/qwed-open-responses)

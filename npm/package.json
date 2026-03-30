@@ -1,6 +1,6 @@
 {
     "name": "qwed-open-responses",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "description": "Verification guards for AI agent outputs - Works with OpenAI, LangChain, Express.js",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
@@ -48,10 +48,16 @@
     "peerDependencies": {
         "express": "^4.18.0 || ^5.0.0"
     },
+    "peerDependenciesMeta": {
+        "express": {
+            "optional": true
+        }
+    },
     "engines": {
         "node": ">=16.0.0"
     },
     "overrides": {
-        "qs": "^6.14.2"
+        "qs": "^6.14.2",
+        "path-to-regexp": "^8.4.0"
     }
 }
