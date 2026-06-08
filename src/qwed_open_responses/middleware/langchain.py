@@ -59,6 +59,7 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
             )
 
         super().__init__()
+        self.raise_error = True
         self.verifier = ResponseVerifier(default_guards=guards or [])
         self.block_on_failure = block_on_failure
         self.on_block = on_block
