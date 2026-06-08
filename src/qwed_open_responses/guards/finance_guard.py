@@ -38,7 +38,7 @@ class FinanceGuard:
                 return self.iso_engine.verify_payment_message(content)
             return {
                 "verified": False,
-                "error": "ISO verification not available (missing qwed-finance[iso] dependencies?)",
+                "error": "ISO verification not available (install with: pip install qwed-open-responses[finance])",
             }
 
         return {"verified": False, "error": f"Unrecognized finance context: {context}"}

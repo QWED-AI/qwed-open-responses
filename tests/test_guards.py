@@ -3,6 +3,7 @@ Tests for all guard classes.
 """
 
 import sys
+import types
 import pytest
 from unittest.mock import patch, MagicMock
 from qwed_open_responses.guards import (
@@ -311,6 +312,7 @@ class TestTaxGuard:
     @pytest.fixture(autouse=True)
     def _mock_qwed_tax(self):
         """Mock all qwed-tax modules so TaxGuard can be instantiated without it."""
+
         def _make_mock_module():
             return MagicMock(__path__=[])
 
@@ -319,10 +321,16 @@ class TestTaxGuard:
             "qwed_tax.verifier": MagicMock(TaxVerifier=MagicMock()),
             "qwed_tax.jurisdictions": _make_mock_module(),
             "qwed_tax.jurisdictions.us": _make_mock_module(),
-            "qwed_tax.jurisdictions.us.payroll_guard": MagicMock(PayrollGuard=MagicMock()),
+            "qwed_tax.jurisdictions.us.payroll_guard": MagicMock(
+                PayrollGuard=MagicMock()
+            ),
             "qwed_tax.jurisdictions.india": _make_mock_module(),
-            "qwed_tax.jurisdictions.india.remittance_guard": MagicMock(RemittanceGuard=MagicMock()),
-            "qwed_tax.jurisdictions.india.crypto_guard": MagicMock(CryptoTaxGuard=MagicMock()),
+            "qwed_tax.jurisdictions.india.remittance_guard": MagicMock(
+                RemittanceGuard=MagicMock()
+            ),
+            "qwed_tax.jurisdictions.india.crypto_guard": MagicMock(
+                CryptoTaxGuard=MagicMock()
+            ),
         }
         with patch.dict(sys.modules, mock_modules):
             yield
@@ -350,9 +358,7 @@ class TestTaxGuard:
         from qwed_open_responses.guards.tax_guard import TaxGuard
 
         guard = TaxGuard()
-        result = guard.verify_tool_call(
-            "process_payroll", {"gross_ytd": 50000}
-        )
+        result = guard.verify_tool_call("process_payroll", {"gross_ytd": 50000})
         assert result["verified"] is False
         assert "Missing required payroll fields" in result["error"]
 
@@ -363,15 +369,19 @@ class TestFinanceGuard:
     @pytest.fixture(autouse=True)
     def _mock_qwed_finance(self):
         """Mock all qwed-finance modules so FinanceGuard can be instantiated without it."""
-        def _make_mock_module():
-            return MagicMock(__path__=[])
 
-        mock_verifier = MagicMock()
+        def _make_mock_module(name: str):
+            module = types.ModuleType(name)
+            module.__path__ = []
+            return module
+
+        mock_finance_verifier = MagicMock()
+        qwed_finance_pkg = _make_mock_module("qwed_finance")
+        qwed_finance_pkg.FinanceVerifier = mock_finance_verifier
         mock_modules = {
-            "qwed_finance": _make_mock_module(),
-            "qwed_finance.guards": _make_mock_module(),
+            "qwed_finance": qwed_finance_pkg,
+            "qwed_finance.guards": _make_mock_module("qwed_finance.guards"),
             "qwed_finance.guards.iso_guard": MagicMock(ISOGuard=MagicMock()),
-            "qwed_finance.finance_verifier": MagicMock(FinanceVerifier=mock_verifier),
         }
         with patch.dict(sys.modules, mock_modules):
             yield
@@ -394,10 +404,11 @@ class TestFinanceGuard:
         assert result["verified"] is False
         assert "ISO verification not available" in result["error"]
 
-    def test_npv_missing_fields_returns_false(self):
-        """Missing cashflows/npv returns verified=False (falls through to unrecognized)."""
+    def test_unrecognized_context_without_npv_or_payment_returns_false(self):
+        """Context without cashflows/npv or payment_instruction returns verified=False."""
         from qwed_open_responses.guards.finance_guard import FinanceGuard
 
         guard = FinanceGuard()
         result = guard.verify_output("any_context", {"rate": 0.05})
         assert result["verified"] is False
+        assert "Unrecognized finance context" in result["error"]
