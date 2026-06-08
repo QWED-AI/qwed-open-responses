@@ -157,7 +157,7 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
             if self.block_on_failure:
                 raise ToolCallBlocked(
                     f"Agent output blocked: {result.block_reason}",
-                    action=finish,
+                    finish=finish,
                     result=result,
                 )
 
@@ -185,7 +185,9 @@ class ToolCallBlocked(Exception):
         message: str,
         action: Optional["AgentAction"] = None,
         result: Optional[VerificationResult] = None,
+        finish: Optional["AgentFinish"] = None,
     ):
         super().__init__(message)
         self.action = action
         self.result = result
+        self.finish = finish

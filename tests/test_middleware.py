@@ -225,7 +225,7 @@ class TestLangChainCallback:
             callback.on_agent_finish(finish)
 
         assert "Agent output blocked" in str(excinfo.value)
-        assert excinfo.value.action is not None
+        assert excinfo.value.finish is not None
         assert excinfo.value.result is not None
         assert excinfo.value.result.verified is False
 
