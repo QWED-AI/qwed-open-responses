@@ -63,7 +63,10 @@ class TaxGuard:
         required = ["gross_ytd", "claimed_tax"]
         missing = [f for f in required if f not in arguments]
         if missing:
-            return {"verified": False, "error": f"Missing required payroll fields: {', '.join(missing)}"}
+            return {
+                "verified": False,
+                "error": f"Missing required payroll fields: {', '.join(missing)}",
+            }
 
         from qwed_tax.jurisdictions.us.payroll_guard import PayrollGuard
 

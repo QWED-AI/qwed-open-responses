@@ -310,15 +310,24 @@ class TestTaxGuard:
 
     @pytest.fixture(autouse=True)
     def _mock_qwed_tax(self):
-        """Mock qwed-tax package so TaxGuard can be instantiated without it."""
-        mock_verifier = MagicMock()
-        mock_verifier.TaxVerifier = MagicMock()
-        mock_package = MagicMock(__path__=[])
-        sys.modules["qwed_tax"] = mock_package
-        sys.modules["qwed_tax.verifier"] = mock_verifier
+        """Mock all qwed-tax modules so TaxGuard can be instantiated without it."""
+        def _make_mock_module():
+            return MagicMock(__path__=[])
+
+        mock_modules = {
+            "qwed_tax": _make_mock_module(),
+            "qwed_tax.verifier": MagicMock(TaxVerifier=MagicMock()),
+            "qwed_tax.jurisdictions": _make_mock_module(),
+            "qwed_tax.jurisdictions.us": _make_mock_module(),
+            "qwed_tax.jurisdictions.us.payroll_guard": MagicMock(PayrollGuard=MagicMock()),
+            "qwed_tax.jurisdictions.india": _make_mock_module(),
+            "qwed_tax.jurisdictions.india.remittance_guard": MagicMock(RemittanceGuard=MagicMock()),
+            "qwed_tax.jurisdictions.india.crypto_guard": MagicMock(CryptoTaxGuard=MagicMock()),
+        }
+        sys.modules.update(mock_modules)
         yield
-        sys.modules.pop("qwed_tax", None)
-        sys.modules.pop("qwed_tax.verifier", None)
+        for name in mock_modules:
+            sys.modules.pop(name, None)
 
     def test_unknown_tool_returns_false(self):
         """Unknown tool returns verified=False."""
