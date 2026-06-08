@@ -145,9 +145,20 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
         }
 
         result = self.verifier.verify(output)
+        self.verification_history.append(result)
 
         if self.verbose:
             print(f"[QWED] Agent finish -> {result}")
+
+        if not result.verified:
+            if self.on_block:
+                self.on_block(finish, result)
+
+            if self.block_on_failure:
+                raise ToolCallBlocked(
+                    f"Agent output blocked: {result.block_reason}",
+                    result=result,
+                )
 
         return None
 
