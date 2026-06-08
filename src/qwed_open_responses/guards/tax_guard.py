@@ -40,8 +40,8 @@ class TaxGuard:
                 financial_year_usage=arguments.get("ytd_usage", 0),
             )
             return {
-                "verified": result.valid,
-                "error": result.message if not result.valid else None,
+                "verified": result.verified,
+                "error": result.message if not result.verified else None,
             }
 
         # 3. Crypto Tax (Loss Set-Off Rules)
@@ -53,13 +53,19 @@ class TaxGuard:
                 losses=arguments.get("losses", {}), gains=arguments.get("gains", {})
             )
             return {
-                "verified": result.valid,
-                "error": result.message if not result.valid else None,
+                "verified": result.verified,
+                "error": result.message if not result.verified else None,
             }
 
         return {"verified": False, "error": f"No tax guard for tool: {tool_name}"}
 
     def _verify_payroll(self, arguments):
+        if not isinstance(arguments, dict):
+            return {
+                "verified": False,
+                "error": "Invalid payroll arguments: expected object",
+            }
+
         required = ["gross_ytd", "claimed_tax"]
         missing = [f for f in required if f not in arguments]
         if missing:
@@ -77,6 +83,6 @@ class TaxGuard:
             claimed_tax=arguments["claimed_tax"],
         )
         return {
-            "verified": result.valid,
-            "error": result.message if not result.valid else None,
+            "verified": result.verified,
+            "error": result.message if not result.verified else None,
         }
