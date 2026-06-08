@@ -57,22 +57,23 @@ class TaxGuard:
                 "error": result.message if not result.valid else None,
             }
 
-        return {"verified": True, "note": "No specific tax guard found for this tool."}
+        return {"verified": False, "error": f"No tax guard for tool: {tool_name}"}
 
     def _verify_payroll(self, arguments):
+        required = ["gross_ytd", "claimed_tax"]
+        missing = [f for f in required if f not in arguments]
+        if missing:
+            return {"verified": False, "error": f"Missing required payroll fields: {', '.join(missing)}"}
+
         from qwed_tax.jurisdictions.us.payroll_guard import PayrollGuard
 
         guard = PayrollGuard()
-        # Map arguments to guard method inputs - this assumes consistent naming or adapter logic needed
-        # For simplicity, we check FICA limit if gross_ytd is present
-        if "gross_ytd" in arguments and "claimed_tax" in arguments:
-            result = guard.verify_fica_tax(
-                gross_ytd=arguments["gross_ytd"],
-                current=arguments.get("current", 0),
-                claimed_tax=arguments["claimed_tax"],
-            )
-            return {
-                "verified": result.valid,
-                "error": result.message if not result.valid else None,
-            }
-        return {"verified": True}
+        result = guard.verify_fica_tax(
+            gross_ytd=arguments["gross_ytd"],
+            current=arguments.get("current", 0),
+            claimed_tax=arguments["claimed_tax"],
+        )
+        return {
+            "verified": result.valid,
+            "error": result.message if not result.valid else None,
+        }
