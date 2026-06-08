@@ -247,21 +247,21 @@ class TestLangChainCallback:
         assert len(callback.verification_history) == 1
         assert callback.verification_history[0].verified is False
 
-    def test_on_agent_finish_calls_on_block_callback(self):
-        """on_block callback is invoked when verification fails."""
+    def test_on_agent_finish_calls_on_finish_block_callback(self):
+        """on_finish_block callback is invoked when verification fails."""
         pytest.importorskip("langchain_core")
         from qwed_open_responses.middleware.langchain import QWEDCallbackHandler, ToolCallBlocked
         from langchain_core.agents import AgentFinish
 
         blocked = []
 
-        def on_block(finish, result):
+        def on_finish_block(finish, result):
             blocked.append((finish, result))
 
         callback = QWEDCallbackHandler(
             guards=[MockFailGuard()],
             block_on_failure=False,
-            on_block=on_block,
+            on_finish_block=on_finish_block,
         )
         finish = AgentFinish(return_values={"output": "bad"}, log="")
         callback.on_agent_finish(finish)
