@@ -2,7 +2,9 @@
 Tests for all guard classes.
 """
 
+import sys
 import pytest
+from unittest.mock import patch, MagicMock
 from qwed_open_responses.guards import (
     SchemaGuard,
     ToolGuard,
@@ -301,3 +303,55 @@ class TestSchemaGuard:
 
         result = guard.check({"output": {"age": "thirty"}})  # String not int
         assert result.passed is False
+
+
+class TestTaxGuard:
+    """Test TaxGuard class."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_qwed_tax(self):
+        """Mock all qwed-tax modules so TaxGuard can be instantiated without it."""
+        def _make_mock_module():
+            return MagicMock(__path__=[])
+
+        mock_modules = {
+            "qwed_tax": _make_mock_module(),
+            "qwed_tax.verifier": MagicMock(TaxVerifier=MagicMock()),
+            "qwed_tax.jurisdictions": _make_mock_module(),
+            "qwed_tax.jurisdictions.us": _make_mock_module(),
+            "qwed_tax.jurisdictions.us.payroll_guard": MagicMock(PayrollGuard=MagicMock()),
+            "qwed_tax.jurisdictions.india": _make_mock_module(),
+            "qwed_tax.jurisdictions.india.remittance_guard": MagicMock(RemittanceGuard=MagicMock()),
+            "qwed_tax.jurisdictions.india.crypto_guard": MagicMock(CryptoTaxGuard=MagicMock()),
+        }
+        with patch.dict(sys.modules, mock_modules):
+            yield
+
+    def test_unknown_tool_returns_false(self):
+        """Unknown tool returns verified=False."""
+        from qwed_open_responses.guards.tax_guard import TaxGuard
+
+        guard = TaxGuard()
+        result = guard.verify_tool_call("unknown_tool", {})
+        assert result["verified"] is False
+        assert "No tax guard for tool" in result["error"]
+
+    def test_missing_payroll_fields_returns_false(self):
+        """Missing required payroll fields returns verified=False."""
+        from qwed_open_responses.guards.tax_guard import TaxGuard
+
+        guard = TaxGuard()
+        result = guard.verify_tool_call("process_payroll", {})
+        assert result["verified"] is False
+        assert "Missing required payroll fields" in result["error"]
+
+    def test_partial_payroll_fields_returns_false(self):
+        """Only some payroll fields provided returns verified=False."""
+        from qwed_open_responses.guards.tax_guard import TaxGuard
+
+        guard = TaxGuard()
+        result = guard.verify_tool_call(
+            "process_payroll", {"gross_ytd": 50000}
+        )
+        assert result["verified"] is False
+        assert "Missing required payroll fields" in result["error"]
