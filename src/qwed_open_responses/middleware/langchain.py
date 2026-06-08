@@ -157,6 +157,7 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
             if self.block_on_failure:
                 raise ToolCallBlocked(
                     f"Agent output blocked: {result.block_reason}",
+                    action=finish,
                     result=result,
                 )
 

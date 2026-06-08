@@ -193,6 +193,7 @@ class TestLangChainCallback:
 
     def test_on_agent_finish_passes(self):
         """Passing verification does not raise."""
+        pytest.importorskip("langchain_core")
         from qwed_open_responses.middleware.langchain import QWEDCallbackHandler, ToolCallBlocked
         from langchain_core.agents import AgentFinish
 
@@ -210,6 +211,7 @@ class TestLangChainCallback:
 
     def test_on_agent_finish_fails_with_block(self):
         """Failing verification raises ToolCallBlocked when block_on_failure=True."""
+        pytest.importorskip("langchain_core")
         from qwed_open_responses.middleware.langchain import QWEDCallbackHandler, ToolCallBlocked
         from langchain_core.agents import AgentFinish
 
@@ -223,11 +225,13 @@ class TestLangChainCallback:
             callback.on_agent_finish(finish)
 
         assert "Agent output blocked" in str(excinfo.value)
+        assert excinfo.value.action is not None
         assert excinfo.value.result is not None
         assert excinfo.value.result.verified is False
 
     def test_on_agent_finish_fails_without_block(self):
         """Failing verification does not raise when block_on_failure=False."""
+        pytest.importorskip("langchain_core")
         from qwed_open_responses.middleware.langchain import QWEDCallbackHandler, ToolCallBlocked
         from langchain_core.agents import AgentFinish
 
@@ -245,6 +249,7 @@ class TestLangChainCallback:
 
     def test_on_agent_finish_calls_on_block_callback(self):
         """on_block callback is invoked when verification fails."""
+        pytest.importorskip("langchain_core")
         from qwed_open_responses.middleware.langchain import QWEDCallbackHandler, ToolCallBlocked
         from langchain_core.agents import AgentFinish
 
@@ -267,6 +272,7 @@ class TestLangChainCallback:
 
     def test_on_agent_finish_history_recorded_on_pass(self):
         """Verification history includes on_agent_finish results."""
+        pytest.importorskip("langchain_core")
         from qwed_open_responses.middleware.langchain import QWEDCallbackHandler
         from langchain_core.agents import AgentFinish
 
