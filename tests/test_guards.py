@@ -324,10 +324,8 @@ class TestTaxGuard:
             "qwed_tax.jurisdictions.india.remittance_guard": MagicMock(RemittanceGuard=MagicMock()),
             "qwed_tax.jurisdictions.india.crypto_guard": MagicMock(CryptoTaxGuard=MagicMock()),
         }
-        sys.modules.update(mock_modules)
-        yield
-        for name in mock_modules:
-            sys.modules.pop(name, None)
+        with patch.dict(sys.modules, mock_modules):
+            yield
 
     def test_unknown_tool_returns_false(self):
         """Unknown tool returns verified=False."""
