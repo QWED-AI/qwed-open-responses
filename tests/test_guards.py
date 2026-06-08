@@ -355,3 +355,49 @@ class TestTaxGuard:
         )
         assert result["verified"] is False
         assert "Missing required payroll fields" in result["error"]
+
+
+class TestFinanceGuard:
+    """Test FinanceGuard class."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_qwed_finance(self):
+        """Mock all qwed-finance modules so FinanceGuard can be instantiated without it."""
+        def _make_mock_module():
+            return MagicMock(__path__=[])
+
+        mock_verifier = MagicMock()
+        mock_modules = {
+            "qwed_finance": _make_mock_module(),
+            "qwed_finance.guards": _make_mock_module(),
+            "qwed_finance.guards.iso_guard": MagicMock(ISOGuard=MagicMock()),
+            "qwed_finance.finance_verifier": MagicMock(FinanceVerifier=mock_verifier),
+        }
+        with patch.dict(sys.modules, mock_modules):
+            yield
+
+    def test_unrecognized_context_returns_false(self):
+        """Unrecognized context returns verified=False."""
+        from qwed_open_responses.guards.finance_guard import FinanceGuard
+
+        guard = FinanceGuard()
+        result = guard.verify_output("unknown_context", {"data": "test"})
+        assert result["verified"] is False
+        assert "Unrecognized finance context" in result["error"]
+
+    def test_iso_not_available_returns_false(self):
+        """ISO payment context without iso_engine returns verified=False."""
+        from qwed_open_responses.guards.finance_guard import FinanceGuard
+
+        guard = FinanceGuard()
+        result = guard.verify_output("payment_instruction", {"data": "test"})
+        assert result["verified"] is False
+        assert "ISO verification not available" in result["error"]
+
+    def test_npv_missing_fields_returns_false(self):
+        """Missing cashflows/npv returns verified=False (falls through to unrecognized)."""
+        from qwed_open_responses.guards.finance_guard import FinanceGuard
+
+        guard = FinanceGuard()
+        result = guard.verify_output("any_context", {"rate": 0.05})
+        assert result["verified"] is False

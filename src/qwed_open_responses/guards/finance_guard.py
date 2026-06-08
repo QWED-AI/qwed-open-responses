@@ -37,8 +37,8 @@ class FinanceGuard:
             if hasattr(self, "iso_engine"):
                 return self.iso_engine.verify_payment_message(content)
             return {
-                "verified": True,
-                "note": "ISO Verification not active (missing qwed-finance[iso] dependencies?)",
+                "verified": False,
+                "error": "ISO verification not available (missing qwed-finance[iso] dependencies?)",
             }
 
-        return {"verified": True}
+        return {"verified": False, "error": f"Unrecognized finance context: {context}"}
