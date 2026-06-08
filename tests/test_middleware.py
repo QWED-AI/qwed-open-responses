@@ -188,6 +188,104 @@ class TestSafetyGuardEdgeCases:
         assert result.passed is True or "budget" not in str(result.details).lower()
 
 
+class TestLangChainCallback:
+    """Test QWEDCallbackHandler enforcement."""
+
+    def test_on_agent_finish_passes(self):
+        """Passing verification does not raise."""
+        pytest.importorskip("langchain_core")
+        from qwed_open_responses.middleware.langchain import QWEDCallbackHandler, ToolCallBlocked
+        from langchain_core.agents import AgentFinish
+
+        callback = QWEDCallbackHandler(
+            guards=[MockPassGuard()],
+            block_on_failure=True,
+        )
+        finish = AgentFinish(return_values={"output": "safe result"}, log="")
+
+        # Should not raise
+        callback.on_agent_finish(finish)
+
+        assert len(callback.verification_history) == 1
+        assert callback.verification_history[0].verified is True
+
+    def test_on_agent_finish_fails_with_block(self):
+        """Failing verification raises ToolCallBlocked when block_on_failure=True."""
+        pytest.importorskip("langchain_core")
+        from qwed_open_responses.middleware.langchain import QWEDCallbackHandler, ToolCallBlocked
+        from langchain_core.agents import AgentFinish
+
+        callback = QWEDCallbackHandler(
+            guards=[MockFailGuard()],
+            block_on_failure=True,
+        )
+        finish = AgentFinish(return_values={"output": "bad result"}, log="")
+
+        with pytest.raises(ToolCallBlocked) as excinfo:
+            callback.on_agent_finish(finish)
+
+        assert "Agent output blocked" in str(excinfo.value)
+        assert excinfo.value.finish is not None
+        assert excinfo.value.result is not None
+        assert excinfo.value.result.verified is False
+
+    def test_on_agent_finish_fails_without_block(self):
+        """Failing verification does not raise when block_on_failure=False."""
+        pytest.importorskip("langchain_core")
+        from qwed_open_responses.middleware.langchain import QWEDCallbackHandler, ToolCallBlocked
+        from langchain_core.agents import AgentFinish
+
+        callback = QWEDCallbackHandler(
+            guards=[MockFailGuard()],
+            block_on_failure=False,
+        )
+        finish = AgentFinish(return_values={"output": "bad result"}, log="")
+
+        # Should not raise
+        callback.on_agent_finish(finish)
+
+        assert len(callback.verification_history) == 1
+        assert callback.verification_history[0].verified is False
+
+    def test_on_agent_finish_calls_on_finish_block_callback(self):
+        """on_finish_block callback is invoked when verification fails."""
+        pytest.importorskip("langchain_core")
+        from qwed_open_responses.middleware.langchain import QWEDCallbackHandler, ToolCallBlocked
+        from langchain_core.agents import AgentFinish
+
+        blocked = []
+
+        def on_finish_block(finish, result):
+            blocked.append((finish, result))
+
+        callback = QWEDCallbackHandler(
+            guards=[MockFailGuard()],
+            block_on_failure=False,
+            on_finish_block=on_finish_block,
+        )
+        finish = AgentFinish(return_values={"output": "bad"}, log="")
+        callback.on_agent_finish(finish)
+
+        assert len(blocked) == 1
+        assert blocked[0][0] is finish
+        assert blocked[0][1].verified is False
+
+    def test_on_agent_finish_history_recorded_on_pass(self):
+        """Verification history includes on_agent_finish results."""
+        pytest.importorskip("langchain_core")
+        from qwed_open_responses.middleware.langchain import QWEDCallbackHandler
+        from langchain_core.agents import AgentFinish
+
+        callback = QWEDCallbackHandler(guards=[MockPassGuard()])
+        finish = AgentFinish(return_values={"output": "ok"}, log="")
+        callback.on_agent_finish(finish)
+
+        summary = callback.get_verification_summary()
+        assert summary["total_verifications"] == 1
+        assert summary["passed"] == 1
+        assert summary["failed"] == 0
+
+
 class TestMathGuardEdgeCases:
     """Test edge cases for MathGuard."""
 

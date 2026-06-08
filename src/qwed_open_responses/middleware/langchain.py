@@ -39,6 +39,7 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
         guards: Optional[List[BaseGuard]] = None,
         block_on_failure: bool = True,
         on_block: Optional[callable] = None,
+        on_finish_block: Optional[callable] = None,
         verbose: bool = False,
     ):
         """
@@ -47,7 +48,8 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
         Args:
             guards: Guards to apply to agent actions
             block_on_failure: If True, raise exception on guard failure
-            on_block: Callback function when action is blocked
+            on_block: Callback when an agent action is blocked (AgentAction, VerificationResult)
+            on_finish_block: Callback when agent finish output is blocked (AgentFinish, VerificationResult)
             verbose: Print verification results
         """
         if not HAS_LANGCHAIN:
@@ -57,9 +59,11 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
             )
 
         super().__init__()
+        self.raise_error = True
         self.verifier = ResponseVerifier(default_guards=guards or [])
         self.block_on_failure = block_on_failure
         self.on_block = on_block
+        self.on_finish_block = on_finish_block
         self.verbose = verbose
 
         # Track verification history
@@ -145,9 +149,21 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
         }
 
         result = self.verifier.verify(output)
+        self.verification_history.append(result)
 
         if self.verbose:
             print(f"[QWED] Agent finish -> {result}")
+
+        if not result.verified:
+            if self.on_finish_block:
+                self.on_finish_block(finish, result)
+
+            if self.block_on_failure:
+                raise ToolCallBlocked(
+                    f"Agent output blocked: {result.block_reason}",
+                    finish=finish,
+                    result=result,
+                )
 
         return None
 
@@ -173,7 +189,9 @@ class ToolCallBlocked(Exception):
         message: str,
         action: Optional["AgentAction"] = None,
         result: Optional[VerificationResult] = None,
+        finish: Optional["AgentFinish"] = None,
     ):
         super().__init__(message)
         self.action = action
         self.result = result
+        self.finish = finish
