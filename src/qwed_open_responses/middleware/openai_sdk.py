@@ -129,7 +129,7 @@ class VerifiedResponses:
             warnings.warn(
                 "OpenAI Responses API not available on this client. "
                 "Falling back to Chat Completions API. "
-                "Use client.chat.completions.create() explicitly to avoid this warning.",
+                "Use VerifiedOpenAI(...).chat.completions.create() explicitly to avoid this warning.",
                 stacklevel=2,
             )
             response = self._parent._client.chat.completions.create(**kwargs)

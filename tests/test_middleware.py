@@ -346,7 +346,7 @@ class TestVerifiedResponses:
         chat = MagicMock()
         chat.completions = completions
 
-        client = MagicMock(spec=["chat", "chat"])
+        client = MagicMock(spec=["chat"])
         client.chat = chat
         return client
 
@@ -366,41 +366,45 @@ class TestVerifiedResponses:
         client.responses = responses
         return client
 
-    @patch("qwed_open_responses.middleware.openai_sdk.openai.OpenAI")
-    def test_fallback_warns_when_responses_api_unavailable(self, mock_openai):
+    def test_fallback_warns_when_responses_api_unavailable(self):
         """Fallback to Chat Completions emits a warning."""
         pytest.importorskip("openai")
-        from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
+        with patch(
+            "qwed_open_responses.middleware.openai_sdk.openai.OpenAI"
+        ) as mock_openai:
+            from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
-        mock_openai.return_value = self._make_fallback_client()
+            mock_openai.return_value = self._make_fallback_client()
+            verified = VerifiedOpenAI(guards=[])
+            with pytest.warns(UserWarning, match="Falling back to Chat Completions"):
+                verified.responses.create(input="test")
 
-        verified = VerifiedOpenAI(guards=[])
-        with pytest.warns(UserWarning, match="Falling back to Chat Completions"):
-            verified.responses.create(input="test")
-
-    @patch("qwed_open_responses.middleware.openai_sdk.openai.OpenAI")
-    def test_no_warning_when_responses_api_available(self, mock_openai):
+    def test_no_warning_when_responses_api_available(self):
         """No warning when Responses API is available."""
         pytest.importorskip("openai")
-        from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
+        with patch(
+            "qwed_open_responses.middleware.openai_sdk.openai.OpenAI"
+        ) as mock_openai:
+            from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
-        mock_openai.return_value = self._make_responses_client()
+            mock_openai.return_value = self._make_responses_client()
+            verified = VerifiedOpenAI(guards=[])
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                verified.responses.create(input="test")
+                falling_back = [x for x in w if "Falling back" in str(x.message)]
+                assert len(falling_back) == 0
 
-        verified = VerifiedOpenAI(guards=[])
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            verified.responses.create(input="test")
-            falling_back = [x for x in w if "Falling back" in str(x.message)]
-            assert len(falling_back) == 0
-
-    @patch("qwed_open_responses.middleware.openai_sdk.openai.OpenAI")
-    def test_fallback_still_verifies_response(self, mock_openai):
+    def test_fallback_still_verifies_response(self):
         """Fallback path still runs verification on the response."""
         pytest.importorskip("openai")
-        from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
+        with patch(
+            "qwed_open_responses.middleware.openai_sdk.openai.OpenAI"
+        ) as mock_openai:
+            from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
-        mock_openai.return_value = self._make_fallback_client()
-
-        verified = VerifiedOpenAI(guards=[])
-        result = verified.responses.create(input="test")
-        assert result._qwed_verification is not None
+            mock_openai.return_value = self._make_fallback_client()
+            verified = VerifiedOpenAI(guards=[])
+            with pytest.warns(UserWarning, match="Falling back to Chat Completions"):
+                result = verified.responses.create(input="test")
+            assert result._qwed_verification is not None
