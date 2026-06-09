@@ -2,6 +2,7 @@
  * QWED Open Responses - Guards
  */
 
+import Ajv, { ValidateFunction } from 'ajv';
 import { GuardResult, ParsedResponse } from './types';
 
 /**
@@ -150,29 +151,33 @@ export class SchemaGuard extends BaseGuard {
     name = 'SchemaGuard';
     description = 'Validates response against JSON Schema';
 
-    private schema: Record<string, any>;
+    private validate: ValidateFunction;
 
     constructor(schema: Record<string, any>) {
         super();
-        this.schema = schema;
+        const ajv = new Ajv({ allErrors: true });
+        this.validate = ajv.compile(schema);
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
         const data = response.output || response;
 
-        // Basic type checking (full JSON Schema validation would need ajv)
-        if (this.schema.type === 'object' && typeof data !== 'object') {
-            return this.failResult('Expected object type');
+        const valid = this.validate(data);
+        if (!valid) {
+            const errors = this.validate.errors || [];
+            const messages = errors.map((e: { instancePath?: string; message?: string }) =>
+                `${e.instancePath || '/'}: ${e.message}`
+            );
+            return this.failResult(
+                `Schema validation failed: ${errors.length} error(s)`,
+                {
+                    errors: messages.slice(0, 10),
+                    totalErrors: errors.length,
+                }
+            );
         }
 
-        if (this.schema.required) {
-            const missing = this.schema.required.filter((field: string) => !(field in data));
-            if (missing.length > 0) {
-                return this.failResult(`Missing required fields: ${missing.join(', ')}`, { missing });
-            }
-        }
-
-        return this.passResult('Schema validation passed');
+        return this.passResult('Schema validation passed', { schemaValid: true });
     }
 }
 
