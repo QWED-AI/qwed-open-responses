@@ -2,7 +2,8 @@
  * QWED Open Responses - Guards
  */
 
-import Ajv, { ValidateFunction } from 'ajv';
+import Ajv, { ValidateFunction, ErrorObject } from 'ajv';
+import addFormats from 'ajv-formats';
 import { GuardResult, ParsedResponse } from './types';
 
 /**
@@ -155,17 +156,30 @@ export class SchemaGuard extends BaseGuard {
 
     constructor(schema: Record<string, any>) {
         super();
-        const ajv = new Ajv({ allErrors: true });
-        this.validate = ajv.compile(schema);
+        try {
+            const ajv = new Ajv({ allErrors: true });
+            addFormats(ajv as any);
+            this.validate = ajv.compile(schema);
+        } catch (error) {
+            throw new Error(
+                `Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}`
+            );
+        }
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
-        const data = response.output || response;
+        const data = 'output' in response ? response.output : response;
 
-        const valid = this.validate(data);
+        let valid: boolean;
+        try {
+            valid = this.validate(data) as boolean;
+        } catch {
+            return this.failResult('Schema validation error during evaluation');
+        }
+
         if (!valid) {
             const errors = this.validate.errors || [];
-            const messages = errors.map((e: { instancePath?: string; message?: string }) =>
+            const messages = errors.map((e: ErrorObject) =>
                 `${e.instancePath || '/'}: ${e.message}`
             );
             return this.failResult(
