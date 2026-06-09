@@ -4,6 +4,7 @@ OpenAI SDK Integration for QWED Open Responses.
 Provides a verified wrapper around OpenAI client.
 """
 
+import warnings
 from typing import Any, Dict, List, Optional
 from ..core import ResponseVerifier, VerificationResult
 from ..guards.base import BaseGuard
@@ -125,7 +126,12 @@ class VerifiedResponses:
         if hasattr(self._parent._client, "responses"):
             response = self._parent._client.responses.create(**kwargs)
         else:
-            # Fallback to chat completions
+            warnings.warn(
+                "OpenAI Responses API not available on this client. "
+                "Falling back to Chat Completions API. "
+                "Use VerifiedOpenAI(...).chat.completions.create() explicitly to avoid this warning.",
+                stacklevel=2,
+            )
             response = self._parent._client.chat.completions.create(**kwargs)
 
         result = self._parent.verify(response)
