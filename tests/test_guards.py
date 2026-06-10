@@ -3,7 +3,6 @@ Tests for all guard classes.
 """
 
 import sys
-import types
 import pytest
 from unittest.mock import patch, MagicMock
 from qwed_open_responses.guards import (
@@ -361,6 +360,17 @@ class TestTaxGuard:
         assert result.passed is False
         assert "Missing required payroll fields" in result.message
 
+    def test_valid_payroll_fields_passes(self):
+        """Complete payroll fields passes (mocked engine)."""
+        guard = TaxGuard()
+        result = guard.check(
+            {
+                "tool_name": "process_payroll",
+                "arguments": {"gross_ytd": 50000, "claimed_tax": 8000},
+            }
+        )
+        assert result.passed is True
+
 
 class TestFinanceGuard:
     """Test FinanceGuard class."""
@@ -369,17 +379,15 @@ class TestFinanceGuard:
     def _mock_qwed_finance(self):
         """Mock all qwed-finance modules so FinanceGuard can be instantiated without it."""
 
-        def _make_mock_module(name: str):
-            module = types.ModuleType(name)
-            module.__path__ = []
-            return module
+        def _make_mock_module():
+            return MagicMock(__path__=[])
 
         mock_finance_verifier = MagicMock()
-        qwed_finance_pkg = _make_mock_module("qwed_finance")
+        qwed_finance_pkg = _make_mock_module()
         qwed_finance_pkg.FinanceVerifier = mock_finance_verifier
         mock_modules = {
             "qwed_finance": qwed_finance_pkg,
-            "qwed_finance.guards": _make_mock_module("qwed_finance.guards"),
+            "qwed_finance.guards": _make_mock_module(),
             "qwed_finance.guards.iso_guard": MagicMock(ISOGuard=MagicMock()),
         }
         with patch.dict(sys.modules, mock_modules):
@@ -395,7 +403,9 @@ class TestFinanceGuard:
     def test_iso_not_available_returns_false(self):
         """ISO payment context without iso_engine returns verified=False."""
         guard = FinanceGuard()
-        result = guard.check({"data": "test"}, context={"context": "payment_instruction"})
+        result = guard.check(
+            {"data": "test"}, context={"context": "payment_instruction"}
+        )
         assert result.passed is False
         assert "ISO verification not available" in result.message
 
@@ -405,6 +415,15 @@ class TestFinanceGuard:
         result = guard.check({"rate": 0.05}, context="any_context")
         assert result.passed is False
         assert "Unrecognized finance context" in result.message
+
+    def test_npv_verification_passes(self):
+        """NPV fields pass verification (mocked engine)."""
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": [100, 200], "npv": 150, "discount_rate": 0.05},
+            context={"context": "npv"},
+        )
+        assert result.passed is True
 
 
 class TestLegalGuard:
@@ -482,7 +501,7 @@ class TestLegalGuard:
         assert "PROHIBITED_CLAUSE" in result.message
 
     def test_missing_standard_clauses_warns(self):
-        """Missing standard clauses produces a warning flag."""
+        """Missing standard clauses produces a warning (not error)."""
         guard = LegalGuard()
         result = guard.check(
             {
@@ -494,4 +513,5 @@ class TestLegalGuard:
             }
         )
         assert result.passed is False
+        assert result.severity == "warning"
         assert "COMPLETENESS_WARNING" in result.message

@@ -12,10 +12,10 @@ class FinanceGuard(BaseGuard):
             from qwed_finance import FinanceVerifier
 
             self.math_engine = FinanceVerifier()
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
                 "qwed-finance is required. Install with: pip install qwed-open-responses[finance]"
-            )
+            ) from err
 
     def check(
         self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None
@@ -26,7 +26,7 @@ class FinanceGuard(BaseGuard):
 
     def _resolve_context(
         self,
-        context: Optional[Dict[str, Any]],
+        context: Optional[Union[str, Dict[str, Any]]],
         content: Dict[str, Any],
     ) -> str:
         if isinstance(context, str):
@@ -44,6 +44,12 @@ class FinanceGuard(BaseGuard):
                 rate=content.get("discount_rate", 0.0),
                 llm_output=content["npv"],
             )
+            if isinstance(result, dict):
+                if not result.get("verified", False):
+                    return self.fail_result(
+                        result.get("message", "NPV verification failed")
+                    )
+                return self.pass_result()
             if not result.verified:
                 return self.fail_result(result.message)
             return self.pass_result()

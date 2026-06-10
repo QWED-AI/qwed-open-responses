@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 from .base import BaseGuard, GuardResult
 
 
@@ -12,17 +12,21 @@ class TaxGuard(BaseGuard):
             from qwed_tax.verifier import TaxVerifier
 
             self.engine = TaxVerifier()
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
                 "qwed-tax is required. Install with: pip install qwed-open-responses[tax]"
-            )
+            ) from err
 
-    def check(self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> GuardResult:
+    def check(
+        self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None
+    ) -> GuardResult:
         tool_name = response.get("tool_name", "") if isinstance(response, dict) else ""
         arguments = response.get("arguments", {}) if isinstance(response, dict) else {}
         return self.verify_tool_call(tool_name, arguments)
 
-    def verify_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> GuardResult:
+    def verify_tool_call(
+        self, tool_name: str, arguments: Dict[str, Any]
+    ) -> GuardResult:
         if tool_name == "process_payroll":
             return self._verify_payroll(arguments)
 

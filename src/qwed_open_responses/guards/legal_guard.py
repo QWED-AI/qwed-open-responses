@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from .base import BaseGuard, GuardResult
 
 
@@ -16,18 +16,21 @@ class LegalGuard(BaseGuard):
             self.jurisdiction_engine = JurisdictionGuard()
             self.clause_engine = ClauseGuard()
             self.deadline_engine = DeadlineGuard()
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
                 "qwed-legal is required. Install with: pip install qwed-open-responses[legal]"
-            )
+            ) from err
 
     def check(
         self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None
     ) -> GuardResult:
-        return self.verify_contract_review(response)
+        return self.verify_contract_review(response, context=context)
 
-    def verify_contract_review(self, contract_data: Dict[str, Any]) -> GuardResult:
-        flags = []
+    def verify_contract_review(
+        self, contract_data: Dict[str, Any], context: Optional[Dict[str, Any]] = None
+    ) -> GuardResult:
+        hard_flags = []
+        warnings_list = []
 
         if "governing_law" in contract_data and "forum" in contract_data:
             j_check = self.jurisdiction_engine.verify_choice_of_law(
@@ -35,7 +38,7 @@ class LegalGuard(BaseGuard):
                 forum_location=contract_data["forum"],
             )
             if not j_check.get("verified", True):
-                flags.append(j_check.get("risk", "Jurisdiction Mismatch"))
+                hard_flags.append(j_check.get("risk", "Jurisdiction Mismatch"))
 
         jurisdiction = contract_data.get("jurisdiction", "").upper()
         clauses = contract_data.get("clauses", [])
@@ -45,7 +48,7 @@ class LegalGuard(BaseGuard):
             if c_type == "non_compete" and (
                 "CA" in jurisdiction or "CALIFORNIA" in jurisdiction
             ):
-                flags.append(
+                hard_flags.append(
                     "PROHIBITED_CLAUSE: Non-compete clauses are unenforceable in California."
                 )
 
@@ -53,7 +56,7 @@ class LegalGuard(BaseGuard):
         present_types = [c.get("type") for c in clauses]
         missing = [req for req in required_clauses if req not in present_types]
         if missing:
-            flags.append(
+            warnings_list.append(
                 f"COMPLETENESS_WARNING: Missing standard clauses: {missing}"
             )
 
@@ -61,11 +64,19 @@ class LegalGuard(BaseGuard):
             contract_data.get("type") == "NDA"
             and contract_data.get("term_years", 0) > 5
         ):
-            flags.append(
+            hard_flags.append(
                 f"UNREASONABLE_TERM: {contract_data['term_years']} year term for NDA "
                 "exceeds standard commercial practice (typically 2-5 years)."
             )
 
-        if flags:
-            return self.fail_result("; ".join(flags), details={"flags": flags})
+        if hard_flags:
+            return self.fail_result(
+                "; ".join(hard_flags), details={"flags": hard_flags}
+            )
+
+        if warnings_list:
+            return self.warn_result(
+                "; ".join(warnings_list), details={"flags": warnings_list}
+            )
+
         return self.pass_result()
