@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 from .base import BaseGuard, GuardResult
 
 
@@ -22,15 +22,17 @@ class LegalGuard(BaseGuard):
             ) from err
 
     def check(
-        self, response: Dict[str, Any], context: dict | None = None
+        self,
+        response: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
     ) -> GuardResult:
         if not isinstance(response, dict):
             return self.fail_result(
                 f"Invalid response type: expected dict, got {type(response).__name__}"
             )
-        return self.verify_contract_review(response, _context=context)
+        return self.verify_contract_review(response)
 
-    def _check_jurisdiction(self, contract_data: Dict[str, Any]) -> str | None:
+    def _check_jurisdiction(self, contract_data: Dict[str, Any]) -> Optional[str]:
         if "governing_law" not in contract_data or "forum" not in contract_data:
             return None
         j_check = self.jurisdiction_engine.verify_choice_of_law(
@@ -49,8 +51,8 @@ class LegalGuard(BaseGuard):
         return getattr(j_check, "risk", "Jurisdiction Mismatch")
 
     def _check_prohibited_clauses(
-        self, clauses: list[Dict[str, Any]], jurisdiction: str
-    ) -> list[str]:
+        self, clauses: List[Dict[str, Any]], jurisdiction: str
+    ) -> List[str]:
         flags = []
         for clause in clauses:
             c_type = clause.get("type", "")
@@ -62,7 +64,7 @@ class LegalGuard(BaseGuard):
                 )
         return flags
 
-    def _check_missing_clauses(self, clauses: list[Dict[str, Any]]) -> list[str]:
+    def _check_missing_clauses(self, clauses: List[Dict[str, Any]]) -> List[str]:
         required_clauses = ["termination", "governing_law", "force_majeure"]
         present_types = [c.get("type") for c in clauses]
         missing = [req for req in required_clauses if req not in present_types]
@@ -70,7 +72,7 @@ class LegalGuard(BaseGuard):
             return [f"COMPLETENESS_WARNING: Missing standard clauses: {missing}"]
         return []
 
-    def _check_nda_terms(self, contract_data: Dict[str, Any]) -> str | None:
+    def _check_nda_terms(self, contract_data: Dict[str, Any]) -> Optional[str]:
         if (
             contract_data.get("type") == "NDA"
             and contract_data.get("term_years", 0) > 5
@@ -82,7 +84,9 @@ class LegalGuard(BaseGuard):
         return None
 
     def verify_contract_review(
-        self, contract_data: Dict[str, Any], _context: dict | None = None
+        self,
+        contract_data: Dict[str, Any],
+        _context: Optional[Dict[str, Any]] = None,
     ) -> GuardResult:
         hard_flags = []
         warnings_list = []
@@ -102,7 +106,7 @@ class LegalGuard(BaseGuard):
             hard_flags.append(nda_flag)
 
         if hard_flags:
-            details = {"flags": hard_flags}
+            details: Dict[str, Any] = {"flags": hard_flags}
             if warnings_list:
                 details["warnings"] = warnings_list
             return self.fail_result("; ".join(hard_flags), details=details)

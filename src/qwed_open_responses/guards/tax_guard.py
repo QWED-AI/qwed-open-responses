@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from .base import BaseGuard, GuardResult
 
 
@@ -18,7 +18,7 @@ class TaxGuard(BaseGuard):
             ) from err
 
     def check(
-        self, response: Dict[str, Any], context: dict | None = None
+        self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None
     ) -> GuardResult:
         if not isinstance(response, dict):
             return self.fail_result(
