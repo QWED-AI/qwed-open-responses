@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from .base import BaseGuard, GuardResult
 
 
@@ -18,10 +18,14 @@ class TaxGuard(BaseGuard):
             ) from err
 
     def check(
-        self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None
+        self, response: Dict[str, Any], context: dict | None = None
     ) -> GuardResult:
-        tool_name = response.get("tool_name", "") if isinstance(response, dict) else ""
-        arguments = response.get("arguments", {}) if isinstance(response, dict) else {}
+        if not isinstance(response, dict):
+            return self.fail_result(
+                f"Invalid response type: expected dict, got {type(response).__name__}"
+            )
+        tool_name = response.get("tool_name", "")
+        arguments = response.get("arguments", {})
         return self.verify_tool_call(tool_name, arguments)
 
     def verify_tool_call(

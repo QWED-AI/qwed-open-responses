@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict
 from .base import BaseGuard, GuardResult
 
 
@@ -18,15 +18,18 @@ class FinanceGuard(BaseGuard):
             ) from err
 
     def check(
-        self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None
+        self, response: Dict[str, Any], context: dict | None = None
     ) -> GuardResult:
-        content = response if isinstance(response, dict) else {}
-        ctx = self._resolve_context(context, content)
-        return self.verify_output(ctx, content)
+        if not isinstance(response, dict):
+            return self.fail_result(
+                f"Invalid response type: expected dict, got {type(response).__name__}"
+            )
+        ctx = self._resolve_context(context, response)
+        return self.verify_output(ctx, response)
 
     def _resolve_context(
         self,
-        context: Optional[Union[str, Dict[str, Any]]],
+        context: str | dict[str, Any] | None,
         content: Dict[str, Any],
     ) -> str:
         if isinstance(context, str):
@@ -51,14 +54,28 @@ class FinanceGuard(BaseGuard):
                 message = result.get("message", message)
             elif hasattr(result, "verified"):
                 verified = result.verified
-                message = getattr(result, "message", message)
+                if hasattr(result, "message"):
+                    message = result.message
+                else:
+                    diff = getattr(result, "difference", None)
+                    computed = getattr(result, "computed_value", None)
+                    llm_val = getattr(result, "llm_value", None)
+                    parts = []
+                    if diff is not None:
+                        parts.append(f"difference={diff}")
+                    if computed is not None:
+                        parts.append(f"computed={computed}")
+                    if llm_val is not None:
+                        parts.append(f"llm_val={llm_val}")
+                    if parts:
+                        message = f"NPV verification failed ({'; '.join(parts)})"
             if not verified:
                 return self.fail_result(message)
             return self.pass_result()
 
         if context == "payment_instruction":
-            return self.fail_result(
-                "ISO verification not available (install with: pip install qwed-open-responses[finance])"
+            raise NotImplementedError(
+                "ISO verification for payment_instruction not implemented"
             )
 
         return self.fail_result(f"Unrecognized finance context: {context}")

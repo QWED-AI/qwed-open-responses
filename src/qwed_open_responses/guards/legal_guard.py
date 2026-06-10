@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from .base import BaseGuard, GuardResult
 
 
@@ -22,56 +22,84 @@ class LegalGuard(BaseGuard):
             ) from err
 
     def check(
-        self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None
+        self, response: Dict[str, Any], context: dict | None = None
     ) -> GuardResult:
-        return self.verify_contract_review(response, context=context)
-
-    def verify_contract_review(
-        self, contract_data: Dict[str, Any], context: Optional[Dict[str, Any]] = None
-    ) -> GuardResult:
-        hard_flags = []
-        warnings_list = []
-
-        if "governing_law" in contract_data and "forum" in contract_data:
-            j_check = self.jurisdiction_engine.verify_choice_of_law(
-                governing_law=contract_data["governing_law"],
-                forum_location=contract_data["forum"],
+        if not isinstance(response, dict):
+            return self.fail_result(
+                f"Invalid response type: expected dict, got {type(response).__name__}"
             )
-            if not (isinstance(j_check, dict) and j_check.get("verified", True)):
-                hard_flags.append(
-                    j_check.get("risk", "Jurisdiction Mismatch")
-                    if isinstance(j_check, dict)
-                    else "Jurisdiction Mismatch"
-                )
+        return self.verify_contract_review(response, _context=context)
 
-        jurisdiction = contract_data.get("jurisdiction", "").upper()
-        clauses = contract_data.get("clauses", [])
+    def _check_jurisdiction(self, contract_data: Dict[str, Any]) -> str | None:
+        if "governing_law" not in contract_data or "forum" not in contract_data:
+            return None
+        j_check = self.jurisdiction_engine.verify_choice_of_law(
+            governing_law=contract_data["governing_law"],
+            forum_location=contract_data["forum"],
+        )
+        verified = (
+            j_check.get("verified", True)
+            if isinstance(j_check, dict)
+            else getattr(j_check, "verified", True)
+        )
+        if verified:
+            return None
+        if isinstance(j_check, dict):
+            return j_check.get("risk", "Jurisdiction Mismatch")
+        return getattr(j_check, "risk", "Jurisdiction Mismatch")
 
+    def _check_prohibited_clauses(
+        self, clauses: list[Dict[str, Any]], jurisdiction: str
+    ) -> list[str]:
+        flags = []
         for clause in clauses:
             c_type = clause.get("type", "")
             if c_type == "non_compete" and (
                 "CA" in jurisdiction or "CALIFORNIA" in jurisdiction
             ):
-                hard_flags.append(
+                flags.append(
                     "PROHIBITED_CLAUSE: Non-compete clauses are unenforceable in California."
                 )
+        return flags
 
+    def _check_missing_clauses(self, clauses: list[Dict[str, Any]]) -> list[str]:
         required_clauses = ["termination", "governing_law", "force_majeure"]
         present_types = [c.get("type") for c in clauses]
         missing = [req for req in required_clauses if req not in present_types]
         if missing:
-            warnings_list.append(
-                f"COMPLETENESS_WARNING: Missing standard clauses: {missing}"
-            )
+            return [f"COMPLETENESS_WARNING: Missing standard clauses: {missing}"]
+        return []
 
+    def _check_nda_terms(self, contract_data: Dict[str, Any]) -> str | None:
         if (
             contract_data.get("type") == "NDA"
             and contract_data.get("term_years", 0) > 5
         ):
-            hard_flags.append(
+            return (
                 f"UNREASONABLE_TERM: {contract_data['term_years']} year term for NDA "
                 "exceeds standard commercial practice (typically 2-5 years)."
             )
+        return None
+
+    def verify_contract_review(
+        self, contract_data: Dict[str, Any], _context: dict | None = None
+    ) -> GuardResult:
+        hard_flags = []
+        warnings_list = []
+
+        j_flag = self._check_jurisdiction(contract_data)
+        if j_flag:
+            hard_flags.append(j_flag)
+
+        jurisdiction = contract_data.get("jurisdiction", "").upper()
+        clauses = contract_data.get("clauses", [])
+
+        hard_flags.extend(self._check_prohibited_clauses(clauses, jurisdiction))
+        warnings_list.extend(self._check_missing_clauses(clauses))
+
+        nda_flag = self._check_nda_terms(contract_data)
+        if nda_flag:
+            hard_flags.append(nda_flag)
 
         if hard_flags:
             details = {"flags": hard_flags}

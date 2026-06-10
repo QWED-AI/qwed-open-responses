@@ -445,7 +445,7 @@ class TestTaxGuard:
         guard = TaxGuard()
         result = guard.check("not a dict")
         assert result.passed is False
-        assert "No tax guard for tool" in result.message
+        assert "Invalid response type" in result.message
 
 
 class TestFinanceGuard:
@@ -469,6 +469,13 @@ class TestFinanceGuard:
         with patch.dict(sys.modules, mock_modules):
             yield
 
+    def test_non_dict_response_returns_false(self):
+        """Non-dict response returns verified=False."""
+        guard = FinanceGuard()
+        result = guard.check("not a dict")
+        assert result.passed is False
+        assert "Invalid response type" in result.message
+
     def test_unrecognized_context_returns_false(self):
         """Unrecognized context returns verified=False."""
         guard = FinanceGuard()
@@ -476,14 +483,11 @@ class TestFinanceGuard:
         assert result.passed is False
         assert "Unrecognized finance context" in result.message
 
-    def test_iso_not_available_returns_false(self):
-        """ISO payment context without iso_engine returns verified=False."""
+    def test_iso_not_available_raises(self):
+        """ISO payment context raises NotImplementedError."""
         guard = FinanceGuard()
-        result = guard.check(
-            {"data": "test"}, context={"context": "payment_instruction"}
-        )
-        assert result.passed is False
-        assert "ISO verification not available" in result.message
+        with pytest.raises(NotImplementedError, match="not implemented"):
+            guard.check({"data": "test"}, context={"context": "payment_instruction"})
 
     def test_unrecognized_context_without_npv_or_payment_returns_false(self):
         """Context without cashflows/npv or payment_instruction returns verified=False."""
@@ -572,6 +576,13 @@ class TestLegalGuard:
         }
         with patch.dict(sys.modules, mock_modules):
             yield
+
+    def test_non_dict_response_returns_false(self):
+        """Non-dict response returns verified=False."""
+        guard = LegalGuard()
+        result = guard.check("not a dict")
+        assert result.passed is False
+        assert "Invalid response type" in result.message
 
     def test_contract_without_issues_passes(self):
         """Clean contract passes verification."""
