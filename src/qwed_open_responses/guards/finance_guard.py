@@ -1,44 +1,56 @@
-from typing import Dict, Any
+from typing import Any, Dict, Optional, Union
+from .base import BaseGuard, GuardResult
 
 
-class FinanceGuard:
+class FinanceGuard(BaseGuard):
+    name = "FinanceGuard"
+    description = "Verifies structured financial outputs against deterministic rules"
+
     def __init__(self):
+        super().__init__()
         try:
             from qwed_finance import FinanceVerifier
 
-            # Assuming ISOGuard is exposed or importable directly as per plan
-            # from qwed_finance.guards.iso_guard import ISOGuard
-            # Note: qwed-finance structure might vary, adapting to likely exports
             self.math_engine = FinanceVerifier()
-            # self.iso_engine = ISOGuard()
         except ImportError:
             raise ImportError(
                 "qwed-finance is required. Install with: pip install qwed-open-responses[finance]"
             )
 
-    def verify_output(self, context: str, content: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Verifies structured financial outputs (e.g., Amortization tables, Payment JSON).
-        """
+    def check(
+        self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None
+    ) -> GuardResult:
+        content = response if isinstance(response, dict) else {}
+        ctx = self._resolve_context(context, content)
+        return self.verify_output(ctx, content)
 
-        # 1. Check Investment Math (NPV/IRR)
+    def _resolve_context(
+        self,
+        context: Optional[Dict[str, Any]],
+        content: Dict[str, Any],
+    ) -> str:
+        if isinstance(context, str):
+            return context
+        if isinstance(context, dict):
+            ctx = context.get("context", "")
+            if ctx:
+                return ctx
+        return content.get("context", content.get("type", ""))
+
+    def verify_output(self, context: str, content: Dict[str, Any]) -> GuardResult:
         if "cashflows" in content and "npv" in content:
-            # Adapt to actual FinanceVerifier API
-            # Assuming verify_npv signature matches plan
-            return self.math_engine.verify_npv(
+            result = self.math_engine.verify_npv(
                 cashflows=content["cashflows"],
                 rate=content.get("discount_rate", 0.0),
                 llm_output=content["npv"],
             )
+            if not result.verified:
+                return self.fail_result(result.message)
+            return self.pass_result()
 
-        # 2. Check ISO 20022 Compliance (Banking Interop)
         if context == "payment_instruction":
-            # For now, stub or use generic verifier if specific guard not ready
-            if hasattr(self, "iso_engine"):
-                return self.iso_engine.verify_payment_message(content)
-            return {
-                "verified": False,
-                "error": "ISO verification not available (install with: pip install qwed-open-responses[finance])",
-            }
+            return self.fail_result(
+                "ISO verification not available (install with: pip install qwed-open-responses[finance])"
+            )
 
-        return {"verified": False, "error": f"Unrecognized finance context: {context}"}
+        return self.fail_result(f"Unrecognized finance context: {context}")

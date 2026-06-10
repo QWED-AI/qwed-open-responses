@@ -13,6 +13,9 @@ from qwed_open_responses.guards import (
     StateGuard,
     ArgumentGuard,
     SafetyGuard,
+    TaxGuard,
+    FinanceGuard,
+    LegalGuard,
 )
 
 
@@ -337,30 +340,26 @@ class TestTaxGuard:
 
     def test_unknown_tool_returns_false(self):
         """Unknown tool returns verified=False."""
-        from qwed_open_responses.guards.tax_guard import TaxGuard
-
         guard = TaxGuard()
-        result = guard.verify_tool_call("unknown_tool", {})
-        assert result["verified"] is False
-        assert "No tax guard for tool" in result["error"]
+        result = guard.check({"tool_name": "unknown_tool", "arguments": {}})
+        assert result.passed is False
+        assert "No tax guard for tool" in result.message
 
     def test_missing_payroll_fields_returns_false(self):
         """Missing required payroll fields returns verified=False."""
-        from qwed_open_responses.guards.tax_guard import TaxGuard
-
         guard = TaxGuard()
-        result = guard.verify_tool_call("process_payroll", {})
-        assert result["verified"] is False
-        assert "Missing required payroll fields" in result["error"]
+        result = guard.check({"tool_name": "process_payroll", "arguments": {}})
+        assert result.passed is False
+        assert "Missing required payroll fields" in result.message
 
     def test_partial_payroll_fields_returns_false(self):
         """Only some payroll fields provided returns verified=False."""
-        from qwed_open_responses.guards.tax_guard import TaxGuard
-
         guard = TaxGuard()
-        result = guard.verify_tool_call("process_payroll", {"gross_ytd": 50000})
-        assert result["verified"] is False
-        assert "Missing required payroll fields" in result["error"]
+        result = guard.check(
+            {"tool_name": "process_payroll", "arguments": {"gross_ytd": 50000}}
+        )
+        assert result.passed is False
+        assert "Missing required payroll fields" in result.message
 
 
 class TestFinanceGuard:
@@ -388,27 +387,111 @@ class TestFinanceGuard:
 
     def test_unrecognized_context_returns_false(self):
         """Unrecognized context returns verified=False."""
-        from qwed_open_responses.guards.finance_guard import FinanceGuard
-
         guard = FinanceGuard()
-        result = guard.verify_output("unknown_context", {"data": "test"})
-        assert result["verified"] is False
-        assert "Unrecognized finance context" in result["error"]
+        result = guard.check({"data": "test"}, context={"context": "unknown_context"})
+        assert result.passed is False
+        assert "Unrecognized finance context" in result.message
 
     def test_iso_not_available_returns_false(self):
         """ISO payment context without iso_engine returns verified=False."""
-        from qwed_open_responses.guards.finance_guard import FinanceGuard
-
         guard = FinanceGuard()
-        result = guard.verify_output("payment_instruction", {"data": "test"})
-        assert result["verified"] is False
-        assert "ISO verification not available" in result["error"]
+        result = guard.check({"data": "test"}, context={"context": "payment_instruction"})
+        assert result.passed is False
+        assert "ISO verification not available" in result.message
 
     def test_unrecognized_context_without_npv_or_payment_returns_false(self):
         """Context without cashflows/npv or payment_instruction returns verified=False."""
-        from qwed_open_responses.guards.finance_guard import FinanceGuard
-
         guard = FinanceGuard()
-        result = guard.verify_output("any_context", {"rate": 0.05})
-        assert result["verified"] is False
-        assert "Unrecognized finance context" in result["error"]
+        result = guard.check({"rate": 0.05}, context="any_context")
+        assert result.passed is False
+        assert "Unrecognized finance context" in result.message
+
+
+class TestLegalGuard:
+    """Test LegalGuard class."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_qwed_legal(self):
+        """Mock all qwed-legal modules so LegalGuard can be instantiated without it."""
+
+        def _make_mock_module():
+            return MagicMock(__path__=[])
+
+        mock_modules = {
+            "qwed_legal": _make_mock_module(),
+            "qwed_legal.guards": _make_mock_module(),
+            "qwed_legal.guards.jurisdiction_guard": MagicMock(
+                JurisdictionGuard=MagicMock()
+            ),
+            "qwed_legal.guards.clause_guard": MagicMock(ClauseGuard=MagicMock()),
+            "qwed_legal.guards.deadline_guard": MagicMock(DeadlineGuard=MagicMock()),
+        }
+        with patch.dict(sys.modules, mock_modules):
+            yield
+
+    def test_contract_without_issues_passes(self):
+        """Clean contract passes verification."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is True
+
+    def test_nda_with_long_term_fails(self):
+        """NDA with term over 5 years fails."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "NDA",
+                "jurisdiction": "NY",
+                "term_years": 10,
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "UNREASONABLE_TERM" in result.message
+
+    def test_non_compete_in_california_fails(self):
+        """Non-compete clause in California fails."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "NDA",
+                "jurisdiction": "CA",
+                "clauses": [
+                    {"type": "non_compete", "text": "No competition for 2 years"},
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "PROHIBITED_CLAUSE" in result.message
+
+    def test_missing_standard_clauses_warns(self):
+        """Missing standard clauses produces a warning flag."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "NDA",
+                "jurisdiction": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "COMPLETENESS_WARNING" in result.message

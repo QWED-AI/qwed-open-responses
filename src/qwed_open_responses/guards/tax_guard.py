@@ -1,10 +1,14 @@
 from typing import Dict, Any, Optional
+from .base import BaseGuard, GuardResult
 
 
-class TaxGuard:
+class TaxGuard(BaseGuard):
+    name = "TaxGuard"
+    description = "Verifies LLM tool calls against deterministic tax laws"
+
     def __init__(self):
+        super().__init__()
         try:
-            # Lazy import to enforce optional dependency
             from qwed_tax.verifier import TaxVerifier
 
             self.engine = TaxVerifier()
@@ -13,24 +17,16 @@ class TaxGuard:
                 "qwed-tax is required. Install with: pip install qwed-open-responses[tax]"
             )
 
-    def verify_tool_call(
-        self, tool_name: str, arguments: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Intercepts LLM tool calls (e.g., 'process_payroll', 'send_remittance')
-        and verifies them against deterministic tax laws.
-        """
+    def check(self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> GuardResult:
+        tool_name = response.get("tool_name", "") if isinstance(response, dict) else ""
+        arguments = response.get("arguments", {}) if isinstance(response, dict) else {}
+        return self.verify_tool_call(tool_name, arguments)
 
-        # 1. Payroll & Withholding (FICA/IRS)
+    def verify_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> GuardResult:
         if tool_name == "process_payroll":
-            # Assuming facade methods or direct guard access
-            # For now, we stub the logic map based on qwed-tax capabilities
-            # Ideally qwed-tax exposes a clean verification API for these arguments
             return self._verify_payroll(arguments)
 
-        # 2. International Remittance (LRS Limits - The "Gambling" Trap)
         elif tool_name == "send_international_wire":
-            # Use RemittanceGuard from qwed-tax
             from qwed_tax.jurisdictions.india.remittance_guard import RemittanceGuard
 
             guard = RemittanceGuard()
@@ -39,12 +35,10 @@ class TaxGuard:
                 purpose=arguments.get("purpose", ""),
                 financial_year_usage=arguments.get("ytd_usage", 0),
             )
-            return {
-                "verified": result.verified,
-                "error": result.message if not result.verified else None,
-            }
+            if not result.verified:
+                return self.fail_result(result.message)
+            return self.pass_result()
 
-        # 3. Crypto Tax (Loss Set-Off Rules)
         elif tool_name == "calculate_crypto_tax":
             from qwed_tax.jurisdictions.india.crypto_guard import CryptoTaxGuard
 
@@ -52,27 +46,22 @@ class TaxGuard:
             result = guard.verify_set_off(
                 losses=arguments.get("losses", {}), gains=arguments.get("gains", {})
             )
-            return {
-                "verified": result.verified,
-                "error": result.message if not result.verified else None,
-            }
+            if not result.verified:
+                return self.fail_result(result.message)
+            return self.pass_result()
 
-        return {"verified": False, "error": f"No tax guard for tool: {tool_name}"}
+        return self.fail_result(f"No tax guard for tool: {tool_name}")
 
-    def _verify_payroll(self, arguments):
+    def _verify_payroll(self, arguments: Dict[str, Any]) -> GuardResult:
         if not isinstance(arguments, dict):
-            return {
-                "verified": False,
-                "error": "Invalid payroll arguments: expected object",
-            }
+            return self.fail_result("Invalid payroll arguments: expected object")
 
         required = ["gross_ytd", "claimed_tax"]
         missing = [f for f in required if f not in arguments]
         if missing:
-            return {
-                "verified": False,
-                "error": f"Missing required payroll fields: {', '.join(missing)}",
-            }
+            return self.fail_result(
+                f"Missing required payroll fields: {', '.join(missing)}"
+            )
 
         from qwed_tax.jurisdictions.us.payroll_guard import PayrollGuard
 
@@ -82,7 +71,6 @@ class TaxGuard:
             current=arguments.get("current", 0),
             claimed_tax=arguments["claimed_tax"],
         )
-        return {
-            "verified": result.verified,
-            "error": result.message if not result.verified else None,
-        }
+        if not result.verified:
+            return self.fail_result(result.message)
+        return self.pass_result()
