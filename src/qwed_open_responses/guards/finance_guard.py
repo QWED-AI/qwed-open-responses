@@ -44,14 +44,16 @@ class FinanceGuard(BaseGuard):
                 rate=content.get("discount_rate", 0.0),
                 llm_output=content["npv"],
             )
+            verified = False
+            message = "NPV verification failed"
             if isinstance(result, dict):
-                if not result.get("verified", False):
-                    return self.fail_result(
-                        result.get("message", "NPV verification failed")
-                    )
-                return self.pass_result()
-            if not result.verified:
-                return self.fail_result(result.message)
+                verified = result.get("verified", False)
+                message = result.get("message", message)
+            elif hasattr(result, "verified"):
+                verified = result.verified
+                message = getattr(result, "message", message)
+            if not verified:
+                return self.fail_result(message)
             return self.pass_result()
 
         if context == "payment_instruction":

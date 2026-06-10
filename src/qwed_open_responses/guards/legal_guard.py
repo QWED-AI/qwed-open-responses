@@ -37,8 +37,12 @@ class LegalGuard(BaseGuard):
                 governing_law=contract_data["governing_law"],
                 forum_location=contract_data["forum"],
             )
-            if not j_check.get("verified", True):
-                hard_flags.append(j_check.get("risk", "Jurisdiction Mismatch"))
+            if not (isinstance(j_check, dict) and j_check.get("verified", True)):
+                hard_flags.append(
+                    j_check.get("risk", "Jurisdiction Mismatch")
+                    if isinstance(j_check, dict)
+                    else "Jurisdiction Mismatch"
+                )
 
         jurisdiction = contract_data.get("jurisdiction", "").upper()
         clauses = contract_data.get("clauses", [])
@@ -70,9 +74,10 @@ class LegalGuard(BaseGuard):
             )
 
         if hard_flags:
-            return self.fail_result(
-                "; ".join(hard_flags), details={"flags": hard_flags}
-            )
+            details = {"flags": hard_flags}
+            if warnings_list:
+                details["warnings"] = warnings_list
+            return self.fail_result("; ".join(hard_flags), details=details)
 
         if warnings_list:
             return self.warn_result(

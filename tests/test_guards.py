@@ -371,6 +371,82 @@ class TestTaxGuard:
         )
         assert result.passed is True
 
+    def test_international_wire_passes(self):
+        """International wire transfer passes (mocked engine)."""
+        guard = TaxGuard()
+        result = guard.check(
+            {
+                "tool_name": "send_international_wire",
+                "arguments": {
+                    "amount_usd": 5000,
+                    "purpose": "services",
+                    "ytd_usage": 1000,
+                },
+            }
+        )
+        assert result.passed is True
+
+    def test_international_wire_fails(self):
+        """International wire transfer fails when engine rejects it."""
+        import sys as _sys
+
+        remittance_mock = _sys.modules[
+            "qwed_tax.jurisdictions.india.remittance_guard"
+        ].RemittanceGuard
+        remittance_mock.return_value.verify_lrs_limit.return_value = MagicMock(
+            verified=False, message="LRS limit exceeded"
+        )
+        guard = TaxGuard()
+        result = guard.check(
+            {
+                "tool_name": "send_international_wire",
+                "arguments": {"amount_usd": 250000, "purpose": "investment"},
+            }
+        )
+        assert result.passed is False
+        assert "LRS limit exceeded" in result.message
+
+    def test_crypto_tax_passes(self):
+        """Crypto tax verification passes (mocked engine)."""
+        guard = TaxGuard()
+        result = guard.check(
+            {
+                "tool_name": "calculate_crypto_tax",
+                "arguments": {
+                    "losses": {"btc": 1000},
+                    "gains": {"btc": 2000},
+                },
+            }
+        )
+        assert result.passed is True
+
+    def test_crypto_tax_fails(self):
+        """Crypto tax verification fails when engine rejects it."""
+        import sys as _sys
+
+        crypto_mock = _sys.modules[
+            "qwed_tax.jurisdictions.india.crypto_guard"
+        ].CryptoTaxGuard
+        crypto_mock.return_value.verify_set_off.return_value = MagicMock(
+            verified=False, message="Set-off limit breached"
+        )
+        guard = TaxGuard()
+        result = guard.check(
+            {
+                "tool_name": "calculate_crypto_tax",
+                "arguments": {"losses": {"btc": 50000}, "gains": {"btc": 0}},
+            }
+        )
+        assert result.passed is False
+        assert "Set-off limit breached" in result.message
+
+    def test_non_dict_response_returns_false(self):
+        """Non-dict response returns verified=False."""
+        guard = TaxGuard()
+        result = guard.check("not a dict")
+        assert result.passed is False
+        assert "No tax guard for tool" in result.message
+
 
 class TestFinanceGuard:
     """Test FinanceGuard class."""
@@ -418,6 +494,55 @@ class TestFinanceGuard:
 
     def test_npv_verification_passes(self):
         """NPV fields pass verification (mocked engine)."""
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": [100, 200], "npv": 150, "discount_rate": 0.05},
+            context={"context": "npv"},
+        )
+        assert result.passed is True
+
+    def test_npv_verification_fails(self):
+        """NPV verification fails when engine rejects it."""
+        import sys as _sys
+
+        verifier_mock = _sys.modules["qwed_finance"].FinanceVerifier
+        verifier_mock.return_value.verify_npv.return_value = MagicMock(
+            verified=False, message="NPV mismatch"
+        )
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": [100], "npv": 999, "discount_rate": 0.05},
+            context={"context": "npv"},
+        )
+        assert result.passed is False
+        assert "NPV mismatch" in result.message
+
+    def test_npv_verification_fails_with_dict_result(self):
+        """NPV verification fails when engine returns a dict."""
+        import sys as _sys
+
+        verifier_mock = _sys.modules["qwed_finance"].FinanceVerifier
+        verifier_mock.return_value.verify_npv.return_value = {
+            "verified": False,
+            "message": "NPV calculation error",
+        }
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": [100], "npv": 999, "discount_rate": 0.05},
+            context={"context": "npv"},
+        )
+        assert result.passed is False
+        assert "NPV calculation error" in result.message
+
+    def test_npv_verification_passes_with_dict_result(self):
+        """NPV verification passes when engine returns a dict."""
+        import sys as _sys
+
+        verifier_mock = _sys.modules["qwed_finance"].FinanceVerifier
+        verifier_mock.return_value.verify_npv.return_value = {
+            "verified": True,
+            "message": "OK",
+        }
         guard = FinanceGuard()
         result = guard.check(
             {"cashflows": [100, 200], "npv": 150, "discount_rate": 0.05},
@@ -515,3 +640,70 @@ class TestLegalGuard:
         assert result.passed is False
         assert result.severity == "warning"
         assert "COMPLETENESS_WARNING" in result.message
+
+    def test_governing_law_mismatch_fails(self):
+        """Governing law mismatch detected."""
+        import sys as _sys
+
+        j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+        j_mock.return_value.verify_choice_of_law.return_value = {
+            "verified": False,
+            "risk": "Governing law does not match forum",
+        }
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "governing_law": "California",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "Governing law does not match forum" in result.message
+
+    def test_governing_law_matches_passes(self):
+        """Governing law matching passes."""
+        import sys as _sys
+
+        j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+        j_mock.return_value.verify_choice_of_law.return_value = {"verified": True}
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "governing_law": "NY",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is True
+
+    def test_hard_flags_include_warnings_in_details(self):
+        """When hard flags fire, warnings are included in details."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "NDA",
+                "jurisdiction": "CA",
+                "term_years": 10,
+                "clauses": [
+                    {"type": "non_compete", "text": "No competition"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "UNREASONABLE_TERM" in result.message
+        assert "PROHIBITED_CLAUSE" in result.message
+        assert "warnings" in result.details
+        assert "COMPLETENESS_WARNING" in " ".join(result.details["warnings"])
