@@ -208,10 +208,10 @@ class LegalGuard(BaseGuard):
             if p
         ]
         if not parties:
-            return (
-                "Jurisdiction check skipped (missing party country information)",
-                warnings,
+            warnings.append(
+                "Jurisdiction check skipped (missing party country information)"
             )
+            return None, warnings
         try:
             j_check = self.jurisdiction_engine.verify_choice_of_law(
                 parties_countries=parties,
