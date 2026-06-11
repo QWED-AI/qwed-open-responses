@@ -123,13 +123,42 @@ _US_STATE_NAMES = frozenset(
 JURISDICTION_MISMATCH = "Jurisdiction Mismatch"
 
 
+_US_STATE_ALSO_ISO_COUNTRY = frozenset(
+    {
+        "AL",  # Albania
+        "AR",  # Argentina
+        "AZ",  # Azerbaijan
+        "CO",  # Colombia
+        "GA",  # Gabon
+        "ID",  # Indonesia
+        "IN",  # India
+        "LA",  # Laos
+        "MA",  # Morocco
+        "MD",  # Moldova
+        "MN",  # Mongolia
+        "MS",  # Montserrat
+        "MT",  # Malta
+        "NE",  # Niger
+        "PA",  # Panama
+        "SC",  # Seychelles
+        "SD",  # Sudan
+        "TN",  # Tunisia
+        "VA",  # Vatican City
+    }
+)
+
+_US_STATE_ABBREVIATIONS_SAFE = _US_STATE_ABBREVIATIONS - _US_STATE_ALSO_ISO_COUNTRY
+
+
 def _normalize_country(code: str) -> str:
     if not isinstance(code, str):
         return ""
     normalized = code.strip().upper()
     if not normalized:
         return ""
-    if normalized in _US_STATE_ABBREVIATIONS or normalized in _US_STATE_NAMES:
+    if normalized in _US_STATE_NAMES:
+        return "US"
+    if normalized in _US_STATE_ABBREVIATIONS_SAFE:
         return "US"
     return normalized
 
@@ -164,9 +193,12 @@ class LegalGuard(BaseGuard):
             )
         return self.verify_contract_review(response)
 
-    def _check_jurisdiction(self, contract_data: Dict[str, Any]) -> str | None:
+    def _check_jurisdiction(
+        self, contract_data: Dict[str, Any]
+    ) -> tuple[str | None, list[str]]:
+        warnings: list[str] = []
         if "governing_law" not in contract_data or "forum" not in contract_data:
-            return None
+            return None, warnings
         parties = [
             p
             for p in contract_data.get(
@@ -176,7 +208,10 @@ class LegalGuard(BaseGuard):
             if p
         ]
         if not parties:
-            return None
+            return (
+                "Jurisdiction check skipped (missing party country information)",
+                warnings,
+            )
         try:
             j_check = self.jurisdiction_engine.verify_choice_of_law(
                 parties_countries=parties,
@@ -184,18 +219,21 @@ class LegalGuard(BaseGuard):
                 forum=contract_data["forum"],
             )
         except TypeError:
-            return f"{JURISDICTION_MISMATCH} (API mismatch)"
+            return f"{JURISDICTION_MISMATCH} (API mismatch)", warnings
         if isinstance(j_check, dict):
             if not j_check.get("verified", True):
-                return j_check.get("risk", JURISDICTION_MISMATCH)
-            return None
+                return j_check.get("risk", JURISDICTION_MISMATCH), warnings
+            return None, warnings
         if hasattr(j_check, "conflicts"):
+            j_warnings = getattr(j_check, "warnings", [])
+            if isinstance(j_warnings, list):
+                warnings.extend(j_warnings)
             if j_check.conflicts:
-                return getattr(j_check, "message", JURISDICTION_MISMATCH)
-            return None
+                return getattr(j_check, "message", JURISDICTION_MISMATCH), warnings
+            return None, warnings
         if not getattr(j_check, "verified", True):
-            return JURISDICTION_MISMATCH
-        return None
+            return JURISDICTION_MISMATCH, warnings
+        return None, warnings
 
     def _check_prohibited_clauses(
         self, clauses: List[Dict[str, Any]], jurisdiction: str
@@ -236,9 +274,10 @@ class LegalGuard(BaseGuard):
         hard_flags = []
         warnings_list = []
 
-        j_flag = self._check_jurisdiction(contract_data)
+        j_flag, j_warnings = self._check_jurisdiction(contract_data)
         if j_flag:
             hard_flags.append(j_flag)
+        warnings_list.extend(j_warnings)
 
         j_val = contract_data.get("jurisdiction")
         jurisdiction = j_val.upper() if isinstance(j_val, str) else ""
