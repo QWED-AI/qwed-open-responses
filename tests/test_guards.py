@@ -806,13 +806,31 @@ class TestLegalGuard:
         )
         assert result.passed is True
 
-    def test_jurisdiction_type_error_returns_warning(self):
-        """TypeError from jurisdiction engine produces a warning, not hard fail."""
+    def test_jurisdiction_exception_returns_warning(self):
+        """Any exception from jurisdiction engine produces a warning, not hard fail."""
         import sys as _sys
 
         j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+
         j_mock.return_value.verify_choice_of_law.side_effect = TypeError("bad call")
         guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "governing_law": "NY",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert result.severity == "warning"
+
+        j_mock.return_value.verify_choice_of_law.side_effect = ValueError("bad value")
         result = guard.check(
             {
                 "type": "SLA",

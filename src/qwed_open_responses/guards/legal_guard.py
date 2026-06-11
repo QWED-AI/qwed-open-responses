@@ -189,7 +189,7 @@ class LegalGuard(BaseGuard):
                 governing_law=contract_data["governing_law"],
                 forum=contract_data["forum"],
             )
-        except TypeError:
+        except Exception:
             warnings.append("Jurisdiction check skipped: internal error (API mismatch)")
             return None, warnings
         if isinstance(j_check, dict):
