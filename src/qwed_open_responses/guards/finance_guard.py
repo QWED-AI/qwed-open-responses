@@ -39,13 +39,13 @@ class FinanceGuard(BaseGuard):
         if isinstance(context, str):
             return context
         if isinstance(context, dict):
-            ctx = context.get("context", "")
+            ctx = context.get("context", context.get("type", ""))
             if ctx:
                 return ctx
         return content.get("context", content.get("type", ""))
 
     def _build_npv_failure_message(self, result: Any) -> str:
-        if hasattr(result, "message"):
+        if hasattr(result, "message") and result.message is not None:
             return result.message
         parts = []
         for attr, label in [
