@@ -128,7 +128,6 @@ _US_STATE_ALSO_ISO_COUNTRY = frozenset(
         "AL",  # Albania
         "AR",  # Argentina
         "AZ",  # Azerbaijan
-        "CA",  # Canada
         "CO",  # Colombia
         "GA",  # Gabon
         "ID",  # Indonesia

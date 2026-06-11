@@ -39,7 +39,7 @@ class TaxGuard(BaseGuard):
             return self._verify_payroll(arguments)
 
         elif tool_name == "send_international_wire":
-            from qwed_tax.jurisdictions.india.remittance_guard import RemittanceGuard
+            from qwed_tax.guards.remittance_guard import RemittanceGuard
 
             guard = RemittanceGuard()
             result = guard.verify_lrs_limit(
@@ -52,7 +52,7 @@ class TaxGuard(BaseGuard):
             return self.pass_result()
 
         elif tool_name == "calculate_crypto_tax":
-            from qwed_tax.jurisdictions.india.crypto_guard import CryptoTaxGuard
+            from qwed_tax.jurisdictions.india.guards.crypto_guard import CryptoTaxGuard
 
             guard = CryptoTaxGuard()
             result = guard.verify_set_off(

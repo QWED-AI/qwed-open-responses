@@ -327,10 +327,13 @@ class TestTaxGuard:
                 PayrollGuard=MagicMock()
             ),
             "qwed_tax.jurisdictions.india": _make_mock_module(),
-            "qwed_tax.jurisdictions.india.remittance_guard": MagicMock(
+            "qwed_tax.guards": _make_mock_module(),
+            "qwed_tax.guards.remittance_guard": MagicMock(
                 RemittanceGuard=MagicMock()
             ),
-            "qwed_tax.jurisdictions.india.crypto_guard": MagicMock(
+            "qwed_tax.jurisdictions.india": _make_mock_module(),
+            "qwed_tax.jurisdictions.india.guards": _make_mock_module(),
+            "qwed_tax.jurisdictions.india.guards.crypto_guard": MagicMock(
                 CryptoTaxGuard=MagicMock()
             ),
         }
@@ -391,7 +394,7 @@ class TestTaxGuard:
         import sys as _sys
 
         remittance_mock = _sys.modules[
-            "qwed_tax.jurisdictions.india.remittance_guard"
+            "qwed_tax.guards.remittance_guard"
         ].RemittanceGuard
         remittance_mock.return_value.verify_lrs_limit.return_value = MagicMock(
             verified=False, message="LRS limit exceeded"
@@ -425,7 +428,7 @@ class TestTaxGuard:
         import sys as _sys
 
         crypto_mock = _sys.modules[
-            "qwed_tax.jurisdictions.india.crypto_guard"
+            "qwed_tax.jurisdictions.india.guards.crypto_guard"
         ].CryptoTaxGuard
         crypto_mock.return_value.verify_set_off.return_value = MagicMock(
             verified=False, message="Set-off limit breached"
@@ -961,12 +964,12 @@ class TestNormalizeCountry:
 
         assert _normalize_country("") == ""
 
-    def test_canada_returns_ca_not_us(self):
+    def test_california_abbrev_returns_us(self):
         from qwed_open_responses.guards.legal_guard import _normalize_country
 
-        assert _normalize_country("CA") == "CA"
+        assert _normalize_country("CA") == "US"
 
-    def test_california_abbrev_returns_us(self):
+    def test_state_abbrev_returns_us(self):
         from qwed_open_responses.guards.legal_guard import _normalize_country
 
         assert _normalize_country("NY") == "US"
