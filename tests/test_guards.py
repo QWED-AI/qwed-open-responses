@@ -447,6 +447,13 @@ class TestTaxGuard:
         assert result.passed is False
         assert "Invalid response type" in result.message
 
+    def test_none_arguments_fails(self):
+        """None arguments return verified=False."""
+        guard = TaxGuard()
+        result = guard.check({"tool_name": "process_payroll", "arguments": None})
+        assert result.passed is False
+        assert "Invalid arguments" in result.message
+
 
 class TestFinanceGuard:
     """Test FinanceGuard class."""
@@ -576,6 +583,36 @@ class TestFinanceGuard:
             context={"context": "npv"},
         )
         assert result.passed is True
+
+    def test_npv_verification_none_npv_fails(self):
+        """None NPV value returns fail."""
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": [100, 200], "npv": None, "discount_rate": 0.05},
+            context={"context": "npv"},
+        )
+        assert result.passed is False
+        assert "must not be null" in result.message
+
+    def test_npv_verification_invalid_cashflows_fails(self):
+        """Non-list cashflows returns fail."""
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": "not-a-list", "npv": 150, "discount_rate": 0.05},
+            context={"context": "npv"},
+        )
+        assert result.passed is False
+        assert "Invalid 'cashflows'" in result.message
+
+    def test_iso_routing_before_npv_check(self):
+        """payment_instruction context is routed before NPV fields are checked."""
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": [100, 200], "npv": 150, "discount_rate": 0.05},
+            context={"context": "payment_instruction"},
+        )
+        assert result.passed is False
+        assert "not implemented" in result.message
 
 
 class TestLegalGuard:
@@ -741,3 +778,205 @@ class TestLegalGuard:
         assert "PROHIBITED_CLAUSE" in result.message
         assert "warnings" in result.details
         assert "COMPLETENESS_WARNING" in " ".join(result.details["warnings"])
+
+    def test_jurisdiction_skipped_without_governing_law(self):
+        """No hard flag when governing_law is missing."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is True
+
+    def test_jurisdiction_type_error_returns_warning(self):
+        """TypeError from jurisdiction engine produces a warning, not hard fail."""
+        import sys as _sys
+
+        j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+        j_mock.return_value.verify_choice_of_law.side_effect = TypeError("bad call")
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "governing_law": "NY",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert result.severity == "warning"
+
+    def test_jurisdiction_object_with_conflicts_fails(self):
+        """Object result with conflicts returns hard flag."""
+        import sys as _sys
+
+        j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+        j_mock.return_value.verify_choice_of_law.return_value = MagicMock(
+            conflicts=True, message="Jurisdiction conflict", warnings=[]
+        )
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "governing_law": "CA",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "Jurisdiction conflict" in result.message
+
+    def test_jurisdiction_object_without_conflicts_passes(self):
+        """Object result without conflicts passes."""
+        import sys as _sys
+
+        j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+        j_mock.return_value.verify_choice_of_law.return_value = MagicMock(
+            conflicts=False, verified=True
+        )
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "governing_law": "NY",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is True
+
+    def test_jurisdiction_object_not_verified_fallback_fails(self):
+        """Object result without conflicts attribute and not verified returns hard flag."""
+
+        class _Result:
+            verified = False
+            message = "Fallback check failed"
+
+        import sys as _sys
+
+        j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+        j_mock.return_value.verify_choice_of_law.return_value = _Result()
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "governing_law": "NY",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "Jurisdiction Mismatch" in result.message
+
+    def test_jurisdiction_warnings_from_object_are_included(self):
+        """Warnings from jurisdiction object result are extended."""
+        import sys as _sys
+
+        j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+        j_mock.return_value.verify_choice_of_law.return_value = MagicMock(
+            conflicts=True,
+            message="Conflict detected",
+            warnings=["Foreign law flag"],
+        )
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "governing_law": "CA",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "Conflict detected" in result.message
+        assert "warnings" in result.details
+        assert "Foreign law flag" in result.details["warnings"]
+
+
+class TestNormalizeCountry:
+    """Direct tests for _normalize_country."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_qwed_legal_modules(self):
+        """Mock qwed-legal so LegalGuard can be instantiated if needed, but
+        _normalize_country is a module-level function, so we only need to
+        import it directly."""
+        import sys as _sys
+
+        def _make_mock_module():
+            return MagicMock(__path__=[])
+
+        mock_modules = {
+            "qwed_legal": _make_mock_module(),
+            "qwed_legal.guards": _make_mock_module(),
+            "qwed_legal.guards.jurisdiction_guard": MagicMock(
+                JurisdictionGuard=MagicMock()
+            ),
+            "qwed_legal.guards.clause_guard": MagicMock(ClauseGuard=MagicMock()),
+            "qwed_legal.guards.deadline_guard": MagicMock(DeadlineGuard=MagicMock()),
+        }
+        with patch.dict(_sys.modules, mock_modules):
+            yield
+
+    def test_non_string_returns_empty(self):
+        from qwed_open_responses.guards.legal_guard import _normalize_country
+
+        assert _normalize_country(123) == ""
+
+    def test_empty_string_returns_empty(self):
+        from qwed_open_responses.guards.legal_guard import _normalize_country
+
+        assert _normalize_country("") == ""
+
+    def test_canada_returns_ca_not_us(self):
+        from qwed_open_responses.guards.legal_guard import _normalize_country
+
+        assert _normalize_country("CA") == "CA"
+
+    def test_california_abbrev_returns_us(self):
+        from qwed_open_responses.guards.legal_guard import _normalize_country
+
+        assert _normalize_country("NY") == "US"
+
+    def test_california_full_name_returns_us(self):
+        from qwed_open_responses.guards.legal_guard import _normalize_country
+
+        assert _normalize_country("CALIFORNIA") == "US"
+
+    def test_iso_country_returns_itself(self):
+        from qwed_open_responses.guards.legal_guard import _normalize_country
+
+        assert _normalize_country("FR") == "FR"

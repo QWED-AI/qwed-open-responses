@@ -61,10 +61,18 @@ class FinanceGuard(BaseGuard):
         return NPV_VERIFICATION_FAILED
 
     def _verify_npv(self, content: Dict[str, Any]) -> GuardResult:
+        cashflows = content["cashflows"]
+        npv = content["npv"]
+        if not isinstance(cashflows, (list, tuple)):
+            return self.fail_result(
+                f"Invalid 'cashflows': expected list, got {type(cashflows).__name__}"
+            )
+        if npv is None:
+            return self.fail_result("Invalid 'npv': value must not be null")
         result = self.math_engine.verify_npv(
-            cashflows=content["cashflows"],
+            cashflows=cashflows,
             rate=content.get("discount_rate", 0.0),
-            llm_output=content["npv"],
+            llm_output=npv,
         )
         if isinstance(result, dict):
             if not result.get("verified", False):
