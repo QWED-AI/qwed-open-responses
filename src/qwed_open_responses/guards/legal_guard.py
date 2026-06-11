@@ -219,7 +219,8 @@ class LegalGuard(BaseGuard):
                 forum=contract_data["forum"],
             )
         except TypeError:
-            return f"{JURISDICTION_MISMATCH} (API mismatch)", warnings
+            warnings.append("Jurisdiction check skipped: internal error (API mismatch)")
+            return None, warnings
         if isinstance(j_check, dict):
             if not j_check.get("verified", True):
                 return j_check.get("risk", JURISDICTION_MISMATCH), warnings

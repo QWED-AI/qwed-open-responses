@@ -80,13 +80,13 @@ class FinanceGuard(BaseGuard):
         has_cashflows = "cashflows" in content
         has_npv = "npv" in content
 
-        if has_cashflows and has_npv:
-            return self._verify_npv(content)
-
         if context == "payment_instruction":
             return self.fail_result(
                 "ISO verification for payment_instruction not implemented"
             )
+
+        if has_cashflows and has_npv:
+            return self._verify_npv(content)
 
         if has_cashflows and not has_npv:
             return self.fail_result("Missing required field: 'npv' for NPV calculation")
