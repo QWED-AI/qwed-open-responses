@@ -483,11 +483,30 @@ class TestFinanceGuard:
         assert result.passed is False
         assert "Unrecognized finance context" in result.message
 
-    def test_iso_not_available_raises(self):
-        """ISO payment context raises NotImplementedError."""
+    def test_iso_not_available_fails(self):
+        """ISO payment context returns fail_result."""
         guard = FinanceGuard()
-        with pytest.raises(NotImplementedError, match="not implemented"):
-            guard.check({"data": "test"}, context={"context": "payment_instruction"})
+        result = guard.check(
+            {"data": "test"}, context={"context": "payment_instruction"}
+        )
+        assert result.passed is False
+        assert "not implemented" in result.message
+
+    def test_missing_npv_field_fails(self):
+        """Cashflows without npv returns specific error."""
+        guard = FinanceGuard()
+        result = guard.check({"cashflows": [100, 200]}, context={"context": "npv"})
+        assert result.passed is False
+        assert "Missing required field" in result.message
+        assert "npv" in result.message
+
+    def test_missing_cashflows_field_fails(self):
+        """NPV without cashflows returns specific error."""
+        guard = FinanceGuard()
+        result = guard.check({"npv": 150}, context={"context": "npv"})
+        assert result.passed is False
+        assert "Missing required field" in result.message
+        assert "cashflows" in result.message
 
     def test_unrecognized_context_without_npv_or_payment_returns_false(self):
         """Context without cashflows/npv or payment_instruction returns verified=False."""

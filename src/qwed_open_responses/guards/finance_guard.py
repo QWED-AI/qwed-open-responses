@@ -1,4 +1,6 @@
-from typing import Any, Dict, Optional, Union
+from __future__ import annotations
+
+from typing import Any, Dict
 from .base import BaseGuard, GuardResult
 
 
@@ -18,7 +20,7 @@ class FinanceGuard(BaseGuard):
             ) from err
 
     def check(
-        self, response: Dict[str, Any], context: Optional[Dict[str, Any]] = None
+        self, response: Dict[str, Any], context: dict[str, Any] | None = None
     ) -> GuardResult:
         if not isinstance(response, dict):
             return self.fail_result(
@@ -29,7 +31,7 @@ class FinanceGuard(BaseGuard):
 
     def _resolve_context(
         self,
-        context: Optional[Union[str, Dict[str, Any]]],
+        context: str | dict[str, Any] | None,
         content: Dict[str, Any],
     ) -> str:
         if isinstance(context, str):
@@ -40,44 +42,56 @@ class FinanceGuard(BaseGuard):
                 return ctx
         return content.get("context", content.get("type", ""))
 
+    def _build_npv_failure_message(self, result: Any) -> str:
+        if hasattr(result, "message"):
+            return result.message
+        parts = []
+        for attr, label in [
+            ("difference", "difference"),
+            ("computed_value", "computed"),
+            ("llm_value", "llm_val"),
+        ]:
+            val = getattr(result, attr, None)
+            if val is not None:
+                parts.append(f"{label}={val}")
+        if parts:
+            return f"NPV verification failed ({'; '.join(parts)})"
+        return "NPV verification failed"
+
     def _verify_npv(self, content: Dict[str, Any]) -> GuardResult:
         result = self.math_engine.verify_npv(
             cashflows=content["cashflows"],
             rate=content.get("discount_rate", 0.0),
             llm_output=content["npv"],
         )
-        verified = False
-        message = "NPV verification failed"
         if isinstance(result, dict):
-            verified = result.get("verified", False)
-            message = result.get("message", message)
-        elif hasattr(result, "verified"):
-            verified = result.verified
-            if hasattr(result, "message"):
-                message = result.message
-            else:
-                diff = getattr(result, "difference", None)
-                computed = getattr(result, "computed_value", None)
-                llm_val = getattr(result, "llm_value", None)
-                parts = []
-                if diff is not None:
-                    parts.append(f"difference={diff}")
-                if computed is not None:
-                    parts.append(f"computed={computed}")
-                if llm_val is not None:
-                    parts.append(f"llm_val={llm_val}")
-                if parts:
-                    message = f"NPV verification failed ({'; '.join(parts)})"
-        if not verified:
-            return self.fail_result(message)
-        return self.pass_result()
+            if not result.get("verified", False):
+                return self.fail_result(
+                    result.get("message", "NPV verification failed")
+                )
+            return self.pass_result()
+        if hasattr(result, "verified") and not result.verified:
+            return self.fail_result(self._build_npv_failure_message(result))
+        if hasattr(result, "verified") and result.verified:
+            return self.pass_result()
+        return self.fail_result("NPV verification failed")
 
     def verify_output(self, context: str, content: Dict[str, Any]) -> GuardResult:
-        if "cashflows" in content and "npv" in content:
+        has_cashflows = "cashflows" in content
+        has_npv = "npv" in content
+
+        if has_cashflows and has_npv:
             return self._verify_npv(content)
 
+        if has_cashflows and not has_npv:
+            return self.fail_result("Missing required field: 'npv' for NPV calculation")
+        if has_npv and not has_cashflows:
+            return self.fail_result(
+                "Missing required field: 'cashflows' for NPV calculation"
+            )
+
         if context == "payment_instruction":
-            raise NotImplementedError(
+            return self.fail_result(
                 "ISO verification for payment_instruction not implemented"
             )
 

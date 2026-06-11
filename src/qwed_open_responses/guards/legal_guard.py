@@ -1,4 +1,6 @@
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
+
+from typing import Any, Dict, List
 from .base import BaseGuard, GuardResult
 
 
@@ -24,7 +26,7 @@ class LegalGuard(BaseGuard):
     def check(
         self,
         response: Dict[str, Any],
-        context: Optional[Dict[str, Any]] = None,
+        context: dict[str, Any] | None = None,
     ) -> GuardResult:
         if not isinstance(response, dict):
             return self.fail_result(
@@ -32,7 +34,7 @@ class LegalGuard(BaseGuard):
             )
         return self.verify_contract_review(response)
 
-    def _check_jurisdiction(self, contract_data: Dict[str, Any]) -> Optional[str]:
+    def _check_jurisdiction(self, contract_data: Dict[str, Any]) -> str | None:
         if "governing_law" not in contract_data or "forum" not in contract_data:
             return None
         j_check = self.jurisdiction_engine.verify_choice_of_law(
@@ -72,7 +74,7 @@ class LegalGuard(BaseGuard):
             return [f"COMPLETENESS_WARNING: Missing standard clauses: {missing}"]
         return []
 
-    def _check_nda_terms(self, contract_data: Dict[str, Any]) -> Optional[str]:
+    def _check_nda_terms(self, contract_data: Dict[str, Any]) -> str | None:
         if (
             contract_data.get("type") == "NDA"
             and contract_data.get("term_years", 0) > 5
@@ -86,7 +88,7 @@ class LegalGuard(BaseGuard):
     def verify_contract_review(
         self,
         contract_data: Dict[str, Any],
-        _context: Optional[Dict[str, Any]] = None,
+        _context: dict[str, Any] | None = None,
     ) -> GuardResult:
         hard_flags = []
         warnings_list = []
