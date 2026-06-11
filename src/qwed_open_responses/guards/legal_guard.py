@@ -298,7 +298,7 @@ class LegalGuard(BaseGuard):
 
         if warnings_list:
             return self.warn_result(
-                "; ".join(warnings_list), details={"flags": warnings_list}
+                "; ".join(warnings_list), details={"warnings": warnings_list}
             )
 
         return self.pass_result()
