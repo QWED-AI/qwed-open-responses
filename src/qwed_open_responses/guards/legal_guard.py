@@ -124,6 +124,8 @@ JURISDICTION_MISMATCH = "Jurisdiction Mismatch"
 
 
 def _normalize_country(code: str) -> str:
+    if not isinstance(code, str):
+        return ""
     normalized = code.strip().upper()
     if not normalized:
         return ""
@@ -238,7 +240,8 @@ class LegalGuard(BaseGuard):
         if j_flag:
             hard_flags.append(j_flag)
 
-        jurisdiction = contract_data.get("jurisdiction", "").upper()
+        j_val = contract_data.get("jurisdiction")
+        jurisdiction = j_val.upper() if isinstance(j_val, str) else ""
         clauses = contract_data.get("clauses", [])
 
         hard_flags.extend(self._check_prohibited_clauses(clauses, jurisdiction))
