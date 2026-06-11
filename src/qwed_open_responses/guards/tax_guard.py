@@ -33,6 +33,8 @@ class TaxGuard(BaseGuard):
     def verify_tool_call(
         self, tool_name: str, arguments: Dict[str, Any]
     ) -> GuardResult:
+        if not isinstance(arguments, dict):
+            return self.fail_result("Invalid arguments: expected object")
         if tool_name == "process_payroll":
             return self._verify_payroll(arguments)
 

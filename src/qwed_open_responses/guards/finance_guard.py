@@ -77,11 +77,6 @@ class FinanceGuard(BaseGuard):
         return self.fail_result(NPV_VERIFICATION_FAILED)
 
     def verify_output(self, context: str, content: Dict[str, Any]) -> GuardResult:
-        if context == "payment_instruction":
-            return self.fail_result(
-                "ISO verification for payment_instruction not implemented"
-            )
-
         has_cashflows = "cashflows" in content
         has_npv = "npv" in content
 
@@ -93,6 +88,11 @@ class FinanceGuard(BaseGuard):
         if has_npv and not has_cashflows:
             return self.fail_result(
                 "Missing required field: 'cashflows' for NPV calculation"
+            )
+
+        if context == "payment_instruction":
+            return self.fail_result(
+                "ISO verification for payment_instruction not implemented"
             )
 
         return self.fail_result(f"Unrecognized finance context: {context}")
