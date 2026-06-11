@@ -118,16 +118,17 @@ class LegalGuard(BaseGuard):
             )
         except TypeError:
             return "Jurisdiction check unavailable (API mismatch)"
-        verified = (
-            j_check.get("verified", True)
-            if isinstance(j_check, dict)
-            else getattr(j_check, "verified", True)
-        )
-        if verified:
-            return None
         if isinstance(j_check, dict):
-            return j_check.get("risk", "Jurisdiction Mismatch")
-        return getattr(j_check, "message", "Jurisdiction Mismatch")
+            if not j_check.get("verified", True):
+                return j_check.get("risk", "Jurisdiction Mismatch")
+            return None
+        if hasattr(j_check, "conflicts"):
+            if j_check.conflicts:
+                return getattr(j_check, "message", "Jurisdiction Mismatch")
+            return None
+        if not getattr(j_check, "verified", True):
+            return "Jurisdiction Mismatch"
+        return None
 
     def _check_prohibited_clauses(
         self, clauses: List[Dict[str, Any]], jurisdiction: str
@@ -135,9 +136,7 @@ class LegalGuard(BaseGuard):
         flags = []
         for clause in clauses:
             c_type = clause.get("type", "")
-            if c_type == "non_compete" and (
-                "CA" in jurisdiction or "CALIFORNIA" in jurisdiction
-            ):
+            if c_type == "non_compete" and jurisdiction in ("CA", "CALIFORNIA"):
                 flags.append(
                     "PROHIBITED_CLAUSE: Non-compete clauses are unenforceable in California."
                 )
