@@ -517,6 +517,10 @@ class TestFinanceGuard:
 
     def test_npv_verification_passes(self):
         """NPV fields pass verification (mocked engine)."""
+        import sys as _sys
+
+        verifier_mock = _sys.modules["qwed_finance"].FinanceVerifier
+        verifier_mock.return_value.verify_npv.return_value = MagicMock(verified=True)
         guard = FinanceGuard()
         result = guard.check(
             {"cashflows": [100, 200], "npv": 150, "discount_rate": 0.05},

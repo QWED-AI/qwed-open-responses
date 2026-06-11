@@ -37,9 +37,13 @@ class LegalGuard(BaseGuard):
     def _check_jurisdiction(self, contract_data: Dict[str, Any]) -> str | None:
         if "governing_law" not in contract_data or "forum" not in contract_data:
             return None
+        parties = contract_data.get(
+            "parties_countries", [contract_data.get("jurisdiction", "")]
+        )
         j_check = self.jurisdiction_engine.verify_choice_of_law(
+            parties_countries=parties,
             governing_law=contract_data["governing_law"],
-            forum_location=contract_data["forum"],
+            forum=contract_data["forum"],
         )
         verified = (
             j_check.get("verified", True)
@@ -50,7 +54,7 @@ class LegalGuard(BaseGuard):
             return None
         if isinstance(j_check, dict):
             return j_check.get("risk", "Jurisdiction Mismatch")
-        return getattr(j_check, "risk", "Jurisdiction Mismatch")
+        return getattr(j_check, "message", "Jurisdiction Mismatch")
 
     def _check_prohibited_clauses(
         self, clauses: List[Dict[str, Any]], jurisdiction: str

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict
 from .base import BaseGuard, GuardResult
 
+NPV_VERIFICATION_FAILED = "NPV verification failed"
+
 
 class FinanceGuard(BaseGuard):
     name = "FinanceGuard"
@@ -55,8 +57,8 @@ class FinanceGuard(BaseGuard):
             if val is not None:
                 parts.append(f"{label}={val}")
         if parts:
-            return f"NPV verification failed ({'; '.join(parts)})"
-        return "NPV verification failed"
+            return f"{NPV_VERIFICATION_FAILED} ({'; '.join(parts)})"
+        return NPV_VERIFICATION_FAILED
 
     def _verify_npv(self, content: Dict[str, Any]) -> GuardResult:
         result = self.math_engine.verify_npv(
@@ -66,17 +68,20 @@ class FinanceGuard(BaseGuard):
         )
         if isinstance(result, dict):
             if not result.get("verified", False):
-                return self.fail_result(
-                    result.get("message", "NPV verification failed")
-                )
+                return self.fail_result(result.get("message", NPV_VERIFICATION_FAILED))
             return self.pass_result()
         if hasattr(result, "verified") and not result.verified:
             return self.fail_result(self._build_npv_failure_message(result))
         if hasattr(result, "verified") and result.verified:
             return self.pass_result()
-        return self.fail_result("NPV verification failed")
+        return self.fail_result(NPV_VERIFICATION_FAILED)
 
     def verify_output(self, context: str, content: Dict[str, Any]) -> GuardResult:
+        if context == "payment_instruction":
+            return self.fail_result(
+                "ISO verification for payment_instruction not implemented"
+            )
+
         has_cashflows = "cashflows" in content
         has_npv = "npv" in content
 
@@ -88,11 +93,6 @@ class FinanceGuard(BaseGuard):
         if has_npv and not has_cashflows:
             return self.fail_result(
                 "Missing required field: 'cashflows' for NPV calculation"
-            )
-
-        if context == "payment_instruction":
-            return self.fail_result(
-                "ISO verification for payment_instruction not implemented"
             )
 
         return self.fail_result(f"Unrecognized finance context: {context}")
