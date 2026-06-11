@@ -85,6 +85,10 @@ class FinanceGuard(BaseGuard):
         return self.fail_result(NPV_VERIFICATION_FAILED)
 
     def verify_output(self, context: str, content: Dict[str, Any]) -> GuardResult:
+        if not isinstance(content, dict):
+            return self.fail_result(
+                f"Invalid content type: expected dict, got {type(content).__name__}"
+            )
         has_cashflows = "cashflows" in content
         has_npv = "npv" in content
 

@@ -617,6 +617,13 @@ class TestFinanceGuard:
         assert result.passed is False
         assert "not implemented" in result.message
 
+    def test_verify_output_non_dict_content_fails(self):
+        """verify_output with non-dict content returns fail."""
+        guard = FinanceGuard()
+        result = guard.verify_output("npv", "not a dict")
+        assert result.passed is False
+        assert "Invalid content type" in result.message
+
 
 class TestLegalGuard:
     """Test LegalGuard class."""
@@ -983,3 +990,11 @@ class TestNormalizeCountry:
         from qwed_open_responses.guards.legal_guard import _normalize_country
 
         assert _normalize_country("FR") == "FR"
+
+    def test_ambiguous_state_abbrev_returns_us(self):
+        """IN, TN, GA are US states in jurisdiction context."""
+        from qwed_open_responses.guards.legal_guard import _normalize_country
+
+        assert _normalize_country("IN") == "US"
+        assert _normalize_country("TN") == "US"
+        assert _normalize_country("GA") == "US"

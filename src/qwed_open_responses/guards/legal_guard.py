@@ -123,42 +123,13 @@ _US_STATE_NAMES = frozenset(
 JURISDICTION_MISMATCH = "Jurisdiction Mismatch"
 
 
-_US_STATE_ALSO_ISO_COUNTRY = frozenset(
-    {
-        "AL",  # Albania
-        "AR",  # Argentina
-        "AZ",  # Azerbaijan
-        "CO",  # Colombia
-        "GA",  # Gabon
-        "ID",  # Indonesia
-        "IN",  # India
-        "LA",  # Laos
-        "MA",  # Morocco
-        "MD",  # Moldova
-        "MN",  # Mongolia
-        "MS",  # Montserrat
-        "MT",  # Malta
-        "NE",  # Niger
-        "PA",  # Panama
-        "SC",  # Seychelles
-        "SD",  # Sudan
-        "TN",  # Tunisia
-        "VA",  # Vatican City
-    }
-)
-
-_US_STATE_ABBREVIATIONS_SAFE = _US_STATE_ABBREVIATIONS - _US_STATE_ALSO_ISO_COUNTRY
-
-
 def _normalize_country(code: str) -> str:
     if not isinstance(code, str):
         return ""
     normalized = code.strip().upper()
     if not normalized:
         return ""
-    if normalized in _US_STATE_NAMES:
-        return "US"
-    if normalized in _US_STATE_ABBREVIATIONS_SAFE:
+    if normalized in _US_STATE_NAMES or normalized in _US_STATE_ABBREVIATIONS:
         return "US"
     return normalized
 
