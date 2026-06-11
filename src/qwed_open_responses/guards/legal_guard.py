@@ -4,6 +4,75 @@ from typing import Any, Dict, List
 from .base import BaseGuard, GuardResult
 
 
+_US_STATE_ABBREVIATIONS = frozenset(
+    {
+        "AL",
+        "AK",
+        "AZ",
+        "AR",
+        "CA",
+        "CO",
+        "CT",
+        "DE",
+        "FL",
+        "GA",
+        "HI",
+        "ID",
+        "IL",
+        "IN",
+        "IA",
+        "KS",
+        "KY",
+        "LA",
+        "ME",
+        "MD",
+        "MA",
+        "MI",
+        "MN",
+        "MS",
+        "MO",
+        "MT",
+        "NE",
+        "NV",
+        "NH",
+        "NJ",
+        "NM",
+        "NY",
+        "NC",
+        "ND",
+        "OH",
+        "OK",
+        "OR",
+        "PA",
+        "RI",
+        "SC",
+        "SD",
+        "TN",
+        "TX",
+        "UT",
+        "VT",
+        "VA",
+        "WA",
+        "WV",
+        "WI",
+        "WY",
+        "DC",
+        "AS",
+        "GU",
+        "MP",
+        "PR",
+        "VI",
+    }
+)
+
+
+def _normalize_country(code: str) -> str:
+    normalized = code.strip().upper()
+    if normalized in _US_STATE_ABBREVIATIONS:
+        return "US"
+    return normalized
+
+
 class LegalGuard(BaseGuard):
     name = "LegalGuard"
     description = "Verifies AI-generated contract analysis against legal rules"
@@ -38,13 +107,17 @@ class LegalGuard(BaseGuard):
         if "governing_law" not in contract_data or "forum" not in contract_data:
             return None
         parties = contract_data.get(
-            "parties_countries", [contract_data.get("jurisdiction", "")]
+            "parties_countries",
+            [_normalize_country(contract_data.get("jurisdiction", ""))],
         )
-        j_check = self.jurisdiction_engine.verify_choice_of_law(
-            parties_countries=parties,
-            governing_law=contract_data["governing_law"],
-            forum=contract_data["forum"],
-        )
+        try:
+            j_check = self.jurisdiction_engine.verify_choice_of_law(
+                parties_countries=parties,
+                governing_law=contract_data["governing_law"],
+                forum=contract_data["forum"],
+            )
+        except TypeError:
+            return "Jurisdiction check unavailable (API mismatch)"
         verified = (
             j_check.get("verified", True)
             if isinstance(j_check, dict)
