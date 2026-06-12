@@ -67,6 +67,8 @@ class FinanceGuard(BaseGuard):
             return self.fail_result(
                 f"Invalid 'cashflows': expected list, got {type(cashflows).__name__}"
             )
+        if any(cf is None for cf in cashflows):
+            return self.fail_result("Invalid 'cashflows': list contains null entries")
         if npv is None:
             return self.fail_result("Invalid 'npv': value must not be null")
         raw_rate = content.get("discount_rate")

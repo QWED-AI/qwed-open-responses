@@ -459,6 +459,17 @@ class TestTaxGuard:
         assert result.passed is False
         assert "Invalid arguments" in result.message
 
+    def test_check_result_fallback_on_missing_message(self):
+        """_check_result falls back to default_error when object has no message."""
+        guard = TaxGuard()
+
+        class ResultWithoutMessage:
+            verified = False
+
+        result = guard._check_result(ResultWithoutMessage(), "Fallback error")
+        assert result.passed is False
+        assert "Fallback error" in result.message
+
 
 class TestFinanceGuard:
     """Test FinanceGuard class."""
@@ -655,6 +666,16 @@ class TestFinanceGuard:
             {"context": None, "type": "npv", "cashflows": [100, 200], "npv": 150}
         )
         assert result.passed is True
+
+    def test_cashflows_with_none_element_fails(self):
+        """Cashflows list with a None element returns fail."""
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": [100, None], "npv": 150, "discount_rate": 0.05},
+            context={"context": "npv"},
+        )
+        assert result.passed is False
+        assert "null entries" in result.message
 
 
 class TestLegalGuard:

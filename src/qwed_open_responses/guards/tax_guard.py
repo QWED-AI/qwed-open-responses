@@ -36,8 +36,10 @@ class TaxGuard(BaseGuard):
             msg = (
                 result.get("error", default_error)
                 if isinstance(result, dict)
-                else result.message
+                else getattr(result, "message", default_error)
             )
+            if msg is None:
+                msg = default_error
             return self.fail_result(msg)
         return self.pass_result()
 
