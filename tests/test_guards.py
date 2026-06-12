@@ -1057,6 +1057,24 @@ class TestLegalGuard:
         )
         assert result.passed is True
 
+    def test_jurisdiction_whitespace_stripped(self):
+        """Whitespace around jurisdiction value is stripped before comparison."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "NDA",
+                "jurisdiction": " CA ",
+                "clauses": [
+                    {"type": "non_compete", "text": "No competition for 2 years"},
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "PROHIBITED_CLAUSE" in result.message
+
 
 class TestNormalizeCountry:
     """Direct tests for _normalize_country."""

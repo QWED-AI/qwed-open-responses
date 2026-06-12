@@ -30,6 +30,17 @@ class TaxGuard(BaseGuard):
         arguments = response.get("arguments", {})
         return self.verify_tool_call(tool_name, arguments)
 
+    def _check_result(self, result: Any, default_error: str) -> GuardResult:
+        verified = result["verified"] if isinstance(result, dict) else result.verified
+        if not verified:
+            msg = (
+                result.get("error", default_error)
+                if isinstance(result, dict)
+                else result.message
+            )
+            return self.fail_result(msg)
+        return self.pass_result()
+
     def verify_tool_call(
         self, tool_name: str, arguments: Dict[str, Any]
     ) -> GuardResult:
@@ -37,47 +48,10 @@ class TaxGuard(BaseGuard):
             return self.fail_result("Invalid arguments: expected object")
         if tool_name == "process_payroll":
             return self._verify_payroll(arguments)
-
-        elif tool_name == "send_international_wire":
-            from qwed_tax.guards.remittance_guard import RemittanceGuard
-
-            guard = RemittanceGuard()
-            result = guard.verify_lrs_limit(
-                amount_usd=arguments.get("amount_usd", 0),
-                purpose=arguments.get("purpose", ""),
-                financial_year_usage=arguments.get("ytd_usage", 0),
-            )
-            verified = (
-                result["verified"] if isinstance(result, dict) else result.verified
-            )
-            if not verified:
-                msg = (
-                    result.get("error", "LRS limit exceeded")
-                    if isinstance(result, dict)
-                    else result.message
-                )
-                return self.fail_result(msg)
-            return self.pass_result()
-
-        elif tool_name == "calculate_crypto_tax":
-            from qwed_tax.jurisdictions.india.guards.crypto_guard import CryptoTaxGuard
-
-            guard = CryptoTaxGuard()
-            result = guard.verify_set_off(
-                losses=arguments.get("losses", {}), gains=arguments.get("gains", {})
-            )
-            verified = (
-                result["verified"] if isinstance(result, dict) else result.verified
-            )
-            if not verified:
-                msg = (
-                    result.get("error", "Set-off limit breached")
-                    if isinstance(result, dict)
-                    else result.message
-                )
-                return self.fail_result(msg)
-            return self.pass_result()
-
+        if tool_name == "send_international_wire":
+            return self._verify_international_wire(arguments)
+        if tool_name == "calculate_crypto_tax":
+            return self._verify_crypto_tax(arguments)
         return self.fail_result(f"No tax guard for tool: {tool_name}")
 
     def _verify_payroll(self, arguments: Dict[str, Any]) -> GuardResult:
@@ -99,12 +73,24 @@ class TaxGuard(BaseGuard):
             current=arguments.get("current", 0),
             claimed_tax=arguments["claimed_tax"],
         )
-        verified = result["verified"] if isinstance(result, dict) else result.verified
-        if not verified:
-            msg = (
-                result.get("error", "FICA tax verification failed")
-                if isinstance(result, dict)
-                else result.message
-            )
-            return self.fail_result(msg)
-        return self.pass_result()
+        return self._check_result(result, "FICA tax verification failed")
+
+    def _verify_international_wire(self, arguments: Dict[str, Any]) -> GuardResult:
+        from qwed_tax.guards.remittance_guard import RemittanceGuard
+
+        guard = RemittanceGuard()
+        result = guard.verify_lrs_limit(
+            amount_usd=arguments.get("amount_usd", 0),
+            purpose=arguments.get("purpose", ""),
+            financial_year_usage=arguments.get("ytd_usage", 0),
+        )
+        return self._check_result(result, "LRS limit exceeded")
+
+    def _verify_crypto_tax(self, arguments: Dict[str, Any]) -> GuardResult:
+        from qwed_tax.jurisdictions.india.guards.crypto_guard import CryptoTaxGuard
+
+        guard = CryptoTaxGuard()
+        result = guard.verify_set_off(
+            losses=arguments.get("losses", {}), gains=arguments.get("gains", {})
+        )
+        return self._check_result(result, "Set-off limit breached")

@@ -252,7 +252,7 @@ class LegalGuard(BaseGuard):
         warnings_list.extend(j_warnings)
 
         j_val = contract_data.get("jurisdiction")
-        jurisdiction = j_val.upper() if isinstance(j_val, str) else ""
+        jurisdiction = j_val.strip().upper() if isinstance(j_val, str) else ""
         clauses = contract_data.get("clauses") or []
 
         hard_flags.extend(self._check_prohibited_clauses(clauses, jurisdiction))
