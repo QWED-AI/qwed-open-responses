@@ -130,6 +130,20 @@ class TestResponseVerifier:
         fail_result = verifier.verify({}, guards=[MockFailGuard()])
         assert "[FAIL]" in str(fail_result)
 
+    def test_unknown_response_type_raises(self):
+        """Unparseable response type raises ValueError."""
+
+        verifier = ResponseVerifier()
+        with pytest.raises(ValueError, match="Cannot parse response"):
+            verifier.verify(42)
+
+    def test_bytes_response_raises(self):
+        """Bytes response type raises ValueError."""
+
+        verifier = ResponseVerifier()
+        with pytest.raises(ValueError, match="Cannot parse response"):
+            verifier.verify(b'{"output": "data"}')
+
 
 class TestGuardResult:
     """Test GuardResult class."""
