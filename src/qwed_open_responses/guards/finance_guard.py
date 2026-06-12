@@ -1,44 +1,118 @@
-from typing import Dict, Any
+from __future__ import annotations
+
+from typing import Any, Dict
+from .base import BaseGuard, GuardResult
+
+NPV_VERIFICATION_FAILED = "NPV verification failed"
 
 
-class FinanceGuard:
+class FinanceGuard(BaseGuard):
+    name = "FinanceGuard"
+    description = "Verifies structured financial outputs against deterministic rules"
+
     def __init__(self):
+        super().__init__()
         try:
             from qwed_finance import FinanceVerifier
 
-            # Assuming ISOGuard is exposed or importable directly as per plan
-            # from qwed_finance.guards.iso_guard import ISOGuard
-            # Note: qwed-finance structure might vary, adapting to likely exports
             self.math_engine = FinanceVerifier()
-            # self.iso_engine = ISOGuard()
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
                 "qwed-finance is required. Install with: pip install qwed-open-responses[finance]"
+            ) from err
+
+    def check(
+        self, response: Dict[str, Any], context: dict[str, Any] | None = None
+    ) -> GuardResult:
+        if not isinstance(response, dict):
+            return self.fail_result(
+                f"Invalid response type: expected dict, got {type(response).__name__}"
             )
+        ctx = self._resolve_context(context, response)
+        return self.verify_output(ctx, response)
 
-    def verify_output(self, context: str, content: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Verifies structured financial outputs (e.g., Amortization tables, Payment JSON).
-        """
+    def _resolve_context(
+        self,
+        context: str | dict[str, Any] | None,
+        content: Dict[str, Any],
+    ) -> str:
+        if isinstance(context, str):
+            return context
+        if isinstance(context, dict):
+            ctx = context.get("context", context.get("type", ""))
+            if ctx:
+                return ctx
+        return content.get("context") or content.get("type") or ""
 
-        # 1. Check Investment Math (NPV/IRR)
-        if "cashflows" in content and "npv" in content:
-            # Adapt to actual FinanceVerifier API
-            # Assuming verify_npv signature matches plan
-            return self.math_engine.verify_npv(
-                cashflows=content["cashflows"],
-                rate=content.get("discount_rate", 0.0),
-                llm_output=content["npv"],
+    def _build_npv_failure_message(self, result: Any) -> str:
+        if hasattr(result, "message") and result.message is not None:
+            return result.message
+        parts = []
+        for attr, label in [
+            ("difference", "difference"),
+            ("computed_value", "computed"),
+            ("llm_value", "llm_val"),
+        ]:
+            val = getattr(result, attr, None)
+            if val is not None:
+                parts.append(f"{label}={val}")
+        if parts:
+            return f"{NPV_VERIFICATION_FAILED} ({'; '.join(parts)})"
+        return NPV_VERIFICATION_FAILED
+
+    def _verify_npv(self, content: Dict[str, Any]) -> GuardResult:
+        cashflows = content["cashflows"]
+        npv = content["npv"]
+        if not isinstance(cashflows, (list, tuple)):
+            return self.fail_result(
+                f"Invalid 'cashflows': expected list, got {type(cashflows).__name__}"
             )
+        if any(cf is None for cf in cashflows):
+            return self.fail_result("Invalid 'cashflows': list contains null entries")
+        if any(not isinstance(cf, (int, float)) for cf in cashflows):
+            return self.fail_result(
+                "Invalid 'cashflows': list contains non-numeric entries"
+            )
+        if npv is None:
+            return self.fail_result("Invalid 'npv': value must not be null")
+        raw_rate = content.get("discount_rate")
+        rate = raw_rate if isinstance(raw_rate, (int, float)) else 0.0
+        result = self.math_engine.verify_npv(
+            cashflows=cashflows,
+            rate=rate,
+            llm_output=npv,
+        )
+        if isinstance(result, dict):
+            if not result.get("verified", False):
+                return self.fail_result(result.get("message", NPV_VERIFICATION_FAILED))
+            return self.pass_result()
+        if hasattr(result, "verified") and not result.verified:
+            return self.fail_result(self._build_npv_failure_message(result))
+        if hasattr(result, "verified") and result.verified:
+            return self.pass_result()
+        return self.fail_result(NPV_VERIFICATION_FAILED)
 
-        # 2. Check ISO 20022 Compliance (Banking Interop)
+    def verify_output(self, context: str, content: Dict[str, Any]) -> GuardResult:
+        if not isinstance(content, dict):
+            return self.fail_result(
+                f"Invalid content type: expected dict, got {type(content).__name__}"
+            )
+        has_cashflows = "cashflows" in content
+        has_npv = "npv" in content
+
         if context == "payment_instruction":
-            # For now, stub or use generic verifier if specific guard not ready
-            if hasattr(self, "iso_engine"):
-                return self.iso_engine.verify_payment_message(content)
-            return {
-                "verified": False,
-                "error": "ISO verification not available (install with: pip install qwed-open-responses[finance])",
-            }
+            return self.fail_result(
+                "ISO verification for payment_instruction not implemented"
+            )
 
-        return {"verified": False, "error": f"Unrecognized finance context: {context}"}
+        if has_cashflows and has_npv:
+            return self._verify_npv(content)
+
+        if (has_cashflows and not has_npv) or (has_npv and not has_cashflows):
+            if not context or context == "npv":
+                missing = "npv" if has_cashflows else "cashflows"
+                return self.fail_result(
+                    f"Missing required field: '{missing}' for NPV calculation"
+                )
+
+        return self.fail_result(f"Unrecognized finance context: {context}")
