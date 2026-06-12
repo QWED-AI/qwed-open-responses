@@ -76,7 +76,10 @@ class VerifiedOpenAI:
         elif hasattr(response, "dict"):
             response_dict = response.dict()
         else:
-            response_dict = {"raw": str(response)}
+            raise ValueError(
+                f"Cannot parse response of type {type(response).__name__}. "
+                "Expected dict, str, or Pydantic model."
+            )
 
         return self._verifier.verify(response_dict)
 
