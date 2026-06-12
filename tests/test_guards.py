@@ -396,9 +396,10 @@ class TestTaxGuard:
         remittance_mock = _sys.modules[
             "qwed_tax.guards.remittance_guard"
         ].RemittanceGuard
-        remittance_mock.return_value.verify_lrs_limit.return_value = MagicMock(
-            verified=False, message="LRS limit exceeded"
-        )
+        remittance_mock.return_value.verify_lrs_limit.return_value = {
+            "verified": False,
+            "error": "LRS limit exceeded",
+        }
         guard = TaxGuard()
         result = guard.check(
             {
@@ -430,9 +431,10 @@ class TestTaxGuard:
         crypto_mock = _sys.modules[
             "qwed_tax.jurisdictions.india.guards.crypto_guard"
         ].CryptoTaxGuard
-        crypto_mock.return_value.verify_set_off.return_value = MagicMock(
-            verified=False, message="Set-off limit breached"
-        )
+        crypto_mock.return_value.verify_set_off.return_value = {
+            "verified": False,
+            "error": "Set-off limit breached",
+        }
         guard = TaxGuard()
         result = guard.check(
             {
@@ -643,6 +645,14 @@ class TestFinanceGuard:
         result = guard.check(
             {"cashflows": [100, 200], "npv": 150, "discount_rate": None},
             context={"context": "npv"},
+        )
+        assert result.passed is True
+
+    def test_resolve_context_null_content_key(self):
+        """_resolve_context handles null context key in content."""
+        guard = FinanceGuard()
+        result = guard.check(
+            {"context": None, "type": "npv", "cashflows": [100, 200], "npv": 150}
         )
         assert result.passed is True
 

@@ -47,8 +47,16 @@ class TaxGuard(BaseGuard):
                 purpose=arguments.get("purpose", ""),
                 financial_year_usage=arguments.get("ytd_usage", 0),
             )
-            if not result.verified:
-                return self.fail_result(result.message)
+            verified = (
+                result["verified"] if isinstance(result, dict) else result.verified
+            )
+            if not verified:
+                msg = (
+                    result.get("error", "LRS limit exceeded")
+                    if isinstance(result, dict)
+                    else result.message
+                )
+                return self.fail_result(msg)
             return self.pass_result()
 
         elif tool_name == "calculate_crypto_tax":
@@ -58,8 +66,16 @@ class TaxGuard(BaseGuard):
             result = guard.verify_set_off(
                 losses=arguments.get("losses", {}), gains=arguments.get("gains", {})
             )
-            if not result.verified:
-                return self.fail_result(result.message)
+            verified = (
+                result["verified"] if isinstance(result, dict) else result.verified
+            )
+            if not verified:
+                msg = (
+                    result.get("error", "Set-off limit breached")
+                    if isinstance(result, dict)
+                    else result.message
+                )
+                return self.fail_result(msg)
             return self.pass_result()
 
         return self.fail_result(f"No tax guard for tool: {tool_name}")
@@ -83,6 +99,12 @@ class TaxGuard(BaseGuard):
             current=arguments.get("current", 0),
             claimed_tax=arguments["claimed_tax"],
         )
-        if not result.verified:
-            return self.fail_result(result.message)
+        verified = result["verified"] if isinstance(result, dict) else result.verified
+        if not verified:
+            msg = (
+                result.get("error", "FICA tax verification failed")
+                if isinstance(result, dict)
+                else result.message
+            )
+            return self.fail_result(msg)
         return self.pass_result()

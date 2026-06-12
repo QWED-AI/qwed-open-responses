@@ -42,7 +42,7 @@ class FinanceGuard(BaseGuard):
             ctx = context.get("context", context.get("type", ""))
             if ctx:
                 return ctx
-        return content.get("context", content.get("type", ""))
+        return content.get("context") or content.get("type") or ""
 
     def _build_npv_failure_message(self, result: Any) -> str:
         if hasattr(result, "message") and result.message is not None:
