@@ -77,8 +77,8 @@ class VerifiedOpenAI:
             response_dict = response.dict()
         else:
             raise ValueError(
-                f"Cannot parse response of type {type(response).__name__}. "
-                "Expected dict, str, or Pydantic model."
+                f"Cannot parse OpenAI response of type {type(response).__name__}. "
+                "Expected Pydantic model (OpenAI response object)."
             )
 
         return self._verifier.verify(response_dict)

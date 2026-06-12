@@ -366,6 +366,19 @@ class TestVerifiedResponses:
         client.responses = responses
         return client
 
+    def test_verify_unsupported_type_raises(self):
+        """VerifiedOpenAI.verify raises ValueError for unsupported types."""
+        pytest.importorskip("openai")
+        with patch(
+            "qwed_open_responses.middleware.openai_sdk.openai.OpenAI"
+        ) as mock_openai:
+            from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
+
+            mock_openai.return_value = MagicMock()
+            verified = VerifiedOpenAI(guards=[])
+            with pytest.raises(ValueError, match="Cannot parse OpenAI response"):
+                verified.verify(42)
+
     def test_fallback_warns_when_responses_api_unavailable(self):
         """Fallback to Chat Completions emits a warning."""
         pytest.importorskip("openai")
