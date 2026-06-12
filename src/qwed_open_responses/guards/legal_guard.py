@@ -170,14 +170,10 @@ class LegalGuard(BaseGuard):
         warnings: list[str] = []
         if "governing_law" not in contract_data or "forum" not in contract_data:
             return None, warnings
-        parties = [
-            p
-            for p in contract_data.get(
-                "parties_countries",
-                [_normalize_country(contract_data.get("jurisdiction", ""))],
-            )
-            if p
-        ]
+        parties_raw = contract_data.get("parties_countries")
+        if not isinstance(parties_raw, (list, tuple)):
+            parties_raw = [_normalize_country(contract_data.get("jurisdiction", ""))]
+        parties = [p for p in parties_raw if p]
         if not parties:
             warnings.append(
                 "Jurisdiction check skipped (missing party country information)"
@@ -212,6 +208,8 @@ class LegalGuard(BaseGuard):
     ) -> List[str]:
         flags = []
         for clause in clauses:
+            if not isinstance(clause, dict):
+                continue
             c_type = clause.get("type", "")
             if c_type == "non_compete" and jurisdiction in ("CA", "CALIFORNIA"):
                 flags.append(
@@ -221,7 +219,7 @@ class LegalGuard(BaseGuard):
 
     def _check_missing_clauses(self, clauses: List[Dict[str, Any]]) -> List[str]:
         required_clauses = ["termination", "governing_law", "force_majeure"]
-        present_types = [c.get("type") for c in clauses]
+        present_types = [c.get("type") for c in clauses if isinstance(c, dict)]
         missing = [req for req in required_clauses if req not in present_types]
         if missing:
             return [f"COMPLETENESS_WARNING: Missing standard clauses: {missing}"]

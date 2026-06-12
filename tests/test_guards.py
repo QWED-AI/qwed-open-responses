@@ -953,6 +953,47 @@ class TestLegalGuard:
         assert "warnings" in result.details
         assert "Foreign law flag" in result.details["warnings"]
 
+    def test_parties_countries_none_falls_back_to_jurisdiction(self):
+        """None parties_countries falls back to jurisdiction-based country list."""
+        import sys as _sys
+
+        j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+        j_mock.return_value.verify_choice_of_law.return_value = {"verified": True}
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "governing_law": "NY",
+                "forum": "NY",
+                "parties_countries": None,
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is True
+
+    def test_null_clause_entry_skipped(self):
+        """None entries in clauses list are skipped without error."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "NDA",
+                "jurisdiction": "CA",
+                "clauses": [
+                    None,
+                    {"type": "non_compete", "text": "No competition for 2 years"},
+                    None,
+                    {"type": "termination"},
+                ],
+            }
+        )
+        assert result.passed is False
+        assert "PROHIBITED_CLAUSE" in result.message
+
 
 class TestNormalizeCountry:
     """Direct tests for _normalize_country."""
