@@ -69,6 +69,10 @@ class FinanceGuard(BaseGuard):
             )
         if any(cf is None for cf in cashflows):
             return self.fail_result("Invalid 'cashflows': list contains null entries")
+        if any(not isinstance(cf, (int, float)) for cf in cashflows):
+            return self.fail_result(
+                "Invalid 'cashflows': list contains non-numeric entries"
+            )
         if npv is None:
             return self.fail_result("Invalid 'npv': value must not be null")
         raw_rate = content.get("discount_rate")

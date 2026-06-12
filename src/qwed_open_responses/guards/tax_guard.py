@@ -31,15 +31,15 @@ class TaxGuard(BaseGuard):
         return self.verify_tool_call(tool_name, arguments)
 
     def _check_result(self, result: Any, default_error: str) -> GuardResult:
-        verified = result["verified"] if isinstance(result, dict) else result.verified
+        if isinstance(result, dict):
+            verified = result.get("verified", False)
+        else:
+            verified = getattr(result, "verified", False)
         if not verified:
-            msg = (
-                result.get("error", default_error)
-                if isinstance(result, dict)
-                else getattr(result, "message", default_error)
-            )
-            if msg is None:
-                msg = default_error
+            if isinstance(result, dict):
+                msg = result.get("error") or result.get("message") or default_error
+            else:
+                msg = getattr(result, "message", None) or default_error
             return self.fail_result(msg)
         return self.pass_result()
 
@@ -72,7 +72,7 @@ class TaxGuard(BaseGuard):
         guard = PayrollGuard()
         result = guard.verify_fica_tax(
             gross_ytd=arguments["gross_ytd"],
-            current=arguments.get("current", 0),
+            current=arguments.get("current") or 0,
             claimed_tax=arguments["claimed_tax"],
         )
         return self._check_result(result, "FICA tax verification failed")
@@ -82,9 +82,9 @@ class TaxGuard(BaseGuard):
 
         guard = RemittanceGuard()
         result = guard.verify_lrs_limit(
-            amount_usd=arguments.get("amount_usd", 0),
-            purpose=arguments.get("purpose", ""),
-            financial_year_usage=arguments.get("ytd_usage", 0),
+            amount_usd=arguments.get("amount_usd") or 0,
+            purpose=arguments.get("purpose") or "",
+            financial_year_usage=arguments.get("ytd_usage") or 0,
         )
         return self._check_result(result, "LRS limit exceeded")
 
@@ -93,6 +93,7 @@ class TaxGuard(BaseGuard):
 
         guard = CryptoTaxGuard()
         result = guard.verify_set_off(
-            losses=arguments.get("losses", {}), gains=arguments.get("gains", {})
+            losses=arguments.get("losses") or {},
+            gains=arguments.get("gains") or {},
         )
         return self._check_result(result, "Set-off limit breached")

@@ -173,7 +173,7 @@ class LegalGuard(BaseGuard):
         parties_raw = contract_data.get("parties_countries")
         if not isinstance(parties_raw, (list, tuple)):
             parties_raw = [_normalize_country(contract_data.get("jurisdiction", ""))]
-        parties = [p for p in parties_raw if p]
+        parties = [_normalize_country(p) for p in parties_raw if p]
         if not parties:
             warnings.append(
                 "Jurisdiction check skipped (missing party country information)"

@@ -470,6 +470,17 @@ class TestTaxGuard:
         assert result.passed is False
         assert "Fallback error" in result.message
 
+    def test_check_result_fallback_on_no_verified(self):
+        """_check_result handles object without verified attribute."""
+        guard = TaxGuard()
+
+        class ResultWithoutVerified:
+            pass
+
+        result = guard._check_result(ResultWithoutVerified(), "No verified attr")
+        assert result.passed is False
+        assert "No verified attr" in result.message
+
 
 class TestFinanceGuard:
     """Test FinanceGuard class."""
@@ -676,6 +687,16 @@ class TestFinanceGuard:
         )
         assert result.passed is False
         assert "null entries" in result.message
+
+    def test_cashflows_with_non_numeric_element_fails(self):
+        """Cashflows with non-numeric element (string) returns fail."""
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": ["$-5000", 10000], "npv": 5000, "discount_rate": 0.05},
+            context={"context": "npv"},
+        )
+        assert result.passed is False
+        assert "non-numeric" in result.message
 
 
 class TestLegalGuard:
@@ -1095,6 +1116,29 @@ class TestLegalGuard:
         )
         assert result.passed is False
         assert "PROHIBITED_CLAUSE" in result.message
+
+    def test_parties_countries_normalized(self):
+        """parties_countries entries are normalized via _normalize_country."""
+        import sys as _sys
+
+        j_mock = _sys.modules["qwed_legal.guards.jurisdiction_guard"].JurisdictionGuard
+        j_mock.return_value.verify_choice_of_law.return_value = {"verified": True}
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "parties_countries": ["CA"],
+                "jurisdiction": "NY",
+                "governing_law": "NY",
+                "forum": "NY",
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is True
 
 
 class TestNormalizeCountry:
