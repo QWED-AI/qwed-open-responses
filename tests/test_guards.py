@@ -328,9 +328,7 @@ class TestTaxGuard:
             ),
             "qwed_tax.jurisdictions.india": _make_mock_module(),
             "qwed_tax.guards": _make_mock_module(),
-            "qwed_tax.guards.remittance_guard": MagicMock(
-                RemittanceGuard=MagicMock()
-            ),
+            "qwed_tax.guards.remittance_guard": MagicMock(RemittanceGuard=MagicMock()),
             "qwed_tax.jurisdictions.india": _make_mock_module(),
             "qwed_tax.jurisdictions.india.guards": _make_mock_module(),
             "qwed_tax.jurisdictions.india.guards.crypto_guard": MagicMock(
@@ -651,9 +649,7 @@ class TestFinanceGuard:
     def test_cashflows_without_npv_non_npv_context(self):
         """Cashflows without npv in non-NPV context shows unrecognized error."""
         guard = FinanceGuard()
-        result = guard.check(
-            {"cashflows": [100, 200]}, context={"context": "irr"}
-        )
+        result = guard.check({"cashflows": [100, 200]}, context={"context": "irr"})
         assert result.passed is False
         assert "Unrecognized finance context" in result.message
 

@@ -130,6 +130,31 @@ class TestResponseVerifier:
         fail_result = verifier.verify({}, guards=[MockFailGuard()])
         assert "[FAIL]" in str(fail_result)
 
+    def test_unknown_response_type_raises(self):
+        """Unparseable response type raises ValueError."""
+
+        verifier = ResponseVerifier()
+        with pytest.raises(ValueError, match="Cannot parse response"):
+            verifier.verify(42)
+
+    def test_bytes_response_raises(self):
+        """Bytes response type raises ValueError."""
+
+        verifier = ResponseVerifier()
+        with pytest.raises(ValueError, match="Cannot parse response"):
+            verifier.verify(b'{"output": "data"}')
+
+    def test_object_with_dunder_dict_raises(self):
+        """Custom object with __dict__ is rejected."""
+
+        class Dummy:
+            def __init__(self):
+                self.x = 1
+
+        verifier = ResponseVerifier()
+        with pytest.raises(ValueError, match="Cannot parse response"):
+            verifier.verify(Dummy())
+
 
 class TestGuardResult:
     """Test GuardResult class."""

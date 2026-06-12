@@ -261,10 +261,11 @@ class ResponseVerifier:
         elif hasattr(response, "dict"):
             # Older pydantic
             return response.dict()
-        elif hasattr(response, "__dict__"):
-            return response.__dict__
         else:
-            return {"type": "unknown", "raw": str(response)}
+            raise ValueError(
+                f"Cannot parse response of type {type(response).__name__}. "
+                "Expected dict, str, or Pydantic model."
+            )
 
 
 # Import guards for type hints
