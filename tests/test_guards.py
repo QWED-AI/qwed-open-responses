@@ -624,6 +624,28 @@ class TestFinanceGuard:
         assert result.passed is False
         assert "Invalid content type" in result.message
 
+    def test_cashflows_without_npv_non_npv_context(self):
+        """Cashflows without npv in non-NPV context shows unrecognized error."""
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": [100, 200]}, context={"context": "irr"}
+        )
+        assert result.passed is False
+        assert "Unrecognized finance context" in result.message
+
+    def test_npv_with_null_discount_rate(self):
+        """Null discount_rate defaults to 0.0."""
+        import sys as _sys
+
+        verifier_mock = _sys.modules["qwed_finance"].FinanceVerifier
+        verifier_mock.return_value.verify_npv.return_value = MagicMock(verified=True)
+        guard = FinanceGuard()
+        result = guard.check(
+            {"cashflows": [100, 200], "npv": 150, "discount_rate": None},
+            context={"context": "npv"},
+        )
+        assert result.passed is True
+
 
 class TestLegalGuard:
     """Test LegalGuard class."""
@@ -993,6 +1015,37 @@ class TestLegalGuard:
         )
         assert result.passed is False
         assert "PROHIBITED_CLAUSE" in result.message
+
+    def test_null_clauses_list_handled(self):
+        """Null clauses list defaults to empty list (warns on missing clauses)."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "SLA",
+                "jurisdiction": "NY",
+                "clauses": None,
+            }
+        )
+        assert result.passed is False
+        assert result.severity == "warning"
+        assert "COMPLETENESS_WARNING" in result.message
+
+    def test_null_term_years_handled(self):
+        """Null term_years is treated as not exceeding 5."""
+        guard = LegalGuard()
+        result = guard.check(
+            {
+                "type": "NDA",
+                "jurisdiction": "NY",
+                "term_years": None,
+                "clauses": [
+                    {"type": "termination"},
+                    {"type": "governing_law"},
+                    {"type": "force_majeure"},
+                ],
+            }
+        )
+        assert result.passed is True
 
 
 class TestNormalizeCountry:

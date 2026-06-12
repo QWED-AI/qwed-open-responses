@@ -69,9 +69,11 @@ class FinanceGuard(BaseGuard):
             )
         if npv is None:
             return self.fail_result("Invalid 'npv': value must not be null")
+        raw_rate = content.get("discount_rate")
+        rate = raw_rate if isinstance(raw_rate, (int, float)) else 0.0
         result = self.math_engine.verify_npv(
             cashflows=cashflows,
-            rate=content.get("discount_rate", 0.0),
+            rate=rate,
             llm_output=npv,
         )
         if isinstance(result, dict):
@@ -100,11 +102,11 @@ class FinanceGuard(BaseGuard):
         if has_cashflows and has_npv:
             return self._verify_npv(content)
 
-        if has_cashflows and not has_npv:
-            return self.fail_result("Missing required field: 'npv' for NPV calculation")
-        if has_npv and not has_cashflows:
-            return self.fail_result(
-                "Missing required field: 'cashflows' for NPV calculation"
-            )
+        if (has_cashflows and not has_npv) or (has_npv and not has_cashflows):
+            if not context or context == "npv":
+                missing = "npv" if has_cashflows else "cashflows"
+                return self.fail_result(
+                    f"Missing required field: '{missing}' for NPV calculation"
+                )
 
         return self.fail_result(f"Unrecognized finance context: {context}")

@@ -226,9 +226,11 @@ class LegalGuard(BaseGuard):
         return []
 
     def _check_nda_terms(self, contract_data: Dict[str, Any]) -> str | None:
+        term_years = contract_data.get("term_years")
         if (
             contract_data.get("type") == "NDA"
-            and contract_data.get("term_years", 0) > 5
+            and isinstance(term_years, (int, float))
+            and term_years > 5
         ):
             return (
                 f"UNREASONABLE_TERM: {contract_data['term_years']} year term for NDA "
@@ -251,7 +253,7 @@ class LegalGuard(BaseGuard):
 
         j_val = contract_data.get("jurisdiction")
         jurisdiction = j_val.upper() if isinstance(j_val, str) else ""
-        clauses = contract_data.get("clauses", [])
+        clauses = contract_data.get("clauses") or []
 
         hard_flags.extend(self._check_prohibited_clauses(clauses, jurisdiction))
         warnings_list.extend(self._check_missing_clauses(clauses))
