@@ -11,8 +11,9 @@ jobs:
     name: Snyk Dependency Scan
     runs-on: ubuntu-latest
     if: >
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.fork == false
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.fork == false) &&
+      github.actor != 'dependabot[bot]'
     permissions:
       contents: read
       security-events: write
@@ -49,8 +50,9 @@ jobs:
     name: Snyk Code Analysis (SAST)
     runs-on: ubuntu-latest
     if: >
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.fork == false
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.fork == false) &&
+      github.actor != 'dependabot[bot]'
     permissions:
       contents: read
       security-events: write
