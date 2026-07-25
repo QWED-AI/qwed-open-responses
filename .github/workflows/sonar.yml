@@ -33,6 +33,13 @@ jobs:
         run: |
           pytest --cov=src/qwed_open_responses --cov-report=xml tests/
           
+      - name: Set up Java 21
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
       - name: SonarCloud Scan
         if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6
