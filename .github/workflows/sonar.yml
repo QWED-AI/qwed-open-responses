@@ -37,18 +37,19 @@ jobs:
           pytest --cov=src/qwed_open_responses --cov-report=xml tests/
           
       - name: Set up Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
           distribution: 'temurin'
           java-version: '21'
 
       - name: Configure SonarScanner to use Java 21
         run: |
-          echo "SONAR_JAVA_PATH=$JAVA_HOME/bin/java" >> "$GITHUB_ENV"
+          echo "SONAR_SCANNER_JAVA_EXE_PATH=$JAVA_HOME/bin/java" >> "$GITHUB_ENV"
+          echo "SONAR_SCANNER_OPTS=-Dsonar.scanner.skipJreProvisioning=true" >> "$GITHUB_ENV"
 
       - name: Verify Java version
         run: |
-          version="$("$SONAR_JAVA_PATH" -version 2>&1)"
+          version="$("$SONAR_SCANNER_JAVA_EXE_PATH" -version 2>&1)"
           echo "$version"
           grep -Eq 'version "21([."]|$)' <<< "$version"
 
