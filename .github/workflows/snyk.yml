@@ -34,7 +34,7 @@ jobs:
           pip install -e .
 
       - name: Install npm dependencies
-        run: npm install --prefix npm
+        run: npm ci --prefix npm
 
       - name: Generate requirements for Snyk
         run: pip freeze > requirements.txt
