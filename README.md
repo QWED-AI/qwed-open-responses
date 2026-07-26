@@ -125,7 +125,7 @@ Yes, but verification usually happens on the final tool call or complete message
 
 ## 🗺️ Roadmap
 
-### ✅ Released (v1.0.0)
+### ✅ Released
 - [x] `ToolGuard` - Block dangerous tools/patterns
 - [x] `SchemaGuard` - JSON Schema validation
 - [x] `MathGuard` - SymPy calculation verification
