@@ -11,8 +11,9 @@ jobs:
     name: Snyk Dependency Scan
     runs-on: ubuntu-latest
     if: >
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.fork == false
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.fork == false) &&
+      github.actor != 'dependabot[bot]'
     permissions:
       contents: read
       security-events: write
@@ -27,30 +28,56 @@ jobs:
       - name: Install Snyk CLI
         run: npm install -g snyk@1.1297.2
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e .
 
-      - name: Run Snyk to check for vulnerabilities
+      - name: Install npm dependencies
+        run: npm ci --prefix npm
+
+      - name: Generate requirements for Snyk
+        run: pip freeze > requirements.txt
+
+      - name: Run Snyk to check Python vulnerabilities
         continue-on-error: ${{ github.event_name == 'schedule' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
           SNYK_ORG: ${{ secrets.SNYK_ORG_ID }}
-        run: snyk test --all-projects --org="$SNYK_ORG" --severity-threshold=high --sarif-file-output=snyk.sarif
+        run: snyk test --file=requirements.txt --org="$SNYK_ORG" --severity-threshold=high --sarif-file-output=snyk-python.sarif
 
-      - name: Upload Snyk results to GitHub Security
+      - name: Run Snyk to check npm vulnerabilities
+        if: always()
+        continue-on-error: ${{ github.event_name == 'schedule' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_ORG: ${{ secrets.SNYK_ORG_ID }}
+        run: snyk test --file=npm/package.json --org="$SNYK_ORG" --severity-threshold=high --sarif-file-output=snyk-npm.sarif
+
+      - name: Cleanup
+        run: rm requirements.txt
+
+      - name: Upload Snyk Python results
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        if: always() && hashFiles('snyk.sarif') != ''
+        if: always() && hashFiles('snyk-python.sarif') != ''
         with:
-          sarif_file: snyk.sarif
+          sarif_file: snyk-python.sarif
+          category: snyk-python
+
+      - name: Upload Snyk npm results
+        if: always() && hashFiles('snyk-npm.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
+        with:
+          sarif_file: snyk-npm.sarif
+          category: snyk-npm
 
   snyk-code:
     name: Snyk Code Analysis (SAST)
     runs-on: ubuntu-latest
     if: >
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.fork == false
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.fork == false) &&
+      github.actor != 'dependabot[bot]'
     permissions:
       contents: read
       security-events: write
