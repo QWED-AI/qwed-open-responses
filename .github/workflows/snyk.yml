@@ -47,6 +47,7 @@ jobs:
         run: snyk test --file=requirements.txt --org="$SNYK_ORG" --severity-threshold=high --sarif-file-output=snyk-python.sarif
 
       - name: Run Snyk to check npm vulnerabilities
+        if: always()
         continue-on-error: ${{ github.event_name == 'schedule' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -64,8 +65,8 @@ jobs:
           category: snyk-python
 
       - name: Upload Snyk npm results
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         if: always() && hashFiles('snyk-npm.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         with:
           sarif_file: snyk-npm.sarif
           category: snyk-npm
