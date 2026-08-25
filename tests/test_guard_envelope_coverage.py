@@ -31,7 +31,7 @@ class TestResponsesApiFunctionCall:
         result = ToolGuard().check({
             "type": "function_call",
             "name": "run_analysis",
-            "arguments": "{\"expr\": \"__import__('os').system('id')\"}",
+            "arguments": '{\"expr\": \"rm -rf /\"}',
         })
         assert result.passed is False
 
@@ -124,7 +124,7 @@ class TestFunctionWrappedToolCalls:
             "choices": [{"message": {"tool_calls": [
                 {"id": "c2", "type": "function",
                  "function": {"name": "safe_tool",
-                              "arguments": "{\"code\": \"__import__('os').system('id')\"}"}},
+                              "arguments": "{\"code\": \"rm -rf /\"}"}},
             ]}}],
         })
         assert result.passed is False
@@ -154,12 +154,12 @@ class TestFunctionWrappedToolCalls:
 # ----------------------------------------------------------------------
 
 class TestUnrecognizedEnvelopeSentinel:
-    def test_nested_wrapper_still_bypasses_known_limit(self):
-        """Known residual (#56-class): wrappers one level deeper than the hint
-        keys are not detected — documented gap, asserted here as current
-        behavior so any future fix flips this test consciously."""
+    def test_nested_wrapper_envelope_fail_closed(self):
+        """Nested tool-shaped wrappers must fail closed (#33 review round) —
+        a wrapper cannot launder a tool call past the guard."""
         result = ToolGuard().check({"result": {"tool_name": "bash", "arguments": {"cmd": "id"}}})
-        assert result.passed is True
+        assert result.passed is False
+        assert "unrecognized format" in result.message
 
     def test_resp_type_containing_tool_fails_closed(self):
         result = ToolGuard().check({

@@ -174,8 +174,10 @@ export class ToolGuard extends BaseGuard {
             }
         }
 
-        // Responses API direct function_call items (#33 review)
-        if (respType === 'function_call') {
+        // Responses API direct function_call items (#33 review). Only when
+        // the known shapes yielded nothing — a hybrid envelope carrying both
+        // must not double-count.
+        if (!calls.length && respType === 'function_call') {
             calls.push(response);
         }
 
@@ -185,6 +187,17 @@ export class ToolGuard extends BaseGuard {
         // become fail-closed sentinels.
         const normalized = this.normalizeCalls(calls);
         if (normalized.length === 0) {
+            // Bounded recursive scan (#33 review): tool-shaped objects nested
+            // inside wrappers/arrays must not slip through as "no tool calls".
+            if (this.containsNestedToolShape(response, 0)) {
+                normalized.push({
+                    type: '__unrecognized__',
+                    tool_name: undefined,
+                    arguments: {},
+                });
+                return normalized;
+            }
+
             const isToolShaped = (v: any): boolean =>
                 v !== null && typeof v === 'object' &&
                 ('name' in v || 'arguments' in v);
@@ -224,6 +237,24 @@ export class ToolGuard extends BaseGuard {
         }
 
         return normalized;
+    }
+
+    containsNestedToolShape(value: any, depth: number): boolean {
+        /** Bounded recursive scan for tool-shaped objects (#33 review). */
+        if (depth > 12) return false;
+        if (value === null || typeof value !== 'object') return false;
+        if (this.isToolShapedDict(value)) return true;
+        for (const v of Object.values(value)) {
+            if (this.containsNestedToolShape(v, depth + 1)) return true;
+        }
+        return false;
+    }
+
+    private isToolShapedDict(value: any): boolean {
+        if (value === null || typeof value !== 'object') return false;
+        const t = String(value.type || '').toLowerCase();
+        if (t === 'tool_use' || t === 'function_call' || t === 'tool_call') return true;
+        return 'tool_name' in value || ('name' in value && 'arguments' in value);
     }
 
     private parseToolArguments(raw: any): { ok: boolean; value?: any } {
@@ -416,6 +447,7 @@ export class SafetyGuard extends BaseGuard {
 
     private extractContent(response: ParsedResponse, depth: number = 0): string {
         const MAX_DEPTH = 12;
+        const KNOWN: Record<string, boolean> = { content: true, output: true, text: true, arguments: true };
         const parts: string[] = [];
 
         if (typeof response.content === 'string') parts.push(response.content);
@@ -426,13 +458,17 @@ export class SafetyGuard extends BaseGuard {
         if (response.arguments) parts.push(JSON.stringify(response.arguments));
 
         // Recursive walk for unrecognized shapes (#29). Known keys are
-        // traversed too when they hold CONTAINERS (e.g. an Anthropic-style
-        // content list of text blocks) — only string/stringified forms were
-        // collected above, so nothing hides in a familiar-named key.
+        // traversed too when they hold CONTAINERS — and string leaves under
+        // unknown keys are COLLECTED so injection/PII text cannot hide in a
+        // familiar or arbitrary nested key.
         if (depth < MAX_DEPTH) {
             for (const [key, value] of Object.entries(response)) {
-                if (value === null || typeof value === 'string') continue; // strings/scalars collected above where meaningful
-                if (key === 'arguments' && typeof value === 'object' && !Array.isArray(value)) continue; // already stringified above
+                if (typeof value === 'string') {
+                    if (!(key in KNOWN)) parts.push(value);
+                    continue; // known-key strings were collected above
+                }
+                if (value === null || typeof value !== 'object') continue;
+                if (key === 'arguments' && !Array.isArray(value)) continue; // already stringified above
                 if (key === 'output' && !Array.isArray(value)) continue; // already stringified above
                 parts.push(this.extractContent(value as ParsedResponse, depth + 1));
             }

@@ -196,28 +196,36 @@ class SafetyGuard(BaseGuard):
         """
         parts = self._known_content_parts(response)
 
-        # Recursive walk for unrecognized shapes (#29): choices[], content[],
-        # message dicts, and any other nesting the caller throws at us.
-        # Known keys are traversed too when they hold CONTAINERS (e.g. an
-        # Anthropic-style content list of text blocks) — only the string/
-        # stringified forms collected above are skipped, so nothing hides in
-        # a structure just because its key looks familiar.
         if _depth < self._MAX_CONTENT_DEPTH:
             for key, value in response.items():
-                if key not in self._KNOWN_CONTENT_KEYS:
-                    parts.append(self._nested_content(value, _depth + 1))
+                if not self._should_traverse(key, value):
                     continue
-                # Known keys — skip only the forms already collected above.
-                if key == "arguments":
-                    if isinstance(value, dict):
-                        continue  # stringified above
-                elif isinstance(value, str):
-                    continue  # collected verbatim
-                elif key == "output" and isinstance(value, dict):
-                    continue  # stringified above
                 parts.append(self._nested_content(value, _depth + 1))
 
         return " ".join(parts)
+
+    def _should_traverse(self, key: str, value: Any) -> bool:
+        """Decide whether a response entry still needs recursive scanning.
+
+        - Unknown keys holding strings ARE scanned (nested scalars must be
+          checked for injection/PII — Greptile P1).
+        - Known content keys had their string forms collected verbatim above;
+          their container forms are traversed so nothing hides inside them.
+        - output/arguments dicts were already stringified above — skipping
+          avoids duplicate collection.
+        """
+        if isinstance(value, str):
+            # content/output/text strings were collected verbatim above;
+            # a string under 'arguments' was NOT (only dicts are) and must
+            # still be scanned for injection/PII.
+            if key == "arguments":
+                return True
+            return key not in self._KNOWN_CONTENT_KEYS
+        if isinstance(value, dict):
+            return not (key in ("output", "arguments"))
+        if isinstance(value, list):
+            return True
+        return False  # other scalars carry no scannable text
 
     @staticmethod
     def _known_content_parts(response: Dict) -> List[str]:

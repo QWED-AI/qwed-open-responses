@@ -72,6 +72,11 @@ class ToolGuard(BaseGuard):
         r"os\.system",
     ]
 
+    # Fail-closed bound on JSON-encoded argument payloads before parsing.
+    _MAX_ARGS_JSON_CHARS = 10_000
+    # Depth bound for nested tool-shape detection scans.
+    _MAX_NESTED_SCAN_DEPTH = 12
+
     def __init__(
         self,
         blocked_tools: Optional[List[str]] = None,
@@ -236,12 +241,15 @@ class ToolGuard(BaseGuard):
         """Parse tool-call arguments. Returns (ok, value).
 
         ``None`` and blank strings are legitimate zero-argument payloads.
+        Oversized argument payloads fail closed before parsing (DoS bound).
         """
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             return True, {}
         if isinstance(raw, dict):
             return True, raw
         if isinstance(raw, str):
+            if len(raw) > ToolGuard._MAX_ARGS_JSON_CHARS:
+                return False, None
             try:
                 parsed = json.loads(raw)
             except (ValueError, TypeError):
@@ -362,4 +370,35 @@ class ToolGuard(BaseGuard):
             return True
 
         benign_types = {"text", "", "message", "structured_output"}
-        return resp_type not in benign_types and "tool" in resp_type
+        if resp_type not in benign_types and "tool" in resp_type:
+            return True
+
+        # Bounded recursive scan (#33 review): tool-shaped objects nested
+        # inside wrappers/arrays must not slip through as "no tool calls".
+        return ToolGuard._contains_nested_tool_shape(response, 0)
+
+    @staticmethod
+    def _is_tool_shaped_dict(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        t = str(value.get("type", "")).lower()
+        if t in ("tool_use", "function_call", "tool_call"):
+            return True
+        return "tool_name" in value or ("name" in value and "arguments" in value)
+
+    @classmethod
+    def _contains_nested_tool_shape(cls, value: Any, depth: int) -> bool:
+        """Bounded recursive scan for tool-shaped objects (#33 review)."""
+        if depth > ToolGuard._MAX_NESTED_SCAN_DEPTH:
+            return False
+        if isinstance(value, dict):
+            if ToolGuard._is_tool_shaped_dict(value):
+                return True
+            return any(
+                cls._contains_nested_tool_shape(v, depth + 1) for v in value.values()
+            )
+        if isinstance(value, list):
+            return any(
+                cls._contains_nested_tool_shape(item, depth + 1) for item in value
+            )
+        return False
