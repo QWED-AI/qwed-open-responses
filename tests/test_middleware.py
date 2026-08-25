@@ -375,7 +375,13 @@ class TestVerifiedResponses:
             from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
             mock_openai.return_value = MagicMock()
-            verified = VerifiedOpenAI(guards=[])
+            from qwed_open_responses.guards.base import BaseGuard, GuardResult
+            class _PassAll(BaseGuard):
+                name = 'TestPass'
+                description = 'test'
+                def check(self, response, context=None):
+                    return self.pass_result()
+            verified = VerifiedOpenAI(guards=[_PassAll()])
             with pytest.raises(ValueError, match="Cannot parse OpenAI response"):
                 verified.verify(42)
 
@@ -388,7 +394,13 @@ class TestVerifiedResponses:
             from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
             mock_openai.return_value = self._make_fallback_client()
-            verified = VerifiedOpenAI(guards=[])
+            from qwed_open_responses.guards.base import BaseGuard, GuardResult
+            class _PassAll(BaseGuard):
+                name = 'TestPass'
+                description = 'test'
+                def check(self, response, context=None):
+                    return self.pass_result()
+            verified = VerifiedOpenAI(guards=[_PassAll()])
             with pytest.warns(UserWarning, match="Falling back to Chat Completions"):
                 verified.responses.create(input="test")
 
@@ -401,7 +413,13 @@ class TestVerifiedResponses:
             from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
             mock_openai.return_value = self._make_responses_client()
-            verified = VerifiedOpenAI(guards=[])
+            from qwed_open_responses.guards.base import BaseGuard, GuardResult
+            class _PassAll(BaseGuard):
+                name = 'TestPass'
+                description = 'test'
+                def check(self, response, context=None):
+                    return self.pass_result()
+            verified = VerifiedOpenAI(guards=[_PassAll()])
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
                 verified.responses.create(input="test")
@@ -417,7 +435,13 @@ class TestVerifiedResponses:
             from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
             mock_openai.return_value = self._make_fallback_client()
-            verified = VerifiedOpenAI(guards=[])
+            from qwed_open_responses.guards.base import BaseGuard, GuardResult
+            class _PassAll(BaseGuard):
+                name = 'TestPass'
+                description = 'test'
+                def check(self, response, context=None):
+                    return self.pass_result()
+            verified = VerifiedOpenAI(guards=[_PassAll()])
             with pytest.warns(UserWarning, match="Falling back to Chat Completions"):
                 result = verified.responses.create(input="test")
             assert result._qwed_verification is not None

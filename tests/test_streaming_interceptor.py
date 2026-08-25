@@ -303,7 +303,8 @@ class TestEdgeCases:
         assert stats["total"] == 3
         assert stats["verified"] == 1
 
-    def test_no_guards_passes_all(self):
+    def test_no_guards_fails_closed(self):
+        """(#27) Zero guards must block, not pass."""
         mw = OpenResponsesMiddleware(guards=[])
         items = [
             {
@@ -313,7 +314,7 @@ class TestEdgeCases:
         ]
         result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
         assert len(result) == 1
-        assert result[0]["type"] == "tool_call"
+        assert result[0]["type"] == "system_intervention"
 
 
 # ------------------------------------------------------------------ #

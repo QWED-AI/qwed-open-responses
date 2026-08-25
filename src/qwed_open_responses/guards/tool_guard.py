@@ -134,6 +134,16 @@ class ToolGuard(BaseGuard):
         # Check each tool call
         for call in tool_calls:
             tool_name = call.get("tool_name") or call.get("name")
+
+            # Unrecognized envelope (#28): fail closed, never pass silently.
+            if tool_name is None and call.get("type") == "__unrecognized__":
+                return self.fail_result(
+                    "BLOCKED: Response contains tool-like content in an unrecognized format. "
+                    f"Supported shapes: type=tool_call, tool_calls[], choices[].message.tool_calls[], "
+                    f"content[].type=tool_use.",
+                    details={"response_keys": list(response.keys())},
+                )
+
             arguments = call.get("arguments", {})
 
             # Check blocked list
@@ -187,11 +197,18 @@ class ToolGuard(BaseGuard):
         )
 
     def _extract_tool_calls(self, response: Dict[str, Any]) -> List[Dict]:
-        """Extract tool calls from various response formats."""
+        """Extract tool calls from various response formats.
+
+        Also detects tool-ish content in unrecognized envelope shapes (#28):
+        if the response contains keys that suggest a tool call but none of the
+        known extraction patterns matched, a sentinel entry is returned so
+        the guard fails closed instead of passing with "No tool calls".
+        """
         calls = []
 
-        # Direct tool call
-        if response.get("type") == "tool_call":
+        # Direct tool call (case-insensitive type match)
+        resp_type = str(response.get("type", "")).lower()
+        if resp_type == "tool_call":
             calls.append(response)
 
         # List of tool calls
@@ -204,5 +221,33 @@ class ToolGuard(BaseGuard):
                 msg = choice.get("message", {})
                 if msg.get("tool_calls"):
                     calls.extend(msg["tool_calls"])
+
+        # Anthropic format: content blocks with type == "tool_use"
+        for block in (response.get("content") or []):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                calls.append({
+                    "type": "tool_call",
+                    "tool_name": block.get("name", ""),
+                    "arguments": block.get("input", {}),
+                })
+
+        # Shape-blindness sentinel (#28): if no known pattern matched but the
+        # response carries tool-suggesting keys, return an unrecognized marker
+        # so check() fails closed rather than reporting "No tool calls to verify".
+        if not calls:
+            _TOOL_HINT_KEYS = {"tool_use", "function_call", "tool_name", "function"}
+            top_level = set(response.keys())
+            nested_types = {
+                str(b.get("type", "")).lower()
+                for b in (response.get("content") or [])
+                if isinstance(b, dict)
+            }
+            if (
+                top_level & _TOOL_HINT_KEYS
+                or nested_types & {"tool_use", "function_call"}
+                or (resp_type not in ("text", "", "message", "structured_output")
+                    and "tool" in resp_type)
+            ):
+                calls.append({"type": "__unrecognized__", "tool_name": None, "arguments": {}})
 
         return calls

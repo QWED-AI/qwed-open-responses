@@ -141,6 +141,25 @@ class ResponseVerifier:
         # Parse response if needed
         parsed_response = self._parse_response(response)
 
+        # Fail-closed: zero guards must never produce verified=True (#27).
+        # Absence of verification is not success — it is the opposite.
+        if not guards_to_use:
+            return VerificationResult(
+                verified=False,
+                response=parsed_response,
+                guards_passed=0,
+                guards_failed=0,
+                guard_results=[GuardResult(
+                    guard_name="ResponseVerifier",
+                    passed=False,
+                    message="No guards configured — verification cannot be performed. "
+                            "Pass at least one guard or set default_guards.",
+                    severity="error",
+                )],
+                blocked=self.strict_mode,
+                block_reason="No guards configured — fail-closed (zero-guard verify).",
+            )
+
         # Run all guards
         guard_results: List[GuardResult] = []
         guards_passed = 0

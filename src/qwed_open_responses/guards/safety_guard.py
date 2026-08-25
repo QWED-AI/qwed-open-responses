@@ -183,8 +183,15 @@ class SafetyGuard(BaseGuard):
 
         return self.pass_result(message="All safety checks passed")
 
-    def _extract_content(self, response: Dict) -> str:
-        """Extract text content from response."""
+    def _extract_content(self, response: Dict, _depth: int = 0) -> str:
+        """Extract text content from response — recursively (#29).
+
+        Walks all string values at any nesting depth (bounded to prevent
+        DoS on deeply-nested payloads) so the guard can see content inside
+        the canonical OpenAI shape (choices[].message.content), Anthropic
+        envelopes, and arbitrary nested structures.
+        """
+        MAX_DEPTH = 12
         parts = []
 
         if isinstance(response.get("content"), str):
@@ -199,6 +206,21 @@ class SafetyGuard(BaseGuard):
             parts.append(str(response["output"]))
         if isinstance(response.get("arguments"), dict):
             parts.append(str(response["arguments"]))
+
+        # Recursive walk for unrecognized shapes (#29): choices[], content[],
+        # message dicts, and any other nesting the caller throws at us.
+        if _depth < MAX_DEPTH:
+            for key, value in response.items():
+                if key in ("content", "output", "text", "arguments"):
+                    continue  # already handled above
+                if isinstance(value, dict):
+                    parts.append(self._extract_content(value, _depth + 1))
+                elif isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, dict):
+                            parts.append(self._extract_content(item, _depth + 1))
+                        elif isinstance(item, str):
+                            parts.append(item)
 
         return " ".join(parts)
 

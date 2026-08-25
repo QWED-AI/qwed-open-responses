@@ -102,6 +102,16 @@ export class ToolGuard extends BaseGuard {
             const toolName = call.toolName || call.tool_name || call.name || 'unknown';
             const args = call.arguments || {};
 
+            // Unrecognized envelope (#28): fail closed, never pass silently.
+            if (call.type === '__unrecognized__') {
+                return this.failResult(
+                    'BLOCKED: Response contains tool-like content in an unrecognized format. '
+                    + 'Supported shapes: type=tool_call, tool_calls[], choices[].message.tool_calls[], '
+                    + 'content[].type=tool_use.',
+                    { responseKeys: Object.keys(response) },
+                );
+            }
+
             // Check blocked list
             if (this.blockedTools.has(toolName)) {
                 return this.failResult(`BLOCKED: Tool '${toolName}' is not allowed`, { blockedTool: toolName });
@@ -133,12 +143,59 @@ export class ToolGuard extends BaseGuard {
     private extractToolCalls(response: ParsedResponse): any[] {
         const calls: any[] = [];
 
-        if (response.type === 'tool_call') {
+        const respType = String(response.type || '').toLowerCase();
+
+        if (respType === 'tool_call') {
             calls.push(response);
         }
 
         if (response.toolCalls || response.tool_calls) {
             calls.push(...(response.toolCalls || response.tool_calls || []));
+        }
+
+        // OpenAI format
+        if (response.choices) {
+            for (const choice of (response.choices as any[])) {
+                const msg = choice.message || {};
+                if (msg.tool_calls) calls.push(...msg.tool_calls);
+            }
+        }
+
+        // Anthropic format: content blocks with type == "tool_use"
+        if (Array.isArray(response.content)) {
+            for (const block of (response.content as any[])) {
+                if (block !== null && typeof block === 'object' && block.type === 'tool_use') {
+                    calls.push({
+                        type: 'tool_call',
+                        tool_name: block.name || '',
+                        arguments: block.input || {},
+                    });
+                }
+            }
+        }
+
+        // Shape-blindness sentinel (#28)
+        if (calls.length === 0) {
+            const TOOL_HINT_KEYS = new Set(['tool_use', 'function_call', 'tool_name', 'function']);
+            const topKeys = new Set(Object.keys(response));
+            let hasNestedToolType = false;
+            if (Array.isArray(response.content)) {
+                for (const block of (response.content as any[])) {
+                    if (block !== null && typeof block === 'object' &&
+                        ['tool_use', 'function_call'].includes(String(block.type || '').toLowerCase())) {
+                        hasNestedToolType = true;
+                        break;
+                    }
+                }
+            }
+            if (
+                [...topKeys].some(k => TOOL_HINT_KEYS.has(k)) ||
+                hasNestedToolType ||
+                (respType !== 'text' && respType !== '' && respType !== 'message' &&
+                 respType !== 'structured_output' && respType.includes('tool'))
+            ) {
+                calls.push({ type: '__unrecognized__', tool_name: undefined, arguments: {} });
+            }
         }
 
         return calls;
@@ -253,15 +310,34 @@ export class SafetyGuard extends BaseGuard {
         return this.passResult('All safety checks passed');
     }
 
-    private extractContent(response: ParsedResponse): string {
+    private extractContent(response: ParsedResponse, depth: number = 0): string {
+        const MAX_DEPTH = 12;
         const parts: string[] = [];
 
         if (typeof response.content === 'string') parts.push(response.content);
         if (typeof response.output === 'string') parts.push(response.output);
         if (typeof response.text === 'string') parts.push(response.text);
 
-        if (typeof response.output === 'object') parts.push(JSON.stringify(response.output));
+        if (typeof response.output === 'object' && response.output !== null) parts.push(JSON.stringify(response.output));
         if (response.arguments) parts.push(JSON.stringify(response.arguments));
+
+        // Recursive walk for unrecognized shapes (#29)
+        if (depth < MAX_DEPTH) {
+            for (const [key, value] of Object.entries(response)) {
+                if (key === 'content' || key === 'output' || key === 'text' || key === 'arguments') continue;
+                if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+                    parts.push(this.extractContent(value as ParsedResponse, depth + 1));
+                } else if (Array.isArray(value)) {
+                    for (const item of value) {
+                        if (item !== null && typeof item === 'object') {
+                            parts.push(this.extractContent(item as ParsedResponse, depth + 1));
+                        } else if (typeof item === 'string') {
+                            parts.push(item);
+                        }
+                    }
+                }
+            }
+        }
 
         return parts.join(' ');
     }
