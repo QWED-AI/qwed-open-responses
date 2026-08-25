@@ -149,13 +149,15 @@ class ResponseVerifier:
                 response=parsed_response,
                 guards_passed=0,
                 guards_failed=0,
-                guard_results=[GuardResult(
-                    guard_name="ResponseVerifier",
-                    passed=False,
-                    message="No guards configured — verification cannot be performed. "
-                            "Pass at least one guard or set default_guards.",
-                    severity="error",
-                )],
+                guard_results=[
+                    GuardResult(
+                        guard_name="ResponseVerifier",
+                        passed=False,
+                        message="No guards configured — verification cannot be performed. "
+                        "Pass at least one guard or set default_guards.",
+                        severity="error",
+                    )
+                ],
                 blocked=self.strict_mode,
                 block_reason="No guards configured — fail-closed (zero-guard verify).",
             )

@@ -183,6 +183,9 @@ class SafetyGuard(BaseGuard):
 
         return self.pass_result(message="All safety checks passed")
 
+    _MAX_CONTENT_DEPTH = 12
+    _KNOWN_CONTENT_KEYS = ("content", "output", "text", "arguments")
+
     def _extract_content(self, response: Dict, _depth: int = 0) -> str:
         """Extract text content from response — recursively (#29).
 
@@ -191,7 +194,30 @@ class SafetyGuard(BaseGuard):
         the canonical OpenAI shape (choices[].message.content), Anthropic
         envelopes, and arbitrary nested structures.
         """
-        MAX_DEPTH = 12
+        parts = self._known_content_parts(response)
+
+        # Recursive walk for unrecognized shapes (#29): choices[], content[],
+        # message dicts, and any other nesting the caller throws at us.
+        # Known keys are traversed too when they hold CONTAINERS (e.g. an
+        # Anthropic-style content list of text blocks) — only the string/
+        # stringified forms collected above are skipped, so nothing hides in
+        # a structure just because its key looks familiar.
+        if _depth < self._MAX_CONTENT_DEPTH:
+            for key, value in response.items():
+                if key in self._KNOWN_CONTENT_KEYS:
+                    if isinstance(value, str):
+                        continue  # already collected verbatim
+                    if key == "arguments":
+                        continue  # dict already stringified above
+                    if key == "output" and isinstance(value, dict):
+                        continue  # already stringified above
+                parts.append(self._nested_content(value, _depth + 1))
+
+        return " ".join(parts)
+
+    @staticmethod
+    def _known_content_parts(response: Dict) -> List[str]:
+        """Collect strings from the well-known top-level content keys."""
         parts = []
 
         if isinstance(response.get("content"), str):
@@ -207,22 +233,21 @@ class SafetyGuard(BaseGuard):
         if isinstance(response.get("arguments"), dict):
             parts.append(str(response["arguments"]))
 
-        # Recursive walk for unrecognized shapes (#29): choices[], content[],
-        # message dicts, and any other nesting the caller throws at us.
-        if _depth < MAX_DEPTH:
-            for key, value in response.items():
-                if key in ("content", "output", "text", "arguments"):
-                    continue  # already handled above
-                if isinstance(value, dict):
-                    parts.append(self._extract_content(value, _depth + 1))
-                elif isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, dict):
-                            parts.append(self._extract_content(item, _depth + 1))
-                        elif isinstance(item, str):
-                            parts.append(item)
+        return parts
 
-        return " ".join(parts)
+    def _nested_content(self, value: Any, depth: int) -> str:
+        """Recursively collect strings from unrecognized nesting levels."""
+        if depth > self._MAX_CONTENT_DEPTH:
+            return ""
+        if isinstance(value, dict):
+            return self._extract_content(value, depth)
+        if isinstance(value, list):
+            return " ".join(
+                part for part in (self._nested_content(item, depth) for item in value)
+            )
+        if isinstance(value, str):
+            return value
+        return ""
 
     def _check_pii(self, content: str) -> List[str]:
         """Check for PII in content."""

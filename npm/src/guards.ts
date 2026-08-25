@@ -174,10 +174,33 @@ export class ToolGuard extends BaseGuard {
             }
         }
 
-        // Shape-blindness sentinel (#28)
-        if (calls.length === 0) {
-            const TOOL_HINT_KEYS = new Set(['tool_use', 'function_call', 'tool_name', 'function']);
-            const topKeys = new Set(Object.keys(response));
+        // Responses API direct function_call items (#33 review)
+        if (respType === 'function_call') {
+            calls.push(response);
+        }
+
+        // Normalize (#33 review): flatten function-wrapped calls and decode
+        // JSON-encoded argument strings so blocklist/dangerous-argument
+        // policies always operate on tool_name/arguments. Unparseable calls
+        // become fail-closed sentinels.
+        const normalized = this.normalizeCalls(calls);
+        if (normalized.length === 0) {
+            const isToolShaped = (v: any): boolean =>
+                v !== null && typeof v === 'object' &&
+                ('name' in v || 'arguments' in v);
+
+            let toolShaped = false;
+            for (const key of ['tool_use', 'function_call', 'function']) {
+                if (isToolShaped((response as any)[key])) {
+                    toolShaped = true;
+                    break;
+                }
+            }
+
+            const hasToolNameWithArgs =
+                (response as any).tool_name !== undefined &&
+                'arguments' in response;
+
             let hasNestedToolType = false;
             if (Array.isArray(response.content)) {
                 for (const block of (response.content as any[])) {
@@ -188,17 +211,90 @@ export class ToolGuard extends BaseGuard {
                     }
                 }
             }
+
             if (
-                [...topKeys].some(k => TOOL_HINT_KEYS.has(k)) ||
+                toolShaped ||
+                hasToolNameWithArgs ||
                 hasNestedToolType ||
                 (respType !== 'text' && respType !== '' && respType !== 'message' &&
                  respType !== 'structured_output' && respType.includes('tool'))
             ) {
-                calls.push({ type: '__unrecognized__', tool_name: undefined, arguments: {} });
+                normalized.push({ type: '__unrecognized__', tool_name: undefined, arguments: {} });
             }
         }
 
-        return calls;
+        return normalized;
+    }
+
+    private parseToolArguments(raw: any): { ok: boolean; value?: any } {
+        if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+            return { ok: true, value: raw };
+        }
+        if (typeof raw === 'string') {
+            try {
+                const parsed = JSON.parse(raw);
+                if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    return { ok: true, value: parsed };
+                }
+            } catch {
+                // fall through to fail-closed
+            }
+        }
+        return { ok: false };
+    }
+
+    private normalizeCalls(calls: any[]): any[] {
+        const sentinel = (name?: string): any => ({
+            type: '__unrecognized__',
+            tool_name: undefined,
+            arguments: {},
+            attempted_name: name ?? undefined,
+        });
+
+        const out: any[] = [];
+        for (const call of calls) {
+            if (call.type === '__unrecognized__') {
+                out.push(call);
+                continue;
+            }
+
+            // OpenAI function wrapper: {type?, function: {name, arguments}}
+            const fn = call.function;
+            if (fn !== null && typeof fn === 'object' && fn.name !== undefined) {
+                const parsed = this.parseToolArguments(fn.arguments ?? {});
+                if (!parsed.ok) {
+                    out.push(sentinel(fn.name));
+                    continue;
+                }
+                out.push({ type: 'tool_call', tool_name: fn.name, arguments: parsed.value });
+                continue;
+            }
+
+            // Responses API direct item: {type: 'function_call', name, arguments}
+            if (String(call.type || '').toLowerCase() === 'function_call' && call.name !== undefined) {
+                const parsed = this.parseToolArguments(call.arguments ?? {});
+                if (!parsed.ok) {
+                    out.push(sentinel(call.name));
+                    continue;
+                }
+                out.push({ type: 'tool_call', tool_name: call.name, arguments: parsed.value });
+                continue;
+            }
+
+            // JSON-encoded argument strings on otherwise-recognized calls
+            if (typeof call.arguments === 'string') {
+                const parsed = this.parseToolArguments(call.arguments);
+                if (!parsed.ok) {
+                    out.push(sentinel(call.toolName || call.tool_name || call.name));
+                    continue;
+                }
+                out.push({ ...call, arguments: parsed.value });
+                continue;
+            }
+
+            out.push(call);
+        }
+        return out;
     }
 }
 
@@ -321,21 +417,16 @@ export class SafetyGuard extends BaseGuard {
         if (typeof response.output === 'object' && response.output !== null) parts.push(JSON.stringify(response.output));
         if (response.arguments) parts.push(JSON.stringify(response.arguments));
 
-        // Recursive walk for unrecognized shapes (#29)
+        // Recursive walk for unrecognized shapes (#29). Known keys are
+        // traversed too when they hold CONTAINERS (e.g. an Anthropic-style
+        // content list of text blocks) — only string/stringified forms were
+        // collected above, so nothing hides in a familiar-named key.
         if (depth < MAX_DEPTH) {
             for (const [key, value] of Object.entries(response)) {
-                if (key === 'content' || key === 'output' || key === 'text' || key === 'arguments') continue;
-                if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-                    parts.push(this.extractContent(value as ParsedResponse, depth + 1));
-                } else if (Array.isArray(value)) {
-                    for (const item of value) {
-                        if (item !== null && typeof item === 'object') {
-                            parts.push(this.extractContent(item as ParsedResponse, depth + 1));
-                        } else if (typeof item === 'string') {
-                            parts.push(item);
-                        }
-                    }
-                }
+                if (value === null || typeof value !== 'object') continue; // strings/scalars collected above where meaningful
+                if (key === 'arguments') continue; // already stringified above
+                if (key === 'output' && !Array.isArray(value)) continue; // already stringified above
+                parts.push(this.extractContent(value as ParsedResponse, depth + 1));
             }
         }
 

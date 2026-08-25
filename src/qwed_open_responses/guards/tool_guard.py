@@ -4,8 +4,9 @@ Tool Guard - Validates tool calls for safety and correctness.
 Blocks dangerous tools and validates tool arguments.
 """
 
-from typing import Any, Dict, Optional, List, Set, Callable
+from typing import Any, Dict, Optional, List, Set, Callable, Tuple
 from .base import BaseGuard, GuardResult
+import json
 import re
 
 
@@ -139,8 +140,8 @@ class ToolGuard(BaseGuard):
             if tool_name is None and call.get("type") == "__unrecognized__":
                 return self.fail_result(
                     "BLOCKED: Response contains tool-like content in an unrecognized format. "
-                    f"Supported shapes: type=tool_call, tool_calls[], choices[].message.tool_calls[], "
-                    f"content[].type=tool_use.",
+                    "Supported shapes: type=tool_call, tool_calls[], choices[].message.tool_calls[], "
+                    "content[].type=tool_use.",
                     details={"response_keys": list(response.keys())},
                 )
 
@@ -203,12 +204,135 @@ class ToolGuard(BaseGuard):
         if the response contains keys that suggest a tool call but none of the
         known extraction patterns matched, a sentinel entry is returned so
         the guard fails closed instead of passing with "No tool calls".
+
+        Every extracted call is normalized (#33 review): OpenAI function-call
+        wrappers are flattened and JSON-encoded argument strings are parsed,
+        so blocklist and dangerous-argument checks always operate on
+        ``tool_name``/``arguments`` regardless of envelope. Unparseable calls
+        become fail-closed sentinels.
         """
-        calls = []
+        resp_type = str(response.get("type", "")).lower()
+
+        calls: List[Dict] = []
+        calls.extend(self._extract_known_shapes(response))
+
+        # Responses API direct function_call items (#33 review)
+        if resp_type == "function_call":
+            calls.append(response)
+
+        calls = self._normalize_calls(calls)
+
+        if not calls:
+            if self._looks_like_unrecognized_tool_content(response, resp_type):
+                calls.append(
+                    {"type": "__unrecognized__", "tool_name": None, "arguments": {}}
+                )
+        return calls
+
+    @staticmethod
+    def _parse_tool_arguments(raw: Any) -> Tuple[bool, Any]:
+        """Parse tool-call arguments. Returns (ok, value)."""
+        if isinstance(raw, dict):
+            return True, raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                return False, None
+            if isinstance(parsed, dict):
+                return True, parsed
+        return False, None
+
+    @classmethod
+    def _normalize_calls(cls, calls: List[Dict]) -> List[Dict]:
+        """Flatten function-wrapped calls and decode string arguments.
+
+        - choices[].message.tool_calls[] items carry a nested ``function``
+          object ({name, arguments-as-JSON-string}) — flattened so the
+          blocked-tool and dangerous-argument policies can see them.
+        - Responses API items carry top-level name + JSON-string arguments.
+        - Anything unparseable becomes a fail-closed sentinel.
+        """
+        normalized: List[Dict] = []
+        for call in calls:
+            if call.get("type") == "__unrecognized__":
+                normalized.append(call)
+                continue
+
+            fn = call.get("function")
+            if isinstance(fn, dict) and fn.get("name") is not None:
+                ok, args = cls._parse_tool_arguments(fn.get("arguments", {}))
+                if not ok:
+                    normalized.append(
+                        {
+                            "type": "__unrecognized__",
+                            "tool_name": None,
+                            "arguments": {},
+                            "reason": "unparseable_arguments",
+                            "attempted_name": fn["name"],
+                        }
+                    )
+                    continue
+                normalized.append(
+                    {
+                        "type": "tool_call",
+                        "tool_name": fn["name"],
+                        "arguments": args,
+                    }
+                )
+                continue
+
+            if str(call.get("type", "")).lower() == "function_call" and call.get(
+                "name"
+            ):
+                ok, args = cls._parse_tool_arguments(call.get("arguments", {}))
+                if not ok:
+                    normalized.append(
+                        {
+                            "type": "__unrecognized__",
+                            "tool_name": None,
+                            "arguments": {},
+                            "reason": "unparseable_arguments",
+                            "attempted_name": call["name"],
+                        }
+                    )
+                    continue
+                normalized.append(
+                    {
+                        "type": "tool_call",
+                        "tool_name": call["name"],
+                        "arguments": args,
+                    }
+                )
+                continue
+
+            args = call.get("arguments", {})
+            if isinstance(args, str):
+                ok, parsed_args = cls._parse_tool_arguments(args)
+                if not ok:
+                    normalized.append(
+                        {
+                            "type": "__unrecognized__",
+                            "tool_name": None,
+                            "arguments": {},
+                            "reason": "unparseable_arguments",
+                            "attempted_name": call.get("tool_name") or call.get("name"),
+                        }
+                    )
+                    continue
+                normalized.append({**call, "arguments": parsed_args})
+                continue
+
+            normalized.append(call)
+        return normalized
+
+    @staticmethod
+    def _extract_known_shapes(response: Dict[str, Any]) -> List[Dict]:
+        """Extract from the supported envelope shapes."""
+        calls: List[Dict] = []
 
         # Direct tool call (case-insensitive type match)
-        resp_type = str(response.get("type", "")).lower()
-        if resp_type == "tool_call":
+        if str(response.get("type", "")).lower() == "tool_call":
             calls.append(response)
 
         # List of tool calls
@@ -216,38 +340,51 @@ class ToolGuard(BaseGuard):
             calls.extend(response["tool_calls"])
 
         # OpenAI format
-        if "choices" in response:
-            for choice in response.get("choices", []):
-                msg = choice.get("message", {})
-                if msg.get("tool_calls"):
-                    calls.extend(msg["tool_calls"])
+        for choice in response.get("choices", []):
+            msg = choice.get("message", {})
+            if msg.get("tool_calls"):
+                calls.extend(msg["tool_calls"])
 
         # Anthropic format: content blocks with type == "tool_use"
-        for block in (response.get("content") or []):
+        for block in response.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
-                calls.append({
-                    "type": "tool_call",
-                    "tool_name": block.get("name", ""),
-                    "arguments": block.get("input", {}),
-                })
-
-        # Shape-blindness sentinel (#28): if no known pattern matched but the
-        # response carries tool-suggesting keys, return an unrecognized marker
-        # so check() fails closed rather than reporting "No tool calls to verify".
-        if not calls:
-            _TOOL_HINT_KEYS = {"tool_use", "function_call", "tool_name", "function"}
-            top_level = set(response.keys())
-            nested_types = {
-                str(b.get("type", "")).lower()
-                for b in (response.get("content") or [])
-                if isinstance(b, dict)
-            }
-            if (
-                top_level & _TOOL_HINT_KEYS
-                or nested_types & {"tool_use", "function_call"}
-                or (resp_type not in ("text", "", "message", "structured_output")
-                    and "tool" in resp_type)
-            ):
-                calls.append({"type": "__unrecognized__", "tool_name": None, "arguments": {}})
+                calls.append(
+                    {
+                        "type": "tool_call",
+                        "tool_name": block.get("name", ""),
+                        "arguments": block.get("input", {}),
+                    }
+                )
 
         return calls
+
+    @staticmethod
+    def _looks_like_unrecognized_tool_content(
+        response: Dict[str, Any], resp_type: str
+    ) -> bool:
+        """Detect tool-ish content that matched no known envelope shape (#28).
+
+        Shape-based, not name-based: a hint key only counts when its VALUE is
+        tool-shaped (an object carrying name/arguments), so ordinary fields
+        like ``function: "parse_csv"`` on a structured response still pass.
+        """
+        # Tool-shaped objects under recognizable hint keys.
+        for key in ("tool_use", "function_call", "function"):
+            value = response.get(key)
+            if isinstance(value, dict) and ("name" in value or "arguments" in value):
+                return True
+
+        # tool_name + arguments together is a tool call in all but name.
+        if response.get("tool_name") is not None and "arguments" in response:
+            return True
+
+        nested_types = {
+            str(block.get("type", "")).lower()
+            for block in (response.get("content") or [])
+            if isinstance(block, dict)
+        }
+        if nested_types & {"tool_use", "function_call"}:
+            return True
+
+        benign_types = {"text", "", "message", "structured_output"}
+        return resp_type not in benign_types and "tool" in resp_type
