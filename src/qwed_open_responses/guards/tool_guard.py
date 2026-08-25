@@ -169,7 +169,7 @@ class ToolGuard(BaseGuard):
             for pattern in self.dangerous_patterns:
                 if pattern.search(args_str):
                     return self.fail_result(
-                        f"BLOCKED: Dangerous pattern detected in tool arguments",
+                        "BLOCKED: Dangerous pattern detected in tool arguments",
                         details={
                             "tool": tool_name,
                             "pattern": pattern.pattern,
@@ -216,8 +216,10 @@ class ToolGuard(BaseGuard):
         calls: List[Dict] = []
         calls.extend(self._extract_known_shapes(response))
 
-        # Responses API direct function_call items (#33 review)
-        if resp_type == "function_call":
+        # Responses API direct function_call items (#33 review). Only when the
+        # known shapes yielded nothing — a hybrid response carrying both
+        # type: function_call and a tool_calls array must not double-count.
+        if not calls and resp_type == "function_call":
             calls.append(response)
 
         calls = self._normalize_calls(calls)
@@ -231,7 +233,12 @@ class ToolGuard(BaseGuard):
 
     @staticmethod
     def _parse_tool_arguments(raw: Any) -> Tuple[bool, Any]:
-        """Parse tool-call arguments. Returns (ok, value)."""
+        """Parse tool-call arguments. Returns (ok, value).
+
+        ``None`` and blank strings are legitimate zero-argument payloads.
+        """
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return True, {}
         if isinstance(raw, dict):
             return True, raw
         if isinstance(raw, str):
@@ -243,88 +250,56 @@ class ToolGuard(BaseGuard):
                 return True, parsed
         return False, None
 
+    @staticmethod
+    def _unrecognized_sentinel(name: Any = None) -> Dict[str, Any]:
+        """Fail-closed sentinel for calls whose arguments cannot be parsed."""
+        return {
+            "type": "__unrecognized__",
+            "tool_name": None,
+            "arguments": {},
+            "reason": "unparseable_arguments",
+            "attempted_name": name,
+        }
+
+    @classmethod
+    def _normalize_one(cls, call: Dict[str, Any]) -> Dict[str, Any]:
+        if call.get("type") == "__unrecognized__":
+            return call
+
+        # OpenAI function wrapper: {function: {name, arguments-as-JSON-string}}
+        fn = call.get("function")
+        if isinstance(fn, dict) and fn.get("name") is not None:
+            name = fn["name"]
+            ok, args = cls._parse_tool_arguments(fn.get("arguments", {}))
+            if not ok:
+                return cls._unrecognized_sentinel(name)
+            return {"type": "tool_call", "tool_name": name, "arguments": args}
+
+        # Responses API direct item: {type: "function_call", name, arguments}
+        if str(call.get("type", "")).lower() == "function_call" and (
+            call.get("name") is not None
+        ):
+            name = call["name"]
+            ok, args = cls._parse_tool_arguments(call.get("arguments", {}))
+            if not ok:
+                return cls._unrecognized_sentinel(name)
+            return {"type": "tool_call", "tool_name": name, "arguments": args}
+
+        # JSON-encoded argument strings on otherwise-recognized calls
+        raw = call.get("arguments")
+        if isinstance(raw, str):
+            ok, parsed = cls._parse_tool_arguments(raw)
+            if not ok:
+                return cls._unrecognized_sentinel(
+                    call.get("tool_name") or call.get("name")
+                )
+            return {**call, "arguments": parsed}
+
+        return call
+
     @classmethod
     def _normalize_calls(cls, calls: List[Dict]) -> List[Dict]:
-        """Flatten function-wrapped calls and decode string arguments.
-
-        - choices[].message.tool_calls[] items carry a nested ``function``
-          object ({name, arguments-as-JSON-string}) — flattened so the
-          blocked-tool and dangerous-argument policies can see them.
-        - Responses API items carry top-level name + JSON-string arguments.
-        - Anything unparseable becomes a fail-closed sentinel.
-        """
-        normalized: List[Dict] = []
-        for call in calls:
-            if call.get("type") == "__unrecognized__":
-                normalized.append(call)
-                continue
-
-            fn = call.get("function")
-            if isinstance(fn, dict) and fn.get("name") is not None:
-                ok, args = cls._parse_tool_arguments(fn.get("arguments", {}))
-                if not ok:
-                    normalized.append(
-                        {
-                            "type": "__unrecognized__",
-                            "tool_name": None,
-                            "arguments": {},
-                            "reason": "unparseable_arguments",
-                            "attempted_name": fn["name"],
-                        }
-                    )
-                    continue
-                normalized.append(
-                    {
-                        "type": "tool_call",
-                        "tool_name": fn["name"],
-                        "arguments": args,
-                    }
-                )
-                continue
-
-            if str(call.get("type", "")).lower() == "function_call" and call.get(
-                "name"
-            ):
-                ok, args = cls._parse_tool_arguments(call.get("arguments", {}))
-                if not ok:
-                    normalized.append(
-                        {
-                            "type": "__unrecognized__",
-                            "tool_name": None,
-                            "arguments": {},
-                            "reason": "unparseable_arguments",
-                            "attempted_name": call["name"],
-                        }
-                    )
-                    continue
-                normalized.append(
-                    {
-                        "type": "tool_call",
-                        "tool_name": call["name"],
-                        "arguments": args,
-                    }
-                )
-                continue
-
-            args = call.get("arguments", {})
-            if isinstance(args, str):
-                ok, parsed_args = cls._parse_tool_arguments(args)
-                if not ok:
-                    normalized.append(
-                        {
-                            "type": "__unrecognized__",
-                            "tool_name": None,
-                            "arguments": {},
-                            "reason": "unparseable_arguments",
-                            "attempted_name": call.get("tool_name") or call.get("name"),
-                        }
-                    )
-                    continue
-                normalized.append({**call, "arguments": parsed_args})
-                continue
-
-            normalized.append(call)
-        return normalized
+        return [cls._normalize_one(call) for call in calls]
 
     @staticmethod
     def _extract_known_shapes(response: Dict[str, Any]) -> List[Dict]:

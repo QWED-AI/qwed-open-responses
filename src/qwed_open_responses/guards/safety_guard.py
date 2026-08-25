@@ -204,13 +204,17 @@ class SafetyGuard(BaseGuard):
         # a structure just because its key looks familiar.
         if _depth < self._MAX_CONTENT_DEPTH:
             for key, value in response.items():
-                if key in self._KNOWN_CONTENT_KEYS:
-                    if isinstance(value, str):
-                        continue  # already collected verbatim
-                    if key == "arguments":
-                        continue  # dict already stringified above
-                    if key == "output" and isinstance(value, dict):
-                        continue  # already stringified above
+                if key not in self._KNOWN_CONTENT_KEYS:
+                    parts.append(self._nested_content(value, _depth + 1))
+                    continue
+                # Known keys — skip only the forms already collected above.
+                if key == "arguments":
+                    if isinstance(value, dict):
+                        continue  # stringified above
+                elif isinstance(value, str):
+                    continue  # collected verbatim
+                elif key == "output" and isinstance(value, dict):
+                    continue  # stringified above
                 parts.append(self._nested_content(value, _depth + 1))
 
         return " ".join(parts)

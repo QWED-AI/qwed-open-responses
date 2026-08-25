@@ -227,6 +227,14 @@ export class ToolGuard extends BaseGuard {
     }
 
     private parseToolArguments(raw: any): { ok: boolean; value?: any } {
+        // None / blank payloads are legitimate zero-argument calls.
+        if (
+            raw === null ||
+            raw === undefined ||
+            (typeof raw === 'string' && raw.trim() === '')
+        ) {
+            return { ok: true, value: {} };
+        }
         if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
             return { ok: true, value: raw };
         }
@@ -423,8 +431,8 @@ export class SafetyGuard extends BaseGuard {
         // collected above, so nothing hides in a familiar-named key.
         if (depth < MAX_DEPTH) {
             for (const [key, value] of Object.entries(response)) {
-                if (value === null || typeof value !== 'object') continue; // strings/scalars collected above where meaningful
-                if (key === 'arguments') continue; // already stringified above
+                if (value === null || typeof value === 'string') continue; // strings/scalars collected above where meaningful
+                if (key === 'arguments' && typeof value === 'object' && !Array.isArray(value)) continue; // already stringified above
                 if (key === 'output' && !Array.isArray(value)) continue; // already stringified above
                 parts.push(this.extractContent(value as ParsedResponse, depth + 1));
             }

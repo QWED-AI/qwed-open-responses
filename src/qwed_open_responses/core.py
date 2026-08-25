@@ -5,7 +5,7 @@ The ResponseVerifier is the main entry point for verifying AI responses.
 It orchestrates multiple guards to ensure responses are safe and correct.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
