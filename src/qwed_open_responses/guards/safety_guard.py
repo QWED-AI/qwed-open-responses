@@ -222,7 +222,7 @@ class SafetyGuard(BaseGuard):
                 return True
             return key not in self._KNOWN_CONTENT_KEYS
         if isinstance(value, dict):
-            return not (key in ("output", "arguments"))
+            return key not in ("output", "arguments")
         if isinstance(value, list):
             return True
         return False  # other scalars carry no scannable text
@@ -254,9 +254,8 @@ class SafetyGuard(BaseGuard):
         if isinstance(value, dict):
             return self._extract_content(value, depth)
         if isinstance(value, list):
-            return " ".join(
-                part for part in (self._nested_content(item, depth) for item in value)
-            )
+            collected = [self._nested_content(item, depth) for item in value]
+            return " ".join(collected)
         if isinstance(value, str):
             return value
         return ""

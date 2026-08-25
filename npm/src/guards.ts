@@ -233,29 +233,27 @@ export class ToolGuard extends BaseGuard {
                  respType !== 'structured_output' && respType.includes('tool'))
             ) {
                 normalized.push({ type: '__unrecognized__', tool_name: undefined, arguments: {} });
+                return normalized;
+            }
+
+            // Declared-benign envelopes are validated structurally above; the
+            // bounded deep-scan applies only to undeclared/unmodeled types.
+            if (respType !== 'text' && respType !== '' &&
+                respType !== 'message' && respType !== 'structured_output') {
+                if (this.containsNestedToolShape(response, 0)) {
+                    normalized.push({
+                        type: '__unrecognized__',
+                        tool_name: undefined,
+                        arguments: {},
+                    });
+                }
             }
         }
 
         return normalized;
     }
 
-    containsNestedToolShape(value: any, depth: number): boolean {
-        /** Bounded recursive scan for tool-shaped objects (#33 review). */
-        if (depth > 12) return false;
-        if (value === null || typeof value !== 'object') return false;
-        if (this.isToolShapedDict(value)) return true;
-        for (const v of Object.values(value)) {
-            if (this.containsNestedToolShape(v, depth + 1)) return true;
-        }
-        return false;
-    }
-
-    private isToolShapedDict(value: any): boolean {
-        if (value === null || typeof value !== 'object') return false;
-        const t = String(value.type || '').toLowerCase();
-        if (t === 'tool_use' || t === 'function_call' || t === 'tool_call') return true;
-        return 'tool_name' in value || ('name' in value && 'arguments' in value);
-    }
+    private static MAX_ARGS_JSON_CHARS = 10_000;
 
     private parseToolArguments(raw: any): { ok: boolean; value?: any } {
         // None / blank payloads are legitimate zero-argument calls.
@@ -334,6 +332,24 @@ export class ToolGuard extends BaseGuard {
             out.push(call);
         }
         return out;
+    }
+
+    containsNestedToolShape(value: any, depth: number): boolean {
+        /** Bounded recursive scan for tool-shaped objects (#33 review). */
+        if (depth > 12) return false;
+        if (value === null || typeof value !== 'object') return false;
+        if (this.isToolShapedDict(value)) return true;
+        for (const v of Object.values(value)) {
+            if (this.containsNestedToolShape(v, depth + 1)) return true;
+        }
+        return false;
+    }
+
+    private isToolShapedDict(value: any): boolean {
+        if (value === null || typeof value !== 'object') return false;
+        const t = String(value.type || '').toLowerCase();
+        if (t === 'tool_use' || t === 'function_call' || t === 'tool_call') return true;
+        return 'tool_name' in value || ('name' in value && 'arguments' in value);
     }
 }
 

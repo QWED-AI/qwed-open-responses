@@ -369,8 +369,15 @@ class ToolGuard(BaseGuard):
         if nested_types & {"tool_use", "function_call"}:
             return True
 
-        benign_types = {"text", "", "message", "structured_output"}
-        if resp_type not in benign_types and "tool" in resp_type:
+        declared_benign = {"text", "message", "structured_output"}
+        if resp_type in declared_benign:
+            # Declared-benign envelopes are validated structurally above; the
+            # bounded deep-scan applies only to undeclared/unmodeled types.
+            # Untyped envelopes ("") stay deep-scanned - they are exactly the
+            # laundering vector (Sentry: structured_output carrying
+            # name+arguments is a legitimate payload shape, not a hidden tool).
+            return False
+        if "tool" in resp_type:
             return True
 
         # Bounded recursive scan (#33 review): tool-shaped objects nested
