@@ -272,3 +272,31 @@ class TestZeroGuardsFailClosed:
         verifier = ResponseVerifier()  # docstring-recommended construction
         result = verifier.verify({"content": "anything"})
         assert result.verified is False
+
+
+# ----------------------------------------------------------------------
+# Malformed entry handling (#33 review round)
+# ----------------------------------------------------------------------
+
+class TestMalformedEntryHandling:
+    """Non-dict items and malformed shapes must fail closed, not crash or pass."""
+
+    def test_non_dict_tool_calls_blocked(self):
+        guard = ToolGuard()
+        result = guard.check({
+            "tool_calls": ["unverifiable", {"name": "safe", "arguments": {}}],
+        })
+        assert result.passed is False
+
+    def test_non_dict_choices_items_fail_closed(self):
+        guard = ToolGuard()
+        verifier = ResponseVerifier(default_guards=[guard])
+        result = guard.check({
+            "choices": ["not-a-dict"],
+        })
+        assert result.passed is False
+
+    def test_none_choice_element_no_crash(self):
+        guard = ToolGuard()
+        result = guard.check({"choices": [None]})
+        assert result.passed is False

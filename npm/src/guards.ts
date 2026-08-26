@@ -149,15 +149,34 @@ export class ToolGuard extends BaseGuard {
             calls.push(response);
         }
 
+        // List of tool calls — validate each member
         if (response.toolCalls || response.tool_calls) {
-            calls.push(...(response.toolCalls || response.tool_calls || []));
+            for (const c of (response.toolCalls || response.tool_calls || [])) {
+                if (c !== null && typeof c === 'object') {
+                    calls.push(c);
+                } else {
+                    calls.push({ type: '__malformed__', raw: c });
+                }
+            }
         }
 
-        // OpenAI format
+        // OpenAI format — validate each choice and tool_call member
         if (response.choices) {
             for (const choice of (response.choices as any[])) {
+                if (choice === null || typeof choice !== 'object') {
+                    calls.push({ type: '__malformed__', raw: choice });
+                    continue;
+                }
                 const msg = choice.message || {};
-                if (msg.tool_calls) calls.push(...msg.tool_calls);
+                if (msg.tool_calls) {
+                    for (const c of msg.tool_calls) {
+                        if (c !== null && typeof c === 'object') {
+                            calls.push(c);
+                        } else {
+                            calls.push({ type: '__malformed__', raw: c });
+                        }
+                    }
+                }
             }
         }
 
