@@ -230,6 +230,67 @@ class TestSafetyGuardContentTraversal:
         })
         assert result.passed is False
 
+# ----------------------------------------------------------------------
+# Malformed entry handling (#33 — bot findings: Greptile P1, Sentry HIGH, T-Rex)
+# ----------------------------------------------------------------------
+
+class TestMalformedEntryHandling:
+    """Non-object tool_calls/choices members must fail closed, never pass or crash.
+
+    Reverts a regression where non-dict members were silently filtered out in
+    _extract_known_shapes (fail-open: ``{"tool_calls": ["unverifiable"]}``
+    reached the "No tool calls to verify" success path) and a non-dict choice
+    crashed on ``choice.get(...)`` (Sentry HIGH).
+    """
+
+    def test_non_dict_tool_calls_blocked(self):
+        # Sole malformed member must not fall through to "No tool calls".
+        guard = ToolGuard()
+        result = guard.check({"tool_calls": ["unverifiable"]})
+        assert result.passed is False
+        assert "malformed" in result.message.lower()
+
+    def test_mixed_tool_calls_rejects_malformed(self):
+        # A valid member cannot mask a malformed sibling.
+        guard = ToolGuard()
+        result = guard.check({
+            "tool_calls": [{"name": "safe", "arguments": {}}, "unverifiable"],
+        })
+        assert result.passed is False
+
+    def test_non_dict_choices_item_fails_closed(self):
+        guard = ToolGuard()
+        result = guard.check({"choices": ["not-a-dict"]})
+        assert result.passed is False
+        assert "malformed" in result.message.lower()
+
+    def test_none_choice_element_no_crash(self):
+        guard = ToolGuard()
+        result = guard.check({"choices": [None]})
+        assert result.passed is False
+
+    def test_nested_choices_message_tool_calls_malformed(self):
+        guard = ToolGuard()
+        result = guard.check({
+            "choices": [{"message": {"tool_calls": ["bad", {"name": "ok", "arguments": {}}]}}],
+        })
+        assert result.passed is False
+
+    def test_verifier_fails_closed_on_malformed(self):
+        # ResponseVerifier must surface the guard failure (verified=False).
+        guard = ToolGuard()
+        verifier = ResponseVerifier(default_guards=[guard])
+        result = verifier.verify({"tool_calls": ["unverifiable"]})
+        assert result.verified is False
+        assert result.guards_failed >= 1
+
+    def test_valid_tool_calls_still_pass(self):
+        # Regression guard: legitimate objects are unaffected.
+        guard = ToolGuard()
+        result = guard.check({
+            "tool_calls": [{"name": "search", "arguments": {"query": "weather"}}],
+        })
+        assert result.passed is True
     def test_content_list_clean_passes(self):
         result = SafetyGuard().check({
             "content": [{"type": "text", "text": "Here is your summary."}],

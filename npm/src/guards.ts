@@ -112,6 +112,17 @@ export class ToolGuard extends BaseGuard {
                 );
             }
 
+            // Malformed entry (#33): non-object toolCalls/choices member —
+            // fail closed, never forward unvalidated content.
+            if (call.type === '__malformed__') {
+                return this.failResult(
+                    'BLOCKED: Response contains a malformed tool-call entry '
+                    + '(non-object item in toolCalls/tool_calls or choices[].message.tool_calls). '
+                    + 'Each entry must be an object with a tool name.',
+                    { responseKeys: Object.keys(response) },
+                );
+            }
+
             // Check blocked list
             if (this.blockedTools.has(toolName)) {
                 return this.failResult(`BLOCKED: Tool '${toolName}' is not allowed`, { blockedTool: toolName });
@@ -150,14 +161,33 @@ export class ToolGuard extends BaseGuard {
         }
 
         if (response.toolCalls || response.tool_calls) {
-            calls.push(...(response.toolCalls || response.tool_calls || []));
+            for (const item of (response.toolCalls || response.tool_calls || [])) {
+                if (item !== null && typeof item === 'object') {
+                    calls.push(item);
+                } else {
+                    calls.push({ type: '__malformed__', tool_name: undefined, arguments: {} });
+                }
+            }
         }
 
-        // OpenAI format
+        // OpenAI format — validate each choice and its tool_calls members.
         if (response.choices) {
             for (const choice of (response.choices as any[])) {
-                const msg = choice.message || {};
-                if (msg.tool_calls) calls.push(...msg.tool_calls);
+                if (choice === null || typeof choice !== 'object') {
+                    calls.push({ type: '__malformed__', tool_name: undefined, arguments: {} });
+                    continue;
+                }
+                const msg = choice.message;
+                if (msg === null || typeof msg !== 'object') continue;
+                if (msg.tool_calls) {
+                    for (const item of msg.tool_calls) {
+                        if (item !== null && typeof item === 'object') {
+                            calls.push(item);
+                        } else {
+                            calls.push({ type: '__malformed__', tool_name: undefined, arguments: {} });
+                        }
+                    }
+                }
             }
         }
 
@@ -312,20 +342,32 @@ export class ToolGuard extends BaseGuard {
 
         const out: any[] = [];
         for (const call of calls) {
-            if (call.type === '__unrecognized__') {
+            if (call.type === '__unrecognized__' || call.type === '__malformed__') {
                 out.push(call);
                 continue;
             }
 
-            // OpenAI function wrapper: {type?, function: {name, arguments}}
-            const fn = call.function;
-            if (fn !== null && typeof fn === 'object' && fn.name !== undefined) {
-                const parsed = this.parseToolArguments(fn.arguments ?? {});
-                if (!parsed.ok) {
-                    out.push(sentinel(fn.name));
+            // OpenAI function wrapper: {type?, function: {name, arguments}}.
+            // A present-but-malformed/nameless function must fail closed
+            // rather than fall through with dangerous arguments uninspected.
+            if ('function' in call) {
+                const fn = call.function;
+                if (fn !== null && typeof fn === 'object') {
+                    const n = fn.name;
+                    if (n === undefined || n === null) {
+                        out.push(sentinel(call.toolName || call.name));
+                        continue;
+                    }
+                    const parsed = this.parseToolArguments(fn.arguments ?? {});
+                    if (!parsed.ok) {
+                        out.push(sentinel(n));
+                        continue;
+                    }
+                    out.push({ type: 'tool_call', tool_name: n, arguments: parsed.value });
                     continue;
                 }
-                out.push({ type: 'tool_call', tool_name: fn.name, arguments: parsed.value });
+                // function present but null / non-object — malformed wrapper.
+                out.push(sentinel(call.toolName || call.name));
                 continue;
             }
 
