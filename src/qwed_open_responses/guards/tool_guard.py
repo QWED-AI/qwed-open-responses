@@ -164,10 +164,8 @@ class ToolGuard(BaseGuard):
         for call in tool_calls:
             tool_name = call.get("tool_name") or call.get("name")
 
-            # Unrecognized or malformed envelope (#28/#33): fail closed.
-            if tool_name is None and call.get("type") in (
-                "__unrecognized__", "__malformed__"
-            ):
+            # Unrecognized envelope (#28): fail closed, never pass silently.
+            if tool_name is None and call.get("type") == "__unrecognized__":
                 return self.fail_result(
                     "BLOCKED: Response contains tool-like content in an unrecognized format. "
                     "Supported shapes: type=tool_call, tool_calls[], choices[].message.tool_calls[], "
@@ -292,7 +290,7 @@ class ToolGuard(BaseGuard):
 
     @classmethod
     def _normalize_one(cls, call: Dict[str, Any]) -> Dict[str, Any]:
-        if call.get("type") in ("__unrecognized__", "__malformed__"):
+        if call.get("type") == "__unrecognized__":
             return call
 
         # OpenAI function wrapper: {function: {name, arguments-as-JSON-string}}
@@ -336,40 +334,26 @@ class ToolGuard(BaseGuard):
 
     @staticmethod
     def _extract_known_shapes(response: Dict[str, Any]) -> List[Dict]:
-        """Extract from supported envelope shapes.
+        """Extract from the supported envelope shapes.
 
-        Malformed entries (non-dict tool_calls/choices items) become
-        fail-closed sentinels rather than being silently discarded.
+        Non-dict items in tool_calls lists are filtered out (fail-closed:
+        they cannot be validated, so they must not be forwarded to policy).
         """
         calls: List[Dict] = []
-        malformed: List[Dict] = []
 
         # Direct tool call (case-insensitive type match)
         if str(response.get("type", "")).lower() == "tool_call":
             calls.append(response)
 
-        # List of tool calls — non-dict items become sentinels
+        # List of tool calls — only dict items are processable
         if "tool_calls" in response:
-            for c in response["tool_calls"]:
-                if isinstance(c, dict):
-                    calls.append(c)
-                else:
-                    malformed.append({"type": "__malformed__", "raw": c})
+            calls.extend(c for c in response["tool_calls"] if isinstance(c, dict))
 
         # OpenAI format
         for choice in response.get("choices", []):
-            if not isinstance(choice, dict):
-                calls.append({"type": "__malformed__", "raw": choice})
-                continue
-            msg = choice.get("message")
-            if not isinstance(msg, dict):
-                continue
+            msg = choice.get("message", {})
             if msg.get("tool_calls"):
-                for c in msg["tool_calls"]:
-                    if isinstance(c, dict):
-                        calls.append(c)
-                    else:
-                        calls.append({"type": "__malformed__", "raw": c})
+                calls.extend(c for c in msg["tool_calls"] if isinstance(c, dict))
 
         # Anthropic format: content blocks with type == "tool_use"
         for block in response.get("content") or []:
@@ -381,10 +365,6 @@ class ToolGuard(BaseGuard):
                         "arguments": block.get("input", {}),
                     }
                 )
-
-        # Malformed entries must not vanish — they become fail-closed
-        # sentinels that will be rejected during policy enforcement.
-        calls.extend(malformed)
 
         return calls
 
