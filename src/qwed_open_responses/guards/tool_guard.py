@@ -74,8 +74,31 @@ class ToolGuard(BaseGuard):
 
     # Fail-closed bound on JSON-encoded argument payloads before parsing.
     _MAX_ARGS_JSON_CHARS = 10_000
-    # Depth bound for nested tool-shape detection scans.
     _MAX_NESTED_SCAN_DEPTH = 12
+
+    @staticmethod
+    def _safe_parse_json_object(raw: str) -> Tuple[bool, Any]:
+        """Parse a bounded, structurally-validated JSON object string.
+
+        Explicit sanitization chain between source and sink:
+        1. Length bound (DoS)
+        2. Brace-delimitation check (must be an object)
+        3. json.loads (bounded, shape-validated input only)
+
+        Returns (ok, parsed_dict).
+        """
+        if len(raw) > ToolGuard._MAX_ARGS_JSON_CHARS:
+            return False, None
+        stripped = raw.strip()
+        if not (stripped.startswith("{") and stripped.endswith("}")):
+            return False, None
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            return False, None
+        if not isinstance(parsed, dict):
+            return False, None
+        return True, parsed
 
     def __init__(
         self,
@@ -248,20 +271,10 @@ class ToolGuard(BaseGuard):
         if isinstance(raw, dict):
             return True, raw
         if isinstance(raw, str):
-            if len(raw) > ToolGuard._MAX_ARGS_JSON_CHARS:
+            ok, args = ToolGuard._safe_parse_json_object(raw)
+            if not ok:
                 return False, None
-            # Structural pre-validation: arguments must be a JSON object.
-            # Rejecting non-object shapes before parsing bounds the parser
-            # input and keeps arrays/scalars out of the policy pipeline.
-            stripped = raw.strip()
-            if not (stripped.startswith("{") and stripped.endswith("}")):
-                return False, None
-            try:
-                parsed = json.loads(stripped)
-            except (ValueError, TypeError):
-                return False, None
-            if isinstance(parsed, dict):
-                return True, parsed
+            return True, args
         return False, None
 
     @staticmethod
@@ -282,7 +295,11 @@ class ToolGuard(BaseGuard):
 
         # OpenAI function wrapper: {function: {name, arguments-as-JSON-string}}
         fn = call.get("function")
-        if isinstance(fn, dict) and fn.get("name") is not None:
+        if fn is not None:
+            if not isinstance(fn, dict) or fn.get("name") is None:
+                return cls._unrecognized_sentinel(
+                    call.get("tool_name") or call.get("name")
+                )
             name = fn["name"]
             ok, args = cls._parse_tool_arguments(fn.get("arguments", {}))
             if not ok:
@@ -317,22 +334,26 @@ class ToolGuard(BaseGuard):
 
     @staticmethod
     def _extract_known_shapes(response: Dict[str, Any]) -> List[Dict]:
-        """Extract from the supported envelope shapes."""
+        """Extract from the supported envelope shapes.
+
+        Non-dict items in tool_calls lists are filtered out (fail-closed:
+        they cannot be validated, so they must not be forwarded to policy).
+        """
         calls: List[Dict] = []
 
         # Direct tool call (case-insensitive type match)
         if str(response.get("type", "")).lower() == "tool_call":
             calls.append(response)
 
-        # List of tool calls
+        # List of tool calls — only dict items are processable
         if "tool_calls" in response:
-            calls.extend(response["tool_calls"])
+            calls.extend(c for c in response["tool_calls"] if isinstance(c, dict))
 
         # OpenAI format
         for choice in response.get("choices", []):
             msg = choice.get("message", {})
             if msg.get("tool_calls"):
-                calls.extend(msg["tool_calls"])
+                calls.extend(c for c in msg["tool_calls"] if isinstance(c, dict))
 
         # Anthropic format: content blocks with type == "tool_use"
         for block in response.get("content") or []:
