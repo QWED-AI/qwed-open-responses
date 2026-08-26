@@ -268,6 +268,10 @@ export class ToolGuard extends BaseGuard {
             return { ok: true, value: raw };
         }
         if (typeof raw === 'string') {
+            // Fail closed on oversized payloads before parsing (DoS bound).
+            if (raw.length > ToolGuard.MAX_ARGS_JSON_CHARS) {
+                return { ok: false };
+            }
             try {
                 const parsed = JSON.parse(raw);
                 if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -278,6 +282,24 @@ export class ToolGuard extends BaseGuard {
             }
         }
         return { ok: false };
+    }
+
+    containsNestedToolShape(value: any, depth: number): boolean {
+        /** Bounded recursive scan for tool-shaped objects (#33 review). */
+        if (depth > 12) return false;
+        if (value === null || typeof value !== 'object') return false;
+        if (this.isToolShapedDict(value)) return true;
+        for (const v of Object.values(value)) {
+            if (this.containsNestedToolShape(v, depth + 1)) return true;
+        }
+        return false;
+    }
+
+    private isToolShapedDict(value: any): boolean {
+        if (value === null || typeof value !== 'object') return false;
+        const t = String(value.type || '').toLowerCase();
+        if (t === 'tool_use' || t === 'function_call' || t === 'tool_call') return true;
+        return 'tool_name' in value || ('name' in value && 'arguments' in value);
     }
 
     private normalizeCalls(calls: any[]): any[] {
@@ -308,7 +330,11 @@ export class ToolGuard extends BaseGuard {
             }
 
             // Responses API direct item: {type: 'function_call', name, arguments}
-            if (String(call.type || '').toLowerCase() === 'function_call' && call.name !== undefined) {
+            if (String(call.type || '').toLowerCase() === 'function_call') {
+                if (call.name === undefined) {
+                    out.push(sentinel(undefined));
+                    continue;
+                }
                 const parsed = this.parseToolArguments(call.arguments ?? {});
                 if (!parsed.ok) {
                     out.push(sentinel(call.name));
@@ -332,24 +358,6 @@ export class ToolGuard extends BaseGuard {
             out.push(call);
         }
         return out;
-    }
-
-    containsNestedToolShape(value: any, depth: number): boolean {
-        /** Bounded recursive scan for tool-shaped objects (#33 review). */
-        if (depth > 12) return false;
-        if (value === null || typeof value !== 'object') return false;
-        if (this.isToolShapedDict(value)) return true;
-        for (const v of Object.values(value)) {
-            if (this.containsNestedToolShape(v, depth + 1)) return true;
-        }
-        return false;
-    }
-
-    private isToolShapedDict(value: any): boolean {
-        if (value === null || typeof value !== 'object') return false;
-        const t = String(value.type || '').toLowerCase();
-        if (t === 'tool_use' || t === 'function_call' || t === 'tool_call') return true;
-        return 'tool_name' in value || ('name' in value && 'arguments' in value);
     }
 }
 

@@ -52,6 +52,23 @@ class TestResponsesApiFunctionCall:
         assert result.passed is False
         assert "unrecognized format" in result.message
 
+    def test_nameless_function_call_fail_closed(self):
+        result = ToolGuard().check({
+            "type": "function_call",
+            "arguments": "{}",
+        })
+        assert result.passed is False
+        assert "unrecognized format" in result.message
+
+    def test_oversized_arguments_fail_closed(self):
+        result = ToolGuard().check({
+            "type": "function_call",
+            "name": "anything",
+            "arguments": "{\"x\": \"" + "A" * 10_001 + "\"}",
+        })
+        assert result.passed is False
+        assert "unrecognized format" in result.message
+
     def test_non_dict_parsed_arguments_fail_closed(self):
         result = ToolGuard().check({
             "type": "function_call",
@@ -59,6 +76,23 @@ class TestResponsesApiFunctionCall:
             "arguments": "[1, 2]",
         })
         assert result.passed is False
+
+    def test_nameless_function_call_fail_closed(self):
+        result = ToolGuard().check({
+            "type": "function_call",
+            "arguments": "{}",
+        })
+        assert result.passed is False
+        assert "unrecognized format" in result.message
+
+    def test_oversized_arguments_fail_closed(self):
+        result = ToolGuard().check({
+            "type": "function_call",
+            "name": "anything",
+            "arguments": "{\"x\": \"" + "A" * 10_001 + "\"}",
+        })
+        assert result.passed is False
+        assert "unrecognized format" in result.message
 
     def test_zero_argument_call_passes(self):
         """None/blank arguments are legitimate zero-arg payloads."""

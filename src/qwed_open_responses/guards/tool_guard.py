@@ -250,8 +250,14 @@ class ToolGuard(BaseGuard):
         if isinstance(raw, str):
             if len(raw) > ToolGuard._MAX_ARGS_JSON_CHARS:
                 return False, None
+            # Structural pre-validation: arguments must be a JSON object.
+            # Rejecting non-object shapes before parsing bounds the parser
+            # input and keeps arrays/scalars out of the policy pipeline.
+            stripped = raw.strip()
+            if not (stripped.startswith("{") and stripped.endswith("}")):
+                return False, None
             try:
-                parsed = json.loads(raw)
+                parsed = json.loads(stripped)
             except (ValueError, TypeError):
                 return False, None
             if isinstance(parsed, dict):
@@ -284,10 +290,10 @@ class ToolGuard(BaseGuard):
             return {"type": "tool_call", "tool_name": name, "arguments": args}
 
         # Responses API direct item: {type: "function_call", name, arguments}
-        if str(call.get("type", "")).lower() == "function_call" and (
-            call.get("name") is not None
-        ):
-            name = call["name"]
+        if str(call.get("type", "")).lower() == "function_call":
+            name = call.get("name")
+            if name is None:
+                return cls._unrecognized_sentinel(None)
             ok, args = cls._parse_tool_arguments(call.get("arguments", {}))
             if not ok:
                 return cls._unrecognized_sentinel(name)
