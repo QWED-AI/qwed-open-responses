@@ -189,6 +189,15 @@ class ToolGuard(BaseGuard):
                     details={"response_keys": list(response.keys())},
                 )
 
+            # A tool call must carry a real name — blank/non-string names can
+            # never match blocklist/allowed/dangerous checks, so fail closed
+            # rather than reporting an anonymous call verified (#33).
+            if not ToolGuard._valid_tool_name(tool_name):
+                return self.fail_result(
+                    "BLOCKED: Tool call has no valid (non-blank string) name.",
+                    details={"response_keys": list(response.keys())},
+                )
+
             arguments = call.get("arguments", {})
 
             # Check blocked list
@@ -327,6 +336,11 @@ class ToolGuard(BaseGuard):
         # JSON-encoded argument strings on otherwise-recognized calls.
         return cls._normalize_json_encoded_arguments(call)
 
+    @staticmethod
+    def _valid_tool_name(name: Any) -> bool:
+        """A tool-call name must be a non-empty string to be verifiable (#33)."""
+        return isinstance(name, str) and bool(name.strip())
+
     @classmethod
     def _normalize_function_wrapper(
         cls, call: Dict[str, Any]
@@ -338,10 +352,8 @@ class ToolGuard(BaseGuard):
         fn = call.get("function")
         if fn is None:
             return None
-        if not isinstance(fn, dict) or fn.get("name") is None:
-            return cls._unrecognized_sentinel(
-                call.get("tool_name") or call.get("name")
-            )
+        if not isinstance(fn, dict) or not cls._valid_tool_name(fn.get("name")):
+            return cls._unrecognized_sentinel(call.get("tool_name") or call.get("name"))
         name = fn["name"]
         ok, args = cls._parse_tool_arguments(fn.get("arguments", {}))
         if not ok:
@@ -359,7 +371,7 @@ class ToolGuard(BaseGuard):
         if str(call.get("type", "")).lower() != "function_call":
             return None
         name = call.get("name")
-        if name is None:
+        if not cls._valid_tool_name(name):
             return cls._unrecognized_sentinel(None)
         ok, args = cls._parse_tool_arguments(call.get("arguments", {}))
         if not ok:
@@ -367,9 +379,7 @@ class ToolGuard(BaseGuard):
         return {"type": "tool_call", "tool_name": name, "arguments": args}
 
     @classmethod
-    def _normalize_json_encoded_arguments(
-        cls, call: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _normalize_json_encoded_arguments(cls, call: Dict[str, Any]) -> Dict[str, Any]:
         """Parse JSON-encoded argument strings on otherwise-recognized calls."""
         raw = call.get("arguments")
         if isinstance(raw, str):
@@ -402,6 +412,43 @@ class ToolGuard(BaseGuard):
         }
 
     @staticmethod
+    def _extract_choices_tool_calls(choices: List[Any]) -> List[Dict]:
+        """Extract tool_calls from OpenAI ``choices[].message``.
+
+        Non-object ``choice`` or ``tool_calls`` members become malformed
+        sentinels - never silently dropped, and never crash on ``.get``.
+        """
+        calls: List[Dict] = []
+        for choice in choices:
+            if not isinstance(choice, dict):
+                calls.append(ToolGuard._malformed_sentinel(choice))
+                continue
+            msg = choice.get("message")
+            if not isinstance(msg, dict):
+                continue
+            for c in msg.get("tool_calls") or []:
+                if isinstance(c, dict):
+                    calls.append(c)
+                else:
+                    calls.append(ToolGuard._malformed_sentinel(c))
+        return calls
+
+    @staticmethod
+    def _extract_anthropic_tool_calls(blocks: List[Any]) -> List[Dict]:
+        """Extract ``content[].type == "tool_use"`` blocks (Anthropic)."""
+        calls: List[Dict] = []
+        for block in blocks:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                calls.append(
+                    {
+                        "type": "tool_call",
+                        "tool_name": block.get("name", ""),
+                        "arguments": block.get("input", {}),
+                    }
+                )
+        return calls
+
+    @staticmethod
     def _extract_known_shapes(response: Dict[str, Any]) -> List[Dict]:
         """Extract from the supported envelope shapes.
 
@@ -416,37 +463,20 @@ class ToolGuard(BaseGuard):
         if str(response.get("type", "")).lower() == "tool_call":
             calls.append(response)
 
-        # List of tool calls — non-dict entries become malformed sentinels
+        # List of tool calls - non-dict entries become malformed sentinels
         if "tool_calls" in response:
             calls.extend(
                 c if isinstance(c, dict) else ToolGuard._malformed_sentinel(c)
                 for c in response["tool_calls"]
             )
 
-        # OpenAI format — validate each choice and its tool_calls members
-        for choice in response.get("choices", []):
-            if not isinstance(choice, dict):
-                calls.append(ToolGuard._malformed_sentinel(choice))
-                continue
-            msg = choice.get("message")
-            if not isinstance(msg, dict):
-                continue
-            for c in msg.get("tool_calls") or []:
-                if isinstance(c, dict):
-                    calls.append(c)
-                else:
-                    calls.append(ToolGuard._malformed_sentinel(c))
+        # OpenAI format
+        calls.extend(ToolGuard._extract_choices_tool_calls(response.get("choices", [])))
 
-        # Anthropic format: content blocks with type == "tool_use"
-        for block in response.get("content") or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                calls.append(
-                    {
-                        "type": "tool_call",
-                        "tool_name": block.get("name", ""),
-                        "arguments": block.get("input", {}),
-                    }
-                )
+        # Anthropic format
+        calls.extend(
+            ToolGuard._extract_anthropic_tool_calls(response.get("content") or [])
+        )
 
         return calls
 

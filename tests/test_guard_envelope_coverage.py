@@ -291,6 +291,41 @@ class TestMalformedEntryHandling:
             "tool_calls": [{"name": "search", "arguments": {"query": "weather"}}],
         })
         assert result.passed is True
+
+    # ------------------------------------------------------------------
+    # Invalid tool/function names must fail closed (#33, Greptile/T-Rex P1)
+    # ------------------------------------------------------------------
+
+    def test_blank_function_wrapper_name_blocked(self):
+        guard = ToolGuard()
+        result = guard.check({
+            "type": "function_call",
+            "function": {"name": "  ", "arguments": {"rm -rf /": 1}},
+        })
+        assert result.passed is False
+
+    def test_non_string_function_call_item_name_blocked(self):
+        guard = ToolGuard()
+        result = guard.check({"type": "function_call", "name": 123, "arguments": {}})
+        assert result.passed is False
+
+    def test_empty_function_name_blocked(self):
+        guard = ToolGuard()
+        result = guard.check({"function": {"name": "", "arguments": {}}})
+        assert result.passed is False
+
+    def test_blank_function_call_item_name_blocked(self):
+        guard = ToolGuard()
+        result = guard.check({"type": "function_call", "name": "", "arguments": {}})
+        assert result.passed is False
+
+    def test_valid_function_call_item_name_passes(self):
+        guard = ToolGuard()
+        result = guard.check({
+            "type": "function_call", "name": "search", "arguments": {"q": "x"},
+        })
+        assert result.passed is True
+
     def test_content_list_clean_passes(self):
         result = SafetyGuard().check({
             "content": [{"type": "text", "text": "Here is your summary."}],

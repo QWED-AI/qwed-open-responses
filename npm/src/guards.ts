@@ -99,7 +99,16 @@ export class ToolGuard extends BaseGuard {
         }
 
         for (const call of toolCalls) {
+            // A tool call must carry a real name — blank/non-string names can
+            // never match blocklist/allowed/dangerous checks, so fail closed
+            // rather than reporting an anonymous call verified (#33).
             const toolName = call.toolName || call.tool_name || call.name || 'unknown';
+            if (!ToolGuard.validToolName(toolName)) {
+                return this.failResult(
+                    'BLOCKED: Tool call has no valid (non-blank string) name.',
+                    { responseKeys: Object.keys(response) },
+                );
+            }
             const args = call.arguments || {};
 
             // Unrecognized envelope (#28): fail closed, never pass silently.
@@ -149,6 +158,11 @@ export class ToolGuard extends BaseGuard {
         }
 
         return this.passResult(`All ${toolCalls.length} tool call(s) verified`);
+    }
+
+    private static validToolName(name: any): boolean {
+        // A tool-call name must be a non-empty string to be verifiable (#33).
+        return typeof name === 'string' && name.trim().length > 0;
     }
 
     private extractToolCalls(response: ParsedResponse): any[] {
@@ -354,8 +368,8 @@ export class ToolGuard extends BaseGuard {
                 const fn = call.function;
                 if (fn !== null && typeof fn === 'object') {
                     const n = fn.name;
-                    if (n === undefined || n === null) {
-                        out.push(sentinel(call.toolName || call.name));
+                    if (!ToolGuard.validToolName(n)) {
+                        out.push(sentinel(call.toolName || call.name || n));
                         continue;
                     }
                     const parsed = this.parseToolArguments(fn.arguments ?? {});
@@ -373,16 +387,17 @@ export class ToolGuard extends BaseGuard {
 
             // Responses API direct item: {type: 'function_call', name, arguments}
             if (String(call.type || '').toLowerCase() === 'function_call') {
-                if (call.name === undefined) {
+                const n = call.name;
+                if (!ToolGuard.validToolName(n)) {
                     out.push(sentinel(undefined));
                     continue;
                 }
                 const parsed = this.parseToolArguments(call.arguments ?? {});
                 if (!parsed.ok) {
-                    out.push(sentinel(call.name));
+                    out.push(sentinel(n));
                     continue;
                 }
-                out.push({ type: 'tool_call', tool_name: call.name, arguments: parsed.value });
+                out.push({ type: 'tool_call', tool_name: n, arguments: parsed.value });
                 continue;
             }
 
