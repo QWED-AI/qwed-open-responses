@@ -412,12 +412,33 @@ class ToolGuard(BaseGuard):
         }
 
     @staticmethod
-    def _extract_choices_tool_calls(choices: List[Any]) -> List[Dict]:
+    def _iter_tool_collection(collection: Any) -> List[Dict]:
+        """Safely convert a tool-call collection into entries (#33).
+
+        A non-list container (scalar int / dict) is itself malformed and
+        becomes a fail-closed sentinel rather than crashing the for-loop.
+        ``None`` reads as an empty collection. Non-list members become
+        malformed sentinels - never silently dropped.
+        """
+        if collection is None:
+            return []
+        if not isinstance(collection, list):
+            return [ToolGuard._malformed_sentinel(collection)]
+        return [
+            c if isinstance(c, dict) else ToolGuard._malformed_sentinel(c)
+            for c in collection
+        ]
+
+    @staticmethod
+    def _extract_choices_tool_calls(choices: Any) -> List[Dict]:
         """Extract tool_calls from OpenAI ``choices[].message``.
 
         Non-object ``choice`` or ``tool_calls`` members become malformed
-        sentinels - never silently dropped, and never crash on ``.get``.
+        sentinels - never silently dropped, and never crash on ``.get``. A
+        non-list ``choices`` (scalar) is malformed, not ``TypeError``.
         """
+        if not isinstance(choices, list):
+            return ToolGuard._iter_tool_collection(choices)
         calls: List[Dict] = []
         for choice in choices:
             if not isinstance(choice, dict):
@@ -426,16 +447,14 @@ class ToolGuard(BaseGuard):
             msg = choice.get("message")
             if not isinstance(msg, dict):
                 continue
-            for c in msg.get("tool_calls") or []:
-                if isinstance(c, dict):
-                    calls.append(c)
-                else:
-                    calls.append(ToolGuard._malformed_sentinel(c))
+            calls.extend(ToolGuard._iter_tool_collection(msg.get("tool_calls")))
         return calls
 
     @staticmethod
-    def _extract_anthropic_tool_calls(blocks: List[Any]) -> List[Dict]:
+    def _extract_anthropic_tool_calls(blocks: Any) -> List[Dict]:
         """Extract ``content[].type == "tool_use"`` blocks (Anthropic)."""
+        if not isinstance(blocks, list):
+            return ToolGuard._iter_tool_collection(blocks)
         calls: List[Dict] = []
         for block in blocks:
             if isinstance(block, dict) and block.get("type") == "tool_use":
@@ -452,23 +471,20 @@ class ToolGuard(BaseGuard):
     def _extract_known_shapes(response: Dict[str, Any]) -> List[Dict]:
         """Extract from the supported envelope shapes.
 
-        Malformed (non-object) entries in tool_calls / choices arrays become
-        fail-closed ``__malformed__`` sentinels rather than being silently
-        dropped (#33). A non-object ``choice`` would otherwise crash on
-        ``choice.get(...)``.
+        Malformed entries - non-object array members, non-iterable scalar
+        containers - become fail-closed ``__malformed__`` sentinels rather
+        than being silently dropped or raising ``TypeError`` (#33).
         """
         calls: List[Dict] = []
+        resp_type = str(response.get("type", "")).lower()
 
-        # Direct tool call (case-insensitive type match)
-        if str(response.get("type", "")).lower() == "tool_call":
+        # Direct tool call. When the object is itself a tool_call, process it
+        # ONLY and do NOT also consume a sibling tool_calls array - that would
+        # double-count a single call (Sentry MEDIUM).
+        if resp_type == "tool_call":
             calls.append(response)
-
-        # List of tool calls - non-dict entries become malformed sentinels
-        if "tool_calls" in response:
-            calls.extend(
-                c if isinstance(c, dict) else ToolGuard._malformed_sentinel(c)
-                for c in response["tool_calls"]
-            )
+        elif "tool_calls" in response:
+            calls.extend(ToolGuard._iter_tool_collection(response["tool_calls"]))
 
         # OpenAI format
         calls.extend(ToolGuard._extract_choices_tool_calls(response.get("choices", [])))

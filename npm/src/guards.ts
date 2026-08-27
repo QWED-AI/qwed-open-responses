@@ -165,6 +165,10 @@ export class ToolGuard extends BaseGuard {
         return typeof name === 'string' && name.trim().length > 0;
     }
 
+    private static malformedEntry(): Record<string, any> {
+        return { type: '__malformed__', tool_name: undefined, arguments: {} };
+    }
+
     private extractToolCalls(response: ParsedResponse): any[] {
         const calls: any[] = [];
 
@@ -172,42 +176,56 @@ export class ToolGuard extends BaseGuard {
 
         if (respType === 'tool_call') {
             calls.push(response);
-        }
-
-        if (response.toolCalls || response.tool_calls) {
-            for (const item of (response.toolCalls || response.tool_calls || [])) {
-                if (item !== null && typeof item === 'object') {
-                    calls.push(item);
-                } else {
-                    calls.push({ type: '__malformed__', tool_name: undefined, arguments: {} });
+        } else {
+            // List of tool calls. When the object is itself a tool_call we
+            // already returned above, so this else avoids double-counting a
+            // sibling toolCalls array (Sentry MEDIUM). A non-array container
+            // (scalar/dict) is malformed, not a for...of TypeError (#33).
+            const tc = response.toolCalls ?? response.tool_calls ?? [];
+            if (Array.isArray(tc)) {
+                for (const item of tc) {
+                    if (item !== null && typeof item === 'object') {
+                        calls.push(item);
+                    } else {
+                        calls.push(ToolGuard.malformedEntry());
+                    }
                 }
+            } else if (tc !== null) {
+                calls.push(ToolGuard.malformedEntry());
             }
         }
 
         // OpenAI format — validate each choice and its tool_calls members.
-        if (response.choices) {
-            for (const choice of (response.choices as any[])) {
+        const choices = response.choices;
+        if (Array.isArray(choices)) {
+            for (const choice of choices) {
                 if (choice === null || typeof choice !== 'object') {
-                    calls.push({ type: '__malformed__', tool_name: undefined, arguments: {} });
+                    calls.push(ToolGuard.malformedEntry());
                     continue;
                 }
                 const msg = choice.message;
                 if (msg === null || typeof msg !== 'object') continue;
-                if (msg.tool_calls) {
-                    for (const item of msg.tool_calls) {
+                const mt = msg.tool_calls;
+                if (Array.isArray(mt)) {
+                    for (const item of mt) {
                         if (item !== null && typeof item === 'object') {
                             calls.push(item);
                         } else {
-                            calls.push({ type: '__malformed__', tool_name: undefined, arguments: {} });
+                            calls.push(ToolGuard.malformedEntry());
                         }
                     }
+                } else if (mt !== null && mt !== undefined) {
+                    calls.push(ToolGuard.malformedEntry());
                 }
             }
+        } else if (choices !== null && choices !== undefined) {
+            calls.push(ToolGuard.malformedEntry());
         }
 
         // Anthropic format: content blocks with type == "tool_use"
-        if (Array.isArray(response.content)) {
-            for (const block of (response.content as any[])) {
+        const content: any = response.content;
+        if (Array.isArray(content)) {
+            for (const block of content) {
                 if (block !== null && typeof block === 'object' && block.type === 'tool_use') {
                     calls.push({
                         type: 'tool_call',
@@ -216,6 +234,8 @@ export class ToolGuard extends BaseGuard {
                     });
                 }
             }
+        } else if (content !== null && content !== undefined) {
+            calls.push(ToolGuard.malformedEntry());
         }
 
         // Responses API direct function_call items (#33 review). Only when

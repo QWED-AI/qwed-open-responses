@@ -326,6 +326,36 @@ class TestMalformedEntryHandling:
         })
         assert result.passed is True
 
+    def test_scalar_tool_calls_no_crash(self):
+        # Non-iterable (scalar) container must fail closed, not TypeError (#33).
+        guard = ToolGuard()
+        result = guard.check({"tool_calls": 5})
+        assert result.passed is False
+
+    def test_scalar_choices_no_crash(self):
+        guard = ToolGuard()
+        result = guard.check({"choices": 5})
+        assert result.passed is False
+
+    def test_scalar_content_no_crash(self):
+        guard = ToolGuard()
+        result = guard.check({"content": 5})
+        assert result.passed is False
+
+    def test_scalar_nested_message_tool_calls_no_crash(self):
+        guard = ToolGuard()
+        result = guard.check({"choices": [{"message": {"tool_calls": 7}}]})
+        assert result.passed is False
+
+    def test_tool_call_with_sibling_tool_calls_not_double_counted(self):
+        # A direct tool_call object must not ALSO consume a sibling tool_calls
+        # array (would count 2 under max_calls_per_response) - Sentry MEDIUM.
+        extracted = ToolGuard._extract_known_shapes({
+            "type": "tool_call", "tool_name": "search", "arguments": {},
+            "tool_calls": [{"name": "x", "arguments": {}}],
+        })
+        assert len(extracted) == 1
+
     def test_content_list_clean_passes(self):
         result = SafetyGuard().check({
             "content": [{"type": "text", "text": "Here is your summary."}],
