@@ -100,7 +100,10 @@ class ToolGuard(BaseGuard):
             return False, None
         try:
             parsed = json.loads(stripped)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
+            # RecursionError: a bounded payload can still exceed the JSON
+            # decoder recursion depth (deeply nested objects) - fail closed
+            # instead of crashing the caller (Greptile/T-Rex P1).
             return False, None
         if not isinstance(parsed, dict):
             return False, None
@@ -535,7 +538,7 @@ class ToolGuard(BaseGuard):
 
         # Anthropic format
         calls.extend(
-            ToolGuard._extract_anthropic_tool_calls(response.get("content") or [])
+            ToolGuard._extract_anthropic_tool_calls(response.get("content"))
         )
 
         return calls
@@ -560,9 +563,12 @@ class ToolGuard(BaseGuard):
         if response.get("tool_name") is not None and "arguments" in response:
             return True
 
+        content_blocks = response.get("content")
+        if not isinstance(content_blocks, list):
+            content_blocks = []
         nested_types = {
             str(block.get("type", "")).lower()
-            for block in (response.get("content") or [])
+            for block in content_blocks
             if isinstance(block, dict)
         }
         if nested_types & {"tool_use", "function_call"}:
