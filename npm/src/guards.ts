@@ -99,17 +99,9 @@ export class ToolGuard extends BaseGuard {
         }
 
         for (const call of toolCalls) {
-            // A tool call must carry a real name — blank/non-string names can
-            // never match blocklist/allowed/dangerous checks, so fail closed
-            // rather than reporting an anonymous call verified (#33).
-            const toolName = call.toolName || call.tool_name || call.name || 'unknown';
-            if (!ToolGuard.validToolName(toolName)) {
-                return this.failResult(
-                    'BLOCKED: Tool call has no valid (non-blank string) name.',
-                    { responseKeys: Object.keys(response) },
-                );
-            }
-            const args = call.arguments || {};
+            // Sentinel checks FIRST (mirror Python order): __unrecognized__ /
+            // __malformed__ sentinels carry no usable name, so they must be
+            // reported with their specific messages before the name check.
 
             // Unrecognized envelope (#28): fail closed, never pass silently.
             if (call.type === '__unrecognized__') {
@@ -138,6 +130,21 @@ export class ToolGuard extends BaseGuard {
                     { responseKeys: Object.keys(response) },
                 );
             }
+
+            // A tool call must carry a real name — blank/non-string names can
+            // never match blocklist/allowed/dangerous checks, so fail closed
+            // rather than reporting an anonymous call verified (#33). NOTE:
+            // no 'unknown' fallback — a nameless call (e.g. Anthropic
+            // tool_use with missing name) must be BLOCKED, not coerced to a
+            // name that passes validation (Sentry MEDIUM).
+            const toolName = call.toolName || call.tool_name || call.name;
+            if (!ToolGuard.validToolName(toolName)) {
+                return this.failResult(
+                    'BLOCKED: Tool call has no valid (non-blank string) name.',
+                    { responseKeys: Object.keys(response) },
+                );
+            }
+            const args = call.arguments || {};
 
             // Check blocked list
             if (this.blockedTools.has(toolName)) {
@@ -255,6 +262,9 @@ export class ToolGuard extends BaseGuard {
                     });
                 }
             }
+        } else if (typeof content === 'string') {
+            // Plain-text content (e.g. type=text) is not a tool-block
+            // collection — it carries no tool calls (Greptile P1).
         } else if (content !== null && content !== undefined) {
             calls.push(ToolGuard.malformedEntry());
         }

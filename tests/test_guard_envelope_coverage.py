@@ -399,6 +399,29 @@ class TestMalformedEntryHandling:
         })
         assert result.verified is False
 
+    # ------------------------------------------------------------------
+    # Plain-text string content is valid (not a tool-block collection) —
+    # Greptile/T-Rex P1
+    # ------------------------------------------------------------------
+
+    def test_plain_text_string_content_passes(self):
+        # type=text with a string content is a normal no-tool response.
+        guard = ToolGuard()
+        result = guard.check({"type": "text", "content": "Completed summary"})
+        assert result.passed is True
+
+    def test_plain_text_content_through_verifier(self):
+        guard = ToolGuard()
+        verifier = ResponseVerifier(default_guards=[guard])
+        result = verifier.verify({"type": "text", "content": "Here is your summary."})
+        assert result.verified is True
+
+    def test_non_list_non_string_content_still_malformed(self):
+        # A scalar content remains malformed (fail-closed), not silently valid.
+        guard = ToolGuard()
+        result = guard.check({"content": 5})
+        assert result.passed is False
+
     def test_content_list_clean_passes(self):
         result = SafetyGuard().check({
             "content": [{"type": "text", "text": "Here is your summary."}],

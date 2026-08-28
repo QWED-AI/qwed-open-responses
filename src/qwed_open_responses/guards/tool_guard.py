@@ -464,7 +464,14 @@ class ToolGuard(BaseGuard):
 
     @staticmethod
     def _extract_anthropic_tool_calls(blocks: Any) -> List[Dict]:
-        """Extract ``content[].type == "tool_use"`` blocks (Anthropic)."""
+        """Extract ``content[].type == "tool_use"`` blocks (Anthropic).
+
+        String content (plain text / ``type=text`` responses) is not a
+        tool-block collection and yields no tool calls (Greptile P1).
+        Non-list, non-string containers remain malformed (#33).
+        """
+        if blocks is None or isinstance(blocks, str):
+            return []
         if not isinstance(blocks, list):
             return ToolGuard._iter_tool_collection(blocks)
         calls: List[Dict] = []
