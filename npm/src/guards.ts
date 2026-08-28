@@ -122,12 +122,19 @@ export class ToolGuard extends BaseGuard {
             }
 
             // Malformed entry (#33): non-object toolCalls/choices member —
-            // fail closed, never forward unvalidated content.
+            // fail closed, never forward unvalidated content. An ambiguous
+            // hybrid envelope (direct call + sibling collection) is also
+            // rejected (Greptile P1).
             if (call.type === '__malformed__') {
+                const message = call.reason === 'ambiguous_hybrid_envelope'
+                    ? 'BLOCKED: Ambiguous hybrid tool-call envelope - response mixes a direct '
+                      + 'tool call (type=tool_call/function_call) with a sibling '
+                      + 'toolCalls/tool_calls/choices/content collection.'
+                    : 'BLOCKED: Response contains a malformed tool-call entry '
+                      + '(non-object item in toolCalls/tool_calls or choices[].message.tool_calls). '
+                      + 'Each entry must be an object with a tool name.';
                 return this.failResult(
-                    'BLOCKED: Response contains a malformed tool-call entry '
-                    + '(non-object item in toolCalls/tool_calls or choices[].message.tool_calls). '
-                    + 'Each entry must be an object with a tool name.',
+                    message,
                     { responseKeys: Object.keys(response) },
                 );
             }
@@ -165,14 +172,28 @@ export class ToolGuard extends BaseGuard {
         return typeof name === 'string' && name.trim().length > 0;
     }
 
-    private static malformedEntry(): Record<string, any> {
-        return { type: '__malformed__', tool_name: undefined, arguments: {} };
+    private static malformedEntry(reason?: string): Record<string, any> {
+        const entry: Record<string, any> = { type: '__malformed__', tool_name: undefined, arguments: {} };
+        if (reason) entry.reason = reason;
+        return entry;
     }
 
     private extractToolCalls(response: ParsedResponse): any[] {
         const calls: any[] = [];
 
         const respType = String(response.type || '').toLowerCase();
+
+        // Ambiguous hybrid envelope: a direct tool-call object that ALSO
+        // carries a sibling collection. Reject instead of choosing one side,
+        // which would let the other escape validation (Greptile P1).
+        const isDirect = respType === 'tool_call' || respType === 'function_call';
+        const hasSibling = response.toolCalls !== undefined
+            || response.tool_calls !== undefined
+            || response.choices !== undefined
+            || response.content !== undefined;
+        if (isDirect && hasSibling) {
+            return [ToolGuard.malformedEntry('ambiguous_hybrid_envelope')];
+        }
 
         if (respType === 'tool_call') {
             calls.push(response);

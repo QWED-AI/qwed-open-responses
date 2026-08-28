@@ -110,10 +110,14 @@ class TestResponsesApiFunctionCall:
         })
         assert result.passed is True
 
-    def test_hybrid_function_call_plus_tool_calls_no_double_count(self):
-        """A hybrid envelope must not inflate the call count with the parent
-        object (#33 review) — with max_calls=1, a double-counted parent would
-        breach the cap and BLOCK a legitimate single call."""
+    def test_hybrid_function_call_plus_tool_calls_not_double_count(self):
+        """A hybrid envelope must be rejected fail-closed (#33, Greptile P1).
+
+        A direct type=function_call object carrying a sibling tool_calls
+        array is ambiguous - validating only one representation lets the
+        other escape policy. Reject rather than count or one-sidedly
+        validate the parent.
+        """
         guard = ToolGuard(allowed_tools=["safe_tool"], max_calls_per_response=1)
         result = guard.check({
             "type": "function_call",
@@ -122,7 +126,8 @@ class TestResponsesApiFunctionCall:
                 {"type": "function_call", "name": "safe_tool", "arguments": "{\"x\": 1}"}
             ],
         })
-        assert result.passed is True
+        assert result.passed is False
+        assert "hybrid" in result.message.lower()
 
 
 # ----------------------------------------------------------------------
@@ -348,13 +353,51 @@ class TestMalformedEntryHandling:
         assert result.passed is False
 
     def test_tool_call_with_sibling_tool_calls_not_double_counted(self):
-        # A direct tool_call object must not ALSO consume a sibling tool_calls
-        # array (would count 2 under max_calls_per_response) - Sentry MEDIUM.
+        # A direct tool_call object that ALSO carries a sibling tool_calls
+        # array is an ambiguous hybrid envelope - rejected fail-closed, not
+        # double-counted and not one-sidedly validated (Greptile P1).
         extracted = ToolGuard._extract_known_shapes({
             "type": "tool_call", "tool_name": "search", "arguments": {},
             "tool_calls": [{"name": "x", "arguments": {}}],
         })
         assert len(extracted) == 1
+        assert extracted[0]["reason"] == "ambiguous_hybrid_envelope"
+
+    # ------------------------------------------------------------------
+    # Ambiguous hybrid envelopes must be rejected, not one-sidedly
+    # validated (Greptile P1)
+    # ------------------------------------------------------------------
+
+    def test_hybrid_safe_parent_with_bash_sibling_blocked(self):
+        # Safe type=tool_call parent must not let a sibling blocked bash
+        # call escape validation.
+        guard = ToolGuard()
+        result = guard.check({
+            "type": "tool_call", "tool_name": "safe", "arguments": {},
+            "tool_calls": [{"name": "bash", "arguments": {}}],
+        })
+        assert result.passed is False
+        assert "hybrid" in result.message.lower()
+
+    def test_hybrid_bash_function_call_parent_with_safe_sibling_blocked(self):
+        # A sibling tool_calls collection must not suppress validation of a
+        # direct type=function_call parent carrying a blocked tool.
+        guard = ToolGuard()
+        result = guard.check({
+            "type": "function_call", "name": "bash", "arguments": {},
+            "tool_calls": [{"name": "safe", "arguments": {}}],
+        })
+        assert result.passed is False
+        assert "hybrid" in result.message.lower()
+
+    def test_hybrid_carries_through_verifier_fail_closed(self):
+        guard = ToolGuard()
+        verifier = ResponseVerifier(default_guards=[guard])
+        result = verifier.verify({
+            "type": "function_call", "name": "bash", "arguments": {},
+            "tool_calls": [{"name": "safe", "arguments": {}}],
+        })
+        assert result.verified is False
 
     def test_content_list_clean_passes(self):
         result = SafetyGuard().check({

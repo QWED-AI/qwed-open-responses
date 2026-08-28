@@ -171,12 +171,24 @@ class ToolGuard(BaseGuard):
             tool_name = call.get("tool_name") or call.get("name")
 
             # Malformed entry (#33): non-object tool_calls/choices member —
-            # fail closed, never forward unvalidated content.
+            # fail closed, never forward unvalidated content. An ambiguous
+            # hybrid envelope (direct call + sibling collection) is also
+            # rejected (Greptile P1).
             if call.get("type") == "__malformed__":
+                if call.get("reason") == "ambiguous_hybrid_envelope":
+                    message = (
+                        "BLOCKED: Ambiguous hybrid tool-call envelope - response "
+                        "mixes a direct tool call (type=tool_call/function_call) "
+                        "with a sibling tool_calls/choices/content collection."
+                    )
+                else:
+                    message = (
+                        "BLOCKED: Response contains a malformed tool-call entry "
+                        "(non-object item in tool_calls or choices[].message.tool_calls). "
+                        "Each entry must be an object with a tool name."
+                    )
                 return self.fail_result(
-                    "BLOCKED: Response contains a malformed tool-call entry "
-                    "(non-object item in tool_calls or choices[].message.tool_calls). "
-                    "Each entry must be an object with a tool name.",
+                    message,
                     details={"response_keys": list(response.keys())},
                 )
 
@@ -468,19 +480,44 @@ class ToolGuard(BaseGuard):
         return calls
 
     @staticmethod
+    def _ambiguous_hybrid_sentinel() -> Dict[str, Any]:
+        """Fail-closed sentinel for an ambiguous hybrid envelope.
+
+        A response mixing a direct tool-call representation (type=
+        tool_call/function_call) with a sibling collection cannot be
+        validated unambiguously: picking one side lets the other escape
+        policy, so the envelope is rejected (Greptile P1).
+        """
+        return {
+            "type": "__malformed__",
+            "tool_name": None,
+            "arguments": {},
+            "reason": "ambiguous_hybrid_envelope",
+        }
+
+    @staticmethod
     def _extract_known_shapes(response: Dict[str, Any]) -> List[Dict]:
         """Extract from the supported envelope shapes.
 
         Malformed entries - non-object array members, non-iterable scalar
         containers - become fail-closed ``__malformed__`` sentinels rather
-        than being silently dropped or raising ``TypeError`` (#33).
+        than being silently dropped or raising ``TypeError`` (#33). An
+        ambiguous hybrid (direct call + sibling collection) is rejected.
         """
         calls: List[Dict] = []
         resp_type = str(response.get("type", "")).lower()
 
-        # Direct tool call. When the object is itself a tool_call, process it
-        # ONLY and do NOT also consume a sibling tool_calls array - that would
-        # double-count a single call (Sentry MEDIUM).
+        # Ambiguous hybrid envelope: a direct tool-call object that ALSO
+        # carries a sibling collection. Reject instead of choosing one
+        # side - the other would escape validation (Greptile P1).
+        has_sibling_collection = any(
+            key in response for key in ("tool_calls", "choices", "content")
+        )
+        if resp_type in ("tool_call", "function_call") and has_sibling_collection:
+            return [ToolGuard._ambiguous_hybrid_sentinel()]
+
+        # Direct tool call. Process it ONLY (no sibling present here) -
+        # avoids double-counting under max_calls_per_response (Sentry MEDIUM).
         if resp_type == "tool_call":
             calls.append(response)
         elif "tool_calls" in response:
