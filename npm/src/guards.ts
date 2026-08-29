@@ -202,6 +202,15 @@ export class ToolGuard extends BaseGuard {
             return [ToolGuard.malformedEntry('ambiguous_hybrid_envelope')];
         }
 
+        // Multiple independent top-level collections at once is ambiguous and
+        // would double-count under max_calls_per_response - reject (Sentry LOW).
+        const presentCollections = [
+            'toolCalls', 'tool_calls', 'choices', 'content',
+        ].filter((k) => (response as any)[k] !== undefined);
+        if (presentCollections.length > 1) {
+            return [ToolGuard.malformedEntry('ambiguous_hybrid_envelope')];
+        }
+
         if (respType === 'tool_call') {
             calls.push(response);
         } else {
@@ -343,19 +352,6 @@ export class ToolGuard extends BaseGuard {
             ) {
                 normalized.push({ type: '__unrecognized__', tool_name: undefined, arguments: {} });
                 return normalized;
-            }
-
-            // Declared-benign envelopes are validated structurally above; the
-            // bounded deep-scan applies only to undeclared/unmodeled types.
-            if (respType !== 'text' && respType !== '' &&
-                respType !== 'message' && respType !== 'structured_output') {
-                if (this.containsNestedToolShape(response, 0)) {
-                    normalized.push({
-                        type: '__unrecognized__',
-                        tool_name: undefined,
-                        arguments: {},
-                    });
-                }
             }
         }
 

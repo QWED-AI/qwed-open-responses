@@ -270,6 +270,11 @@ class ToolGuard(BaseGuard):
                 )
 
             # Check for dangerous patterns in arguments
+            if ToolGuard._arguments_depth(arguments) > ToolGuard._MAX_ARGS_JSON_DEPTH:
+                return self.fail_result(
+                    "BLOCKED: Tool arguments exceed maximum nesting depth.",
+                    details={"tool": tool_name},
+                )
             args_str = str(arguments)
             for pattern in self.dangerous_patterns:
                 if pattern.search(args_str):
@@ -337,15 +342,45 @@ class ToolGuard(BaseGuard):
         return calls
 
     @staticmethod
+    def _arguments_depth(obj: Any) -> int:
+        """Non-recursive max container nesting depth of a Python object.
+
+        Used to fail closed on deeply-nested dict arguments before
+        ``str(arguments)`` / json.dumps can raise RecursionError (Greptile P1).
+        Uses an explicit stack, so it never recurses itself.
+        """
+        if not isinstance(obj, (dict, list)):
+            return 0
+        max_depth = 0
+        stack = [(obj, 1)]
+        while stack:
+            node, depth = stack.pop()
+            if depth > max_depth:
+                max_depth = depth
+            if isinstance(node, dict):
+                for v in node.values():
+                    if isinstance(v, (dict, list)):
+                        stack.append((v, depth + 1))
+            elif isinstance(node, list):
+                for v in node:
+                    if isinstance(v, (dict, list)):
+                        stack.append((v, depth + 1))
+        return max_depth
+
+    @staticmethod
     def _parse_tool_arguments(raw: Any) -> Tuple[bool, Any]:
         """Parse tool-call arguments. Returns (ok, value).
 
         ``None`` and blank strings are legitimate zero-argument payloads.
         Oversized argument payloads fail closed before parsing (DoS bound).
+        Deeply-nested dict arguments are also rejected (non-recursive depth
+        check) so recursion never crashes the caller (Greptile P1).
         """
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             return True, {}
         if isinstance(raw, dict):
+            if ToolGuard._arguments_depth(raw) > ToolGuard._MAX_ARGS_JSON_DEPTH:
+                return False, None
             return True, raw
         if isinstance(raw, str):
             ok, args = ToolGuard._safe_parse_json_object(raw)
@@ -579,6 +614,14 @@ class ToolGuard(BaseGuard):
         if resp_type in ("tool_call", "function_call") and has_sibling_collection:
             return [ToolGuard._ambiguous_hybrid_sentinel()]
 
+        # Multiple independent top-level collections at once is ambiguous and
+        # would double-count under max_calls_per_response - reject (Sentry LOW).
+        present_collections = [
+            k for k in ("tool_calls", "choices", "content") if k in response
+        ]
+        if len(present_collections) > 1:
+            return [ToolGuard._ambiguous_hybrid_sentinel()]
+
         # Direct tool call. Process it ONLY (no sibling present here) -
         # avoids double-counting under max_calls_per_response (Sentry MEDIUM).
         if resp_type == "tool_call":
@@ -590,9 +633,7 @@ class ToolGuard(BaseGuard):
         calls.extend(ToolGuard._extract_choices_tool_calls(response.get("choices", [])))
 
         # Anthropic format
-        calls.extend(
-            ToolGuard._extract_anthropic_tool_calls(response.get("content"))
-        )
+        calls.extend(ToolGuard._extract_anthropic_tool_calls(response.get("content")))
 
         return calls
 
