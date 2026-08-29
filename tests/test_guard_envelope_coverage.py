@@ -443,7 +443,9 @@ class TestMalformedEntryHandling:
     def test_deeply_nested_json_arguments_fail_closed(self):
         # A bounded but deeply-nested JSON object can exceed the decoder
         # recursion depth; it must fail closed, not raise RecursionError
-        # (Greptile/T-Rex P1).
+        # (Greptile/T-Rex P1). Deterministic across interpreters (CPython
+        # versions differ in where they raise) thanks to the explicit
+        # _MAX_ARGS_JSON_DEPTH bound.
         depth = 1100
         deep = '{"a":' * depth + "1" + "}" * depth
         guard = ToolGuard()
@@ -451,6 +453,41 @@ class TestMalformedEntryHandling:
             "type": "function_call", "name": "f", "arguments": deep,
         })
         assert result.passed is False
+
+    def test_dict_valued_content_is_valid_no_tool(self):
+        # Dict-valued content is a valid format for some APIs — a benign
+        # dict without tool shapes passes (Sentry HIGH).
+        guard = ToolGuard()
+        result = guard.check({"type": "text", "content": {"summary": "ok"}})
+        assert result.passed is True
+
+    def test_dict_valued_content_direct_tool_use_blocked(self):
+        # A dict content that IS a tool_use block must be verified/blocked.
+        guard = ToolGuard()
+        result = guard.check(
+            {"content": {"type": "tool_use", "name": "bash", "input": {}}}
+        )
+        assert result.passed is False
+
+    def test_dict_valued_content_nested_tool_shape_malformed(self):
+        # Tool-shaped objects nested inside dict content are an ambiguous
+        # laundering vector — malformed, fail-closed.
+        guard = ToolGuard()
+        result = guard.check(
+            {"content": {"outer": {"name": "bash", "arguments": {}}}}
+        )
+        assert result.passed is False
+
+    def test_caller_declared_unrecognized_type_blocked(self):
+        # A tool_calls member declaring type="__unrecognized__" must be
+        # rejected unconditionally — a caller-supplied name must not bypass
+        # the internal sentinel rejection (Greptile P1).
+        guard = ToolGuard()
+        result = guard.check(
+            {"tool_calls": [{"type": "__unrecognized__", "name": "bash", "arguments": {}}]}
+        )
+        assert result.passed is False
+        assert "unrecognized format" in result.message.lower()
 
     def test_nested_dict_scalar_injection_and_pii_detected(self):
         result = SafetyGuard().check({

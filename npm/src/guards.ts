@@ -265,6 +265,20 @@ export class ToolGuard extends BaseGuard {
         } else if (typeof content === 'string') {
             // Plain-text content (e.g. type=text) is not a tool-block
             // collection — it carries no tool calls (Greptile P1).
+        } else if (content !== null && content !== undefined && typeof content === 'object') {
+            // Dict-valued content is a valid format for some APIs. Only a
+            // direct tool_use block is a tool call; a tool-shaped object
+            // nested inside is ambiguous and malformed; benign dicts carry
+            // no tools (Sentry HIGH).
+            if (String(content.type || '').toLowerCase() === 'tool_use') {
+                calls.push({
+                    type: 'tool_call',
+                    tool_name: content.name || '',
+                    arguments: content.input || {},
+                });
+            } else if (this.containsNestedToolShape(content, 0)) {
+                calls.push(ToolGuard.malformedEntry());
+            }
         } else if (content !== null && content !== undefined) {
             calls.push(ToolGuard.malformedEntry());
         }

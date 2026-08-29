@@ -74,7 +74,40 @@ class ToolGuard(BaseGuard):
 
     # Fail-closed bound on JSON-encoded argument payloads before parsing.
     _MAX_ARGS_JSON_CHARS = 10_000
+    _MAX_ARGS_JSON_DEPTH = 128
     _MAX_NESTED_SCAN_DEPTH = 12
+
+    @staticmethod
+    def _max_sequence_depth(text: str) -> int:
+        """Return the max brace/bracket nesting depth outside JSON strings.
+
+        Used as a deterministic fail-closed guard against deep nesting, so
+        the json.loads recursion limit can never crash the caller, regardless
+        of the interpreter's runtime recursion configuration (CPython versions
+        differ in where they raise).
+        """
+        depth = 0
+        max_depth = 0
+        in_string = False
+        escaped = False
+        for ch in text:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch in "{[":
+                depth += 1
+                if depth > max_depth:
+                    max_depth = depth
+            elif ch in "}]":
+                depth -= 1
+        return max_depth
 
     @staticmethod
     def _safe_parse_json_object(payload: str) -> Tuple[bool, Any]:
@@ -97,6 +130,8 @@ class ToolGuard(BaseGuard):
             return False, None
         stripped = payload.strip()
         if not (stripped.startswith("{") and stripped.endswith("}")):
+            return False, None
+        if ToolGuard._max_sequence_depth(stripped) > ToolGuard._MAX_ARGS_JSON_DEPTH:
             return False, None
         try:
             parsed = json.loads(stripped)
@@ -196,7 +231,9 @@ class ToolGuard(BaseGuard):
                 )
 
             # Unrecognized envelope (#28): fail closed, never pass silently.
-            if tool_name is None and call.get("type") == "__unrecognized__":
+            # Rejected unconditionally - a caller-declared name on an
+            # __unrecognized__ sentinel must not bypass rejection (Greptile P1).
+            if call.get("type") == "__unrecognized__":
                 return self.fail_result(
                     "BLOCKED: Response contains tool-like content in an unrecognized format. "
                     "Supported shapes: type=tool_call, tool_calls[], choices[].message.tool_calls[], "
@@ -476,6 +513,22 @@ class ToolGuard(BaseGuard):
         if blocks is None or isinstance(blocks, str):
             return []
         if not isinstance(blocks, list):
+            if isinstance(blocks, dict):
+                # Dict-valued content is a valid format for some APIs. Only a
+                # direct tool_use block is a tool call; tool shapes nested
+                # inside a dict are an ambiguous laundering vector and become
+                # malformed; benign dicts carry no tools (Sentry HIGH).
+                if str(blocks.get("type", "")).lower() == "tool_use":
+                    return [
+                        {
+                            "type": "tool_call",
+                            "tool_name": blocks.get("name", ""),
+                            "arguments": blocks.get("input", {}),
+                        }
+                    ]
+                if ToolGuard._contains_nested_tool_shape(blocks, 0):
+                    return [ToolGuard._malformed_sentinel(blocks)]
+                return []
             return ToolGuard._iter_tool_collection(blocks)
         calls: List[Dict] = []
         for block in blocks:
