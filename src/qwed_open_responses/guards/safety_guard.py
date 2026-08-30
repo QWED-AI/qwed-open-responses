@@ -254,7 +254,10 @@ class SafetyGuard(BaseGuard):
         if isinstance(value, dict):
             return self._extract_content(value, depth)
         if isinstance(value, list):
-            collected = [self._nested_content(item, depth) for item in value]
+            # Increment depth for list children too — otherwise list-only
+            # nesting never reaches _MAX_CONTENT_DEPTH and a deeply (or
+            # cyclically) nested list recurses until RecursionError (T-Rex P1).
+            collected = [self._nested_content(item, depth + 1) for item in value]
             return " ".join(collected)
         if isinstance(value, str):
             return value

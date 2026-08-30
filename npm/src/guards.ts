@@ -370,26 +370,35 @@ export class ToolGuard extends BaseGuard {
 
     /**
      * Non-recursive max container nesting depth of a value.
-     * Returns -1 when a container cycle is detected (fail closed).
+     * Returns -1 when an ancestor back-reference (true cycle) is detected.
+     * Containers shared by siblings (acyclic DAG references) are allowed —
+     * enter/exit bookkeeping keeps the visited set to the active path only.
      */
     private static argumentsDepth(obj: any): number {
         if (obj === null || typeof obj !== 'object') return 0;
         let max = 0;
-        const stack: Array<[any, number]> = [[obj, 1]];
-        const seen = new Set<any>([obj]);
+        type Frame = [any, number, boolean];
+        const stack: Frame[] = [[obj, 1, true]];
+        const onPath = new Set<any>();
         while (stack.length > 0) {
-            const pair = stack.pop()!;
-            const node = pair[0];
-            const depth = pair[1];
+            const frame = stack.pop()!;
+            const node = frame[0];
+            const depth = frame[1];
+            const entering = frame[2];
+            if (!entering) {
+                onPath.delete(node);
+                continue;
+            }
+            if (onPath.has(node)) return -1;
+            onPath.add(node);
             if (depth > max) max = depth;
+            stack.push([node, depth, false]);
             const children: any[] = Array.isArray(node)
                 ? node
                 : Object.values(node);
             for (const child of children) {
                 if (child !== null && typeof child === 'object') {
-                    if (seen.has(child)) return -1;
-                    seen.add(child);
-                    stack.push([child, depth + 1]);
+                    stack.push([child, depth + 1, true]);
                 }
             }
         }

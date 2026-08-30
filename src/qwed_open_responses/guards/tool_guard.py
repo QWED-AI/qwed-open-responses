@@ -364,23 +364,32 @@ class ToolGuard(BaseGuard):
         Used to fail closed on deeply-nested dict arguments before
         ``str(arguments)`` / json.dumps can raise RecursionError (Greptile P1).
         Uses an explicit stack, so it never recurses itself. Returns -1 when
-        a container cycle is detected, so callers fail closed (Greptile P1).
+        an ancestor back-reference (true cycle) is detected, so callers fail
+        closed (Greptile P1). Containers shared by siblings (acyclic DAG
+        references) are allowed — enter/exit bookkeeping keeps the visited
+        set limited to the active traversal path, not the whole traversal.
         """
         if not ToolGuard._is_container(obj):
             return 0
         max_depth = 0
-        stack = [(obj, 1)]
-        seen = {id(obj)}
+        # (node, depth, entering) frames: entering=False marks the exit of a
+        # node, so `on_path` holds only true ancestors at any moment.
+        stack: List[Tuple[Any, int, bool]] = [(obj, 1, True)]
+        on_path: Set[int] = set()
         while stack:
-            node, depth = stack.pop()
+            node, depth, entering = stack.pop()
+            if not entering:
+                on_path.discard(id(node))
+                continue
+            if id(node) in on_path:
+                return -1
+            on_path.add(id(node))
             if depth > max_depth:
                 max_depth = depth
+            stack.append((node, depth, False))
             for child in ToolGuard._container_children(node):
                 if ToolGuard._is_container(child):
-                    if id(child) in seen:
-                        return -1
-                    seen.add(id(child))
-                    stack.append((child, depth + 1))
+                    stack.append((child, depth + 1, True))
         return max_depth
 
     @staticmethod

@@ -528,6 +528,45 @@ class TestMalformedEntryHandling:
         assert ok.passed is True
 
     # ------------------------------------------------------------------
+    # Shared (acyclic) references between siblings are NOT cycles — only
+    # ancestor back-edges are rejected (Greptile P1).
+    # ------------------------------------------------------------------
+
+    def test_shared_reference_arguments_not_flagged_as_cycle(self):
+        shared = {"q": "benign"}
+        guard = ToolGuard()
+        result = guard.check({
+            "type": "function_call",
+            "name": "f",
+            "arguments": {"left": shared, "right": shared},
+        })
+        assert result.passed is True
+        assert ToolGuard._arguments_depth({"left": shared, "right": shared}) == 2
+        # True cycle is still rejected.
+        cyclic = {"a": 1}
+        cyclic["self"] = cyclic
+        assert ToolGuard._arguments_depth(cyclic) == -1
+
+    # ------------------------------------------------------------------
+    # List-only nesting must count toward SafetyGuard's content-depth
+    # bound — deep or cyclic lists must not raise RecursionError (T-Rex P1).
+    # ------------------------------------------------------------------
+
+    def test_deep_list_nesting_bounded_in_safety_guard(self):
+        sg = SafetyGuard()
+        deep = ["leaf"]
+        for _ in range(1100):
+            deep = [deep]
+        # Must return a decision, not raise RecursionError.
+        result = sg.check({"result": deep})
+        assert isinstance(result.passed, bool)
+        # Cyclic list structure must terminate too.
+        cyc = ["x"]
+        cyc.append(cyc)
+        result2 = sg.check({"result": cyc})
+        assert isinstance(result2.passed, bool)
+
+    # ------------------------------------------------------------------
     # Multiple top-level tool collections are ambiguous - rejected, not
     # double-counted (Sentry LOW)
     # ------------------------------------------------------------------
