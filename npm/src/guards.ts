@@ -641,11 +641,16 @@ export class SafetyGuard extends BaseGuard {
         /password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
         /api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
         /secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
-        /private[_-]?key/i,
-        // Python applies re.I to all HARMFUL_PATTERNS — the PEM header must
-        // be case-insensitive here too, or lowercase/mixed-case headers pass
-        // npm while Python blocks them (CodeAnt, PR #34).
-        /BEGIN\s+(RSA|DSA|EC)\s+PRIVATE\s+KEY/i,
+        // Value-aware label form (same placeholder exemption as above) —
+        // "private[_-]?key" bare-matching blocked benign labels such as
+        // "private_key: not set" (Greptile P1, PR #34). [\s_-]? also catches
+        // the spaced "private key: <value>" form. Mirrors safety_guard.py.
+        /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
+        // Generic PEM header: BEGIN [TYPE] PRIVATE KEY — covers RSA/DSA/EC
+        // plus generic "BEGIN PRIVATE KEY", OPENSSH and ENCRYPTED variants
+        // that were missed (CodeRabbit, PR #34). Python applies re.I to all
+        // HARMFUL_PATTERNS — case-insensitive here too (CodeAnt, PR #34).
+        /BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY/i,
     ];
 
     private checkPii: boolean;
@@ -720,7 +725,15 @@ export class SafetyGuard extends BaseGuard {
         if (errorIssues.length > 0) {
             return this.failResult(
                 `Safety check failed: ${errorIssues.length} critical issue(s)`,
-                { issues: errorIssues },
+                // All detected issues — errors AND warnings — match Python,
+                // which returns details={'issues': issues} with everything
+                // (Sentry, PR #34: PII warnings were discarded when a
+                // critical issue co-existed).
+                {
+                    issues: errorIssues.concat(
+                        issues.map((w) => ({ type: w, severity: 'warning', details: [] })),
+                    ),
+                },
             );
         }
 

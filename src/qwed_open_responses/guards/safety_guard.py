@@ -72,8 +72,17 @@ class SafetyGuard(BaseGuard):
         r"secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|"
         r"omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|"
         r"n/?a)\b|\*{3,}|x{3,})\S+",
-        r"private[_-]?key",
-        r"BEGIN\s+(RSA|DSA|EC)\s+PRIVATE\s+KEY",
+        # Value-aware label form (same placeholder exemption as above) —
+        # "private[_-]?key" bare-matching blocked benign labels such as
+        # "private_key: not set" (Greptile P1, PR #34). The [\s_-]? class
+        # also catches the spaced "private key: <value>" form.
+        r"private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|"
+        r"redacted|omitted|placeholder|invalid|expired|"
+        r"not[_\s]?(?:set|provided)|n/?a)\b|\*{3,}|x{3,})\S+",
+        # Generic PEM header: BEGIN [TYPE] PRIVATE KEY — covers RSA/DSA/EC
+        # (the old list) plus generic "BEGIN PRIVATE KEY", OPENSSH and
+        # ENCRYPTED variants that were missed (CodeRabbit, PR #34).
+        r"BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY",
     ]
 
     def __init__(
