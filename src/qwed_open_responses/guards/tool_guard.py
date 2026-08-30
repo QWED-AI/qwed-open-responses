@@ -599,7 +599,13 @@ class ToolGuard(BaseGuard):
             return ToolGuard._iter_tool_collection(blocks)
         calls: List[Dict] = []
         for block in blocks:
-            if isinstance(block, dict) and block.get("type") == "tool_use":
+            # Case-insensitive to match the dict-content path above — a
+            # mixed-case "Tool_Use" block is a tool call, not an
+            # unrecognized envelope (Sentry HIGH).
+            if (
+                isinstance(block, dict)
+                and str(block.get("type", "")).lower() == "tool_use"
+            ):
                 calls.append(
                     {
                         "type": "tool_call",

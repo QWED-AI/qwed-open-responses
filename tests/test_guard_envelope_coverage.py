@@ -586,6 +586,22 @@ class TestMalformedEntryHandling:
         assert result.passed is False
 
     # ------------------------------------------------------------------
+    # Anthropic content-block tool_use matching is case-insensitive,
+    # consistent with the dict-content path (Sentry HIGH).
+    # ------------------------------------------------------------------
+
+    def test_mixed_case_tool_use_block_recognized(self):
+        guard = ToolGuard(blocked_tools=["bash"])
+        result = guard.check(
+            {"content": [{"type": "Tool_Use", "name": "bash", "input": {}}]}
+        )
+        assert result.passed is False  # recognized (and blocked), not passed
+        ok = guard.check(
+            {"content": [{"type": "TOOL_USE", "name": "search", "input": {}}]}
+        )
+        assert ok.passed is True  # legit non-blocklisted tool passes
+
+    # ------------------------------------------------------------------
     # A non-dict `function` value is incidental metadata, not a wrapper —
     # the valid tool_call must pass (Sentry MEDIUM), while nameless dict
     # wrappers stay blocked (T-Rex P1).

@@ -269,7 +269,12 @@ export class ToolGuard extends BaseGuard {
         const content: any = response.content;
         if (Array.isArray(content)) {
             for (const block of content) {
-                if (block !== null && typeof block === 'object' && block.type === 'tool_use') {
+                // Case-insensitive to match the dict-content path below — a
+                // mixed-case "Tool_Use" block is a tool call (Sentry HIGH).
+                if (
+                    block !== null && typeof block === 'object' &&
+                    String(block.type || '').toLowerCase() === 'tool_use'
+                ) {
                     calls.push({
                         type: 'tool_call',
                         tool_name: block.name || '',
@@ -614,7 +619,18 @@ export class SafetyGuard extends BaseGuard {
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
-        const content = this.extractContent(response);
+        let content: string;
+        try {
+            content = this.extractContent(response);
+        } catch (err) {
+            // Cyclic / unserializable structures cannot be inspected —
+            // fail closed instead of crashing the caller (Greptile P1).
+            return this.failResult(
+                'BLOCKED: Response content could not be safely inspected '
+                + '(cyclic or unserializable structure).',
+                { error: String(err) },
+            );
+        }
         const issues: string[] = [];
 
         if (this.checkPii) {
