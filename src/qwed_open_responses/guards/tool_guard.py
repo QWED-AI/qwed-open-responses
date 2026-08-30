@@ -269,8 +269,10 @@ class ToolGuard(BaseGuard):
                     },
                 )
 
-            # Check for dangerous patterns in arguments
-            if ToolGuard._arguments_depth(arguments) > ToolGuard._MAX_ARGS_JSON_DEPTH:
+            # Check for dangerous patterns in arguments. A negative depth
+            # means a cycle was detected — fail closed on it too.
+            args_depth = ToolGuard._arguments_depth(arguments)
+            if args_depth < 0 or args_depth > ToolGuard._MAX_ARGS_JSON_DEPTH:
                 return self.fail_result(
                     "BLOCKED: Tool arguments exceed maximum nesting depth.",
                     details={"tool": tool_name},
@@ -361,18 +363,23 @@ class ToolGuard(BaseGuard):
 
         Used to fail closed on deeply-nested dict arguments before
         ``str(arguments)`` / json.dumps can raise RecursionError (Greptile P1).
-        Uses an explicit stack, so it never recurses itself.
+        Uses an explicit stack, so it never recurses itself. Returns -1 when
+        a container cycle is detected, so callers fail closed (Greptile P1).
         """
         if not ToolGuard._is_container(obj):
             return 0
         max_depth = 0
         stack = [(obj, 1)]
+        seen = {id(obj)}
         while stack:
             node, depth = stack.pop()
             if depth > max_depth:
                 max_depth = depth
             for child in ToolGuard._container_children(node):
                 if ToolGuard._is_container(child):
+                    if id(child) in seen:
+                        return -1
+                    seen.add(id(child))
                     stack.append((child, depth + 1))
         return max_depth
 
@@ -388,7 +395,8 @@ class ToolGuard(BaseGuard):
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             return True, {}
         if isinstance(raw, dict):
-            if ToolGuard._arguments_depth(raw) > ToolGuard._MAX_ARGS_JSON_DEPTH:
+            depth = ToolGuard._arguments_depth(raw)
+            if depth < 0 or depth > ToolGuard._MAX_ARGS_JSON_DEPTH:
                 return False, None
             return True, raw
         if isinstance(raw, str):

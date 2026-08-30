@@ -507,6 +507,27 @@ class TestMalformedEntryHandling:
         assert r2.passed is False
 
     # ------------------------------------------------------------------
+    # Cyclic (self-referential) arguments must fail closed, never hang
+    # in the depth traversal (Greptile P1).
+    # ------------------------------------------------------------------
+
+    def test_cyclic_arguments_fail_closed_no_hang(self):
+        cyclic = {"a": 1}
+        cyclic["self"] = cyclic
+        guard = ToolGuard()
+        # Depth traversal itself terminates with the cycle marker.
+        assert ToolGuard._arguments_depth(cyclic) == -1
+        # direct tool_call path
+        r1 = guard.check({"type": "function_call", "name": "f", "arguments": cyclic})
+        assert r1.passed is False
+        # OpenAI wrapper path
+        r2 = guard.check({"function": {"name": "f", "arguments": cyclic}})
+        assert r2.passed is False
+        # Acyclic arguments remain valid.
+        ok = guard.check({"type": "function_call", "name": "f", "arguments": {"a": {"b": 1}}})
+        assert ok.passed is True
+
+    # ------------------------------------------------------------------
     # Multiple top-level tool collections are ambiguous - rejected, not
     # double-counted (Sentry LOW)
     # ------------------------------------------------------------------

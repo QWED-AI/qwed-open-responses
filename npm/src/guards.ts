@@ -368,11 +368,15 @@ export class ToolGuard extends BaseGuard {
 
     private static MAX_ARGS_JSON_DEPTH = 128;
 
-    /** Non-recursive max container nesting depth of a value. */
+    /**
+     * Non-recursive max container nesting depth of a value.
+     * Returns -1 when a container cycle is detected (fail closed).
+     */
     private static argumentsDepth(obj: any): number {
         if (obj === null || typeof obj !== 'object') return 0;
         let max = 0;
         const stack: Array<[any, number]> = [[obj, 1]];
+        const seen = new Set<any>([obj]);
         while (stack.length > 0) {
             const pair = stack.pop()!;
             const node = pair[0];
@@ -383,6 +387,8 @@ export class ToolGuard extends BaseGuard {
                 : Object.values(node);
             for (const child of children) {
                 if (child !== null && typeof child === 'object') {
+                    if (seen.has(child)) return -1;
+                    seen.add(child);
                     stack.push([child, depth + 1]);
                 }
             }
@@ -402,7 +408,9 @@ export class ToolGuard extends BaseGuard {
         if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
             // Bound structural depth before JSON.stringify can overflow the
             // stack on deeply nested objects (Greptile P1, mirror of Python).
-            if (ToolGuard.argumentsDepth(raw) > ToolGuard.MAX_ARGS_JSON_DEPTH) {
+            // A negative depth means a cycle — fail closed on that too.
+            const argsDepth = ToolGuard.argumentsDepth(raw);
+            if (argsDepth < 0 || argsDepth > ToolGuard.MAX_ARGS_JSON_DEPTH) {
                 return { ok: false };
             }
             return { ok: true, value: raw };
