@@ -159,8 +159,14 @@ export class ToolGuard extends BaseGuard {
                 });
             }
 
-            // Check dangerous patterns
-            const argsStr = JSON.stringify(args);
+            // Check dangerous patterns — serialization itself can throw
+            // (circular refs / extreme depth), so fail closed on it.
+            let argsStr: string;
+            try {
+                argsStr = JSON.stringify(args);
+            } catch {
+                return this.failResult('BLOCKED: Tool arguments could not be serialized');
+            }
             for (const pattern of this.dangerousPatterns) {
                 if (pattern.test(argsStr)) {
                     return this.failResult('BLOCKED: Dangerous pattern detected in tool arguments', {
@@ -360,6 +366,30 @@ export class ToolGuard extends BaseGuard {
 
     private static MAX_ARGS_JSON_CHARS = 10_000;
 
+    private static MAX_ARGS_JSON_DEPTH = 128;
+
+    /** Non-recursive max container nesting depth of a value. */
+    private static argumentsDepth(obj: any): number {
+        if (obj === null || typeof obj !== 'object') return 0;
+        let max = 0;
+        const stack: Array<[any, number]> = [[obj, 1]];
+        while (stack.length > 0) {
+            const pair = stack.pop()!;
+            const node = pair[0];
+            const depth = pair[1];
+            if (depth > max) max = depth;
+            const children: any[] = Array.isArray(node)
+                ? node
+                : Object.values(node);
+            for (const child of children) {
+                if (child !== null && typeof child === 'object') {
+                    stack.push([child, depth + 1]);
+                }
+            }
+        }
+        return max;
+    }
+
     private parseToolArguments(raw: any): { ok: boolean; value?: any } {
         // None / blank payloads are legitimate zero-argument calls.
         if (
@@ -370,6 +400,11 @@ export class ToolGuard extends BaseGuard {
             return { ok: true, value: {} };
         }
         if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+            // Bound structural depth before JSON.stringify can overflow the
+            // stack on deeply nested objects (Greptile P1, mirror of Python).
+            if (ToolGuard.argumentsDepth(raw) > ToolGuard.MAX_ARGS_JSON_DEPTH) {
+                return { ok: false };
+            }
             return { ok: true, value: raw };
         }
         if (typeof raw === 'string') {
@@ -427,7 +462,7 @@ export class ToolGuard extends BaseGuard {
             // rather than fall through with dangerous arguments uninspected.
             if ('function' in call) {
                 const fn = call.function;
-                if (fn !== null && typeof fn === 'object') {
+                if (fn !== null && typeof fn === 'object' && !Array.isArray(fn)) {
                     const n = fn.name;
                     if (!ToolGuard.validToolName(n)) {
                         out.push(sentinel(call.toolName || call.name || n));
@@ -441,9 +476,10 @@ export class ToolGuard extends BaseGuard {
                     out.push({ type: 'tool_call', tool_name: n, arguments: parsed.value });
                     continue;
                 }
-                // function present but null / non-object — malformed wrapper.
-                out.push(sentinel(call.toolName || call.name));
-                continue;
+                // Non-object `function` value is an incidental key (e.g. string
+                // metadata), not a wrapper — fall through; the call is still
+                // policy-checked by name in check(), and a nameless call is
+                // rejected there (Sentry: valid tool_call must not be blocked).
             }
 
             // Responses API direct item: {type: 'function_call', name, arguments}

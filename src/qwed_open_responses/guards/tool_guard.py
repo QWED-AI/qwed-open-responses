@@ -342,6 +342,20 @@ class ToolGuard(BaseGuard):
         return calls
 
     @staticmethod
+    def _is_container(value: Any) -> bool:
+        """A dict or list (the only container types we traverse)."""
+        return isinstance(value, (dict, list))
+
+    @staticmethod
+    def _container_children(node: Any) -> Any:
+        """Iterable children of a container node (empty for a scalar)."""
+        if isinstance(node, dict):
+            return node.values()
+        if isinstance(node, list):
+            return node
+        return ()
+
+    @staticmethod
     def _arguments_depth(obj: Any) -> int:
         """Non-recursive max container nesting depth of a Python object.
 
@@ -349,7 +363,7 @@ class ToolGuard(BaseGuard):
         ``str(arguments)`` / json.dumps can raise RecursionError (Greptile P1).
         Uses an explicit stack, so it never recurses itself.
         """
-        if not isinstance(obj, (dict, list)):
+        if not ToolGuard._is_container(obj):
             return 0
         max_depth = 0
         stack = [(obj, 1)]
@@ -357,14 +371,9 @@ class ToolGuard(BaseGuard):
             node, depth = stack.pop()
             if depth > max_depth:
                 max_depth = depth
-            if isinstance(node, dict):
-                for v in node.values():
-                    if isinstance(v, (dict, list)):
-                        stack.append((v, depth + 1))
-            elif isinstance(node, list):
-                for v in node:
-                    if isinstance(v, (dict, list)):
-                        stack.append((v, depth + 1))
+            for child in ToolGuard._container_children(node):
+                if ToolGuard._is_container(child):
+                    stack.append((child, depth + 1))
         return max_depth
 
     @staticmethod
@@ -439,7 +448,13 @@ class ToolGuard(BaseGuard):
         fn = call.get("function")
         if fn is None:
             return None
-        if not isinstance(fn, dict) or not cls._valid_tool_name(fn.get("name")):
+        if not isinstance(fn, dict):
+            # Incidental non-wrapper ``function`` key (e.g. string metadata on
+            # a valid tool_call) is not a function wrapper. Fall through: the
+            # call itself is still policy-checked by name in check(), and a
+            # nameless call is rejected there (Sentry: false negative fixed).
+            return None
+        if not cls._valid_tool_name(fn.get("name")):
             return cls._unrecognized_sentinel(call.get("tool_name") or call.get("name"))
         name = fn["name"]
         ok, args = cls._parse_tool_arguments(fn.get("arguments", {}))
