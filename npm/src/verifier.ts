@@ -31,6 +31,25 @@ export class ResponseVerifier {
         const guardsToUse = guards ?? this.defaultGuards;
         const parsedResponse = this.parseResponse(response);
 
+        // Fail-closed: zero guards must never produce verified=true (#27).
+        if (guardsToUse.length === 0) {
+            return {
+                verified: false,
+                response: parsedResponse,
+                guardsPassed: 0,
+                guardsFailed: 0,
+                guardResults: [{
+                    guardName: 'ResponseVerifier',
+                    passed: false,
+                    message: 'No guards configured — verification cannot be performed. Pass at least one guard or set defaultGuards.',
+                    severity: 'error',
+                }],
+                blocked: this.strictMode,
+                blockReason: 'No guards configured — fail-closed (zero-guard verify).',
+                timestamp: new Date().toISOString(),
+            };
+        }
+
         const guardResults: GuardResult[] = [];
         let guardsPassed = 0;
         let guardsFailed = 0;

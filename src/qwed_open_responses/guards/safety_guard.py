@@ -183,8 +183,53 @@ class SafetyGuard(BaseGuard):
 
         return self.pass_result(message="All safety checks passed")
 
-    def _extract_content(self, response: Dict) -> str:
-        """Extract text content from response."""
+    _MAX_CONTENT_DEPTH = 12
+    _KNOWN_CONTENT_KEYS = ("content", "output", "text", "arguments")
+
+    def _extract_content(self, response: Dict, _depth: int = 0) -> str:
+        """Extract text content from response — recursively (#29).
+
+        Walks all string values at any nesting depth (bounded to prevent
+        DoS on deeply-nested payloads) so the guard can see content inside
+        the canonical OpenAI shape (choices[].message.content), Anthropic
+        envelopes, and arbitrary nested structures.
+        """
+        parts = self._known_content_parts(response)
+
+        if _depth < self._MAX_CONTENT_DEPTH:
+            for key, value in response.items():
+                if not self._should_traverse(key, value):
+                    continue
+                parts.append(self._nested_content(value, _depth + 1))
+
+        return " ".join(parts)
+
+    def _should_traverse(self, key: str, value: Any) -> bool:
+        """Decide whether a response entry still needs recursive scanning.
+
+        - Unknown keys holding strings ARE scanned (nested scalars must be
+          checked for injection/PII — Greptile P1).
+        - Known content keys had their string forms collected verbatim above;
+          their container forms are traversed so nothing hides inside them.
+        - output/arguments dicts were already stringified above — skipping
+          avoids duplicate collection.
+        """
+        if isinstance(value, str):
+            # content/output/text strings were collected verbatim above;
+            # a string under 'arguments' was NOT (only dicts are) and must
+            # still be scanned for injection/PII.
+            if key == "arguments":
+                return True
+            return key not in self._KNOWN_CONTENT_KEYS
+        if isinstance(value, dict):
+            return key not in ("output", "arguments")
+        if isinstance(value, list):
+            return True
+        return False  # other scalars carry no scannable text
+
+    @staticmethod
+    def _known_content_parts(response: Dict) -> List[str]:
+        """Collect strings from the well-known top-level content keys."""
         parts = []
 
         if isinstance(response.get("content"), str):
@@ -200,7 +245,23 @@ class SafetyGuard(BaseGuard):
         if isinstance(response.get("arguments"), dict):
             parts.append(str(response["arguments"]))
 
-        return " ".join(parts)
+        return parts
+
+    def _nested_content(self, value: Any, depth: int) -> str:
+        """Recursively collect strings from unrecognized nesting levels."""
+        if depth > self._MAX_CONTENT_DEPTH:
+            return ""
+        if isinstance(value, dict):
+            return self._extract_content(value, depth)
+        if isinstance(value, list):
+            # Increment depth for list children too — otherwise list-only
+            # nesting never reaches _MAX_CONTENT_DEPTH and a deeply (or
+            # cyclically) nested list recurses until RecursionError (T-Rex P1).
+            collected = [self._nested_content(item, depth + 1) for item in value]
+            return " ".join(collected)
+        if isinstance(value, str):
+            return value
+        return ""
 
     def _check_pii(self, content: str) -> List[str]:
         """Check for PII in content."""
