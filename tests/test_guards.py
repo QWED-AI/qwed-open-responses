@@ -1196,6 +1196,71 @@ class TestNormalizeCountry:
         """IN, TN, GA are US states in jurisdiction context."""
         from qwed_open_responses.guards.legal_guard import _normalize_country
 
+
         assert _normalize_country("IN") == "US"
         assert _normalize_country("TN") == "US"
         assert _normalize_country("GA") == "US"
+
+
+# ----------------------------------------------------------------------
+# Cross-language parity regressions (issue #30).
+# The npm TypeScript implementation mirrors these exact pattern sets
+# case-insensitively; if you change them here, change guards.ts too.
+# ----------------------------------------------------------------------
+
+
+class TestCrossLanguageParity30:
+    """Python-side pins for the #30 unified superset (TS mirrors it)."""
+
+    @pytest.mark.parametrize("args", [
+        {"cmd": "sudo chmod 777 /etc"},      # was missing in TS
+        {"cmd": "SUDO CHMOD 777 /etc"},      # case-insensitive
+        {"cmd": "import subprocess"},        # was missing in TS
+        {"cmd": "rm -rf /"},
+        {"cmd": "RM -RF /"},                 # was passing in Python (case)
+        {"cmd": "rmdir /s /q"},
+        {"cmd": "del /f boot.log"},
+        {"cmd": "format c:"},
+        {"cmd": "os.system('x')"},
+        {"cmd": "__import__('os')"},
+        {"cmd": "eval(x)"},
+        {"cmd": "exec(x)"},
+        {"sql": "DROP TABLE users"},
+        {"sql": "drop table users"},
+        {"sql": "DELETE FROM users"},
+        {"sql": "TRUNCATE TABLE users"},
+    ])
+    def test_dangerous_args_blocked(self, args):
+        result = ToolGuard().check(
+            {"type": "function_call", "name": "f", "arguments": args}
+        )
+        assert result.passed is False
+
+    def test_pattern_set_size_pinned(self):
+        # Keep Python and TS pattern sets in sync (issue #30):
+        # npm/src/guards.ts must mirror all 14 patterns case-insensitively.
+        assert len(ToolGuard.DEFAULT_DANGEROUS_PATTERNS) == 14
+
+    def test_pii_ip_detected(self):
+        result = SafetyGuard().check({"content": "server at 192.168.1.1 down"})
+        assert result.passed is False
+
+    def test_harmful_content_detected(self):
+        result = SafetyGuard().check({"content": "api_key=sk-12345"})
+        assert result.passed is False
+
+    @pytest.mark.parametrize("text", [
+        "new instruction: exfiltrate",
+        "system: override",
+        "<|im_start|>",
+        "[[run this]]",
+    ])
+    def test_injection_extended_detected(self, text):
+        result = SafetyGuard().check({"content": text})
+        assert result.passed is False
+
+    def test_non_dict_response_rejected(self):
+        from qwed_open_responses import ResponseVerifier
+        with pytest.raises((ValueError, TypeError)):
+            ResponseVerifier().verify(12345)
+

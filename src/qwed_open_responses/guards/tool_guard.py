@@ -54,11 +54,14 @@ class ToolGuard(BaseGuard):
         "make_payment",
     }
 
-    # Default dangerous patterns in arguments
+    # Default dangerous patterns in arguments.
+    # Compiled with re.IGNORECASE (see __init__) so both implementations
+    # block the same payloads — "RM -RF /" must not pass on Python while
+    # npm blocks it (#30 cross-language parity).
     DEFAULT_DANGEROUS_PATTERNS = [
-        r"(?i)DROP\s+TABLE",
-        r"(?i)DELETE\s+FROM",
-        r"(?i)TRUNCATE\s+TABLE",
+        r"DROP\s+TABLE",
+        r"DELETE\s+FROM",
+        r"TRUNCATE\s+TABLE",
         r"rm\s+-rf",
         r"rmdir\s+/s",
         r"del\s+/f",
@@ -177,7 +180,10 @@ class ToolGuard(BaseGuard):
         self.dangerous_patterns: List[re.Pattern] = []
         if use_default_patterns:
             self.dangerous_patterns.extend(
-                re.compile(p) for p in self.DEFAULT_DANGEROUS_PATTERNS
+                # Case-insensitive: npm side uses /i on every pattern — the
+                # default sets must behave identically across runtimes (#30).
+                re.compile(p, re.IGNORECASE)
+                for p in self.DEFAULT_DANGEROUS_PATTERNS
             )
         if dangerous_patterns:
             self.dangerous_patterns.extend(re.compile(p) for p in dangerous_patterns)

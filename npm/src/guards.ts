@@ -53,15 +53,25 @@ export class ToolGuard extends BaseGuard {
         'send_email', 'transfer_money', 'make_payment',
     ]);
 
+    // Unified cross-language superset — every pattern case-insensitive.
+    // Mirrors Python DEFAULT_DANGEROUS_PATTERNS exactly; the previously
+    // missing del/format/sudo/chmod/subprocess/os.system entries are the
+    // #30 divergences (Python blocked them, npm passed them).
     private static DEFAULT_DANGEROUS_PATTERNS = [
         /DROP\s+TABLE/i,
         /DELETE\s+FROM/i,
         /TRUNCATE\s+TABLE/i,
         /rm\s+-rf/i,
         /rmdir\s+\/s/i,
+        /del\s+\/f/i,
+        /format\s+c:/i,
+        /sudo\s+/i,
+        /chmod\s+777/i,
         /eval\s*\(/i,
         /exec\s*\(/i,
         /__import__/i,
+        /subprocess/i,
+        /os\.system/i,
     ];
 
     constructor(options: {
@@ -594,28 +604,53 @@ export class SafetyGuard extends BaseGuard {
     name = 'SafetyGuard';
     description = 'Comprehensive safety checks';
 
-    private checkPii: boolean;
-    private checkInjection: boolean;
-
     private static PII_PATTERNS = {
         email: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
         phone: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,
         ssn: /\b\d{3}-\d{2}-\d{4}\b/,
         creditCard: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,
+        // #30 parity: Python detects IPs, npm silently passed them.
+        ipAddress: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/,
     };
 
+    // #30 parity: mirrors Python INJECTION_PATTERNS — the missing five
+    // patterns let injection payloads pass on npm while Python blocked them.
     private static INJECTION_PATTERNS = [
         /ignore\s+(previous|all|above)\s+(instructions?|prompts?)/i,
         /disregard\s+(previous|all|above)/i,
         /forget\s+(everything|all|your\s+instructions)/i,
         /you\s+are\s+now\s+/i,
+        /act\s+as\s+if\s+you\s+are/i,
         /pretend\s+(you|to\s+be)/i,
+        /new\s+instructions?\s*:/i,
+        /system\s*:\s*/i,
+        /<\|.*?\|>/,
+        /\[\[.*?\]\]/,
     ];
 
-    constructor(options: { checkPii?: boolean; checkInjection?: boolean } = {}) {
+    // #30 parity: Python's harmful-content check had no npm counterpart at
+    // all — "api_key=sk-12345" was BLOCKED on Python and passed on npm.
+    private static HARMFUL_PATTERNS = [
+        /password\s*[=:]\s*\S+/i,
+        /api[_-]?key\s*[=:]\s*\S+/i,
+        /secret\s*[=:]\s*\S+/i,
+        /private[_-]?key/i,
+        /BEGIN\s+(RSA|DSA|EC)\s+PRIVATE\s+KEY/,
+    ];
+
+    private checkPii: boolean;
+    private checkInjection: boolean;
+    private checkHarmful: boolean;
+
+    constructor(options: {
+        checkPii?: boolean;
+        checkInjection?: boolean;
+        checkHarmful?: boolean;
+    } = {}) {
         super();
         this.checkPii = options.checkPii ?? true;
         this.checkInjection = options.checkInjection ?? true;
+        this.checkHarmful = options.checkHarmful ?? true;
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
@@ -645,6 +680,19 @@ export class SafetyGuard extends BaseGuard {
             for (const pattern of SafetyGuard.INJECTION_PATTERNS) {
                 if (pattern.test(content)) {
                     return this.failResult('BLOCKED: Prompt injection detected', { pattern: pattern.source });
+                }
+            }
+        }
+
+        if (this.checkHarmful) {
+            // Mirrors Python: harmful content is an ERROR-severity issue
+            // (fails the guard), unlike PII which is only a warning (#30).
+            for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
+                if (pattern.test(content)) {
+                    return this.failResult(
+                        'Safety check failed: 1 critical issue(s)',
+                        { issues: [{ type: 'harmful', severity: 'error', details: [pattern.source] }] },
+                    );
                 }
             }
         }

@@ -110,7 +110,10 @@ export class ResponseVerifier {
     }
 
     private parseResponse(response: any): ParsedResponse {
-        if (typeof response === 'object' && response !== null) {
+        // Parse strictness mirrors Python _parse_response (#30): Python
+        // raises ValueError for non-dict/scalar inputs — npm must reject
+        // them too, not wrap them as {type:'unknown'} and verify them.
+        if (response !== null && typeof response === 'object' && !Array.isArray(response)) {
             return response;
         }
 
@@ -122,6 +125,9 @@ export class ResponseVerifier {
             }
         }
 
-        return { type: 'unknown', raw: String(response) };
+        const typeName = response === null ? 'null' : Array.isArray(response) ? 'list' : typeof response;
+        throw new Error(
+            `Cannot parse response of type ${typeName}. Expected object, string, or JSON.`
+        );
     }
 }
