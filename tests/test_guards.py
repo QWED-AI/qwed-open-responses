@@ -1261,6 +1261,7 @@ class TestCrossLanguageParity30:
 
     def test_non_dict_response_rejected(self):
         from qwed_open_responses import ResponseVerifier
+        verifier = ResponseVerifier()
         with pytest.raises((ValueError, TypeError)):
-            ResponseVerifier().verify(12345)
+            verifier.verify(12345)
 

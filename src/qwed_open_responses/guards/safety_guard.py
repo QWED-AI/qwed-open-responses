@@ -48,16 +48,30 @@ class SafetyGuard(BaseGuard):
         r"act\s+as\s+if\s+you\s+are",
         r"pretend\s+(you|to\s+be)",
         r"new\s+instructions?\s*:",
-        r"system\s*:\s*",
+        # Requires instruction-override context after the role prefix — a bare
+        # "system:" label matches ordinary config text ("system: healthy",
+        # "Operating system: Linux") and blocked legitimate responses
+        # (Sentry/Greptile P1, PR #34). Mirrored in npm guards.ts.
+        r"system\s*:\s*(?:ignore|disregard|forget|override|you\s+are|"
+        r"act\s+as|pretend|new\s+instructions?|bypass|reveal)\b",
         r"<\|.*?\|>",  # Special tokens
         r"\[\[.*?\]\]",  # Bracket commands
     ]
 
-    # Harmful content patterns
+    # Harmful content patterns. The value part excludes benign placeholder
+    # labels ("password: required", "api_key: not set") that are common in
+    # ordinary status text but still matches real credentials
+    # ("api_key=sk-12345") (Sentry/Greptile P1, PR #34). Mirrored in npm.
     HARMFUL_PATTERNS = [
-        r"password\s*[=:]\s*\S+",
-        r"api[_-]?key\s*[=:]\s*\S+",
-        r"secret\s*[=:]\s*\S+",
+        r"password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|"
+        r"omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|"
+        r"n/?a)\b|\*{3,}|x{3,})\S+",
+        r"api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|"
+        r"omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|"
+        r"n/?a)\b|\*{3,}|x{3,})\S+",
+        r"secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|"
+        r"omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|"
+        r"n/?a)\b|\*{3,}|x{3,})\S+",
         r"private[_-]?key",
         r"BEGIN\s+(RSA|DSA|EC)\s+PRIVATE\s+KEY",
     ]

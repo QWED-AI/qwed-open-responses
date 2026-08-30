@@ -623,19 +623,29 @@ export class SafetyGuard extends BaseGuard {
         /act\s+as\s+if\s+you\s+are/i,
         /pretend\s+(you|to\s+be)/i,
         /new\s+instructions?\s*:/i,
-        /system\s*:\s*/i,
+        // Requires instruction-override context after the role prefix — a
+        // bare "system:" label matches ordinary config text ("system:
+        // healthy", "Operating system: Linux") and blocked legitimate
+        // responses (Sentry/Greptile P1, PR #34). Mirrors safety_guard.py.
+        /system\s*:\s*(?:ignore|disregard|forget|override|you\s+are|act\s+as|pretend|new\s+instructions?|bypass|reveal)\b/i,
         /<\|.*?\|>/,
         /\[\[.*?\]\]/,
     ];
 
     // #30 parity: Python's harmful-content check had no npm counterpart at
     // all — "api_key=sk-12345" was BLOCKED on Python and passed on npm.
+    // The value part excludes benign placeholder labels ("password:
+    // required", "api_key: not set") while still matching real credentials
+    // (Sentry/Greptile P1, PR #34). Mirrors safety_guard.py HARMFUL_PATTERNS.
     private static HARMFUL_PATTERNS = [
-        /password\s*[=:]\s*\S+/i,
-        /api[_-]?key\s*[=:]\s*\S+/i,
-        /secret\s*[=:]\s*\S+/i,
+        /password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
+        /api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
+        /secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
         /private[_-]?key/i,
-        /BEGIN\s+(RSA|DSA|EC)\s+PRIVATE\s+KEY/,
+        // Python applies re.I to all HARMFUL_PATTERNS — the PEM header must
+        // be case-insensitive here too, or lowercase/mixed-case headers pass
+        // npm while Python blocks them (CodeAnt, PR #34).
+        /BEGIN\s+(RSA|DSA|EC)\s+PRIVATE\s+KEY/i,
     ];
 
     private checkPii: boolean;
@@ -667,6 +677,11 @@ export class SafetyGuard extends BaseGuard {
             );
         }
         const issues: string[] = [];
+        // Error-severity issues are COLLECTED across checks — matching
+        // Python, which appends injection and harmful findings together and
+        // reports the total (CodeAnt nitpick, PR #34: returning on the first
+        // harmful pattern discarded PII and other diagnostics).
+        const errorIssues: Array<{ type: string; severity: string; details: string[] }> = [];
 
         if (this.checkPii) {
             for (const [type, pattern] of Object.entries(SafetyGuard.PII_PATTERNS)) {
@@ -677,24 +692,36 @@ export class SafetyGuard extends BaseGuard {
         }
 
         if (this.checkInjection) {
+            const injections: string[] = [];
             for (const pattern of SafetyGuard.INJECTION_PATTERNS) {
                 if (pattern.test(content)) {
-                    return this.failResult('BLOCKED: Prompt injection detected', { pattern: pattern.source });
+                    injections.push(pattern.source);
                 }
+            }
+            if (injections.length > 0) {
+                errorIssues.push({ type: 'injection', severity: 'error', details: injections });
             }
         }
 
         if (this.checkHarmful) {
             // Mirrors Python: harmful content is an ERROR-severity issue
             // (fails the guard), unlike PII which is only a warning (#30).
+            const harmful: string[] = [];
             for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
                 if (pattern.test(content)) {
-                    return this.failResult(
-                        'Safety check failed: 1 critical issue(s)',
-                        { issues: [{ type: 'harmful', severity: 'error', details: [pattern.source] }] },
-                    );
+                    harmful.push(pattern.source);
                 }
             }
+            if (harmful.length > 0) {
+                errorIssues.push({ type: 'harmful', severity: 'error', details: harmful });
+            }
+        }
+
+        if (errorIssues.length > 0) {
+            return this.failResult(
+                `Safety check failed: ${errorIssues.length} critical issue(s)`,
+                { issues: errorIssues },
+            );
         }
 
         if (issues.length > 0) {
