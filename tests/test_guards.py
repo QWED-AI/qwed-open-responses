@@ -1272,6 +1272,37 @@ class TestCrossLanguageParity30:
             result = SafetyGuard().check({"type": "text", "content": text})
             assert result.passed is False, text
 
+    # ------------------------------------------------------------------
+    # #34: placeholder exemptions must consume the ENTIRE value token —
+    # placeholder-prefixed credentials must still be detected
+    # (Greptile/CodeRabbit P1).
+    # ------------------------------------------------------------------
+
+    def test_placeholder_prefixed_credentials_blocked(self):
+        cases = [
+            "password=required-secret",
+            "api_key=optional-token-9f3a",
+            "private_key=redacted-live-key",
+            "secret=n/a-backup-key",
+            "password=***-secret",
+        ]
+        for text in cases:
+            result = SafetyGuard().check({"type": "text", "content": text})
+            assert result.passed is False, text
+
+    def test_pure_placeholders_still_pass(self):
+        cases = [
+            "password=required",
+            "api_key=not set",
+            "private_key: not set",
+            "secret=none",
+            "password: ***",
+            "system: healthy",
+        ]
+        for text in cases:
+            result = SafetyGuard().check({"type": "text", "content": text})
+            assert result.passed is True, text
+
     def test_failed_result_details_include_warnings(self):
         """Error result details carry PII warnings too (Python parity)."""
         result = SafetyGuard().check({

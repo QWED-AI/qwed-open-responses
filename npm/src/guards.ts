@@ -637,15 +637,18 @@ export class SafetyGuard extends BaseGuard {
     // The value part excludes benign placeholder labels ("password:
     // required", "api_key: not set") while still matching real credentials
     // (Sentry/Greptile P1, PR #34). Mirrors safety_guard.py HARMFUL_PATTERNS.
+    // Each exemption alternative must match the ENTIRE value token
+    // ((?=\s|$) not \b) — otherwise "password=required-secret" bypasses
+    // (Greptile/CodeRabbit P1, PR #34).
     private static HARMFUL_PATTERNS = [
-        /password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
-        /api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
-        /secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
+        /password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=\s|$)|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+/i,
+        /api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=\s|$)|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+/i,
+        /secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=\s|$)|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+/i,
         // Value-aware label form (same placeholder exemption as above) —
         // "private[_-]?key" bare-matching blocked benign labels such as
         // "private_key: not set" (Greptile P1, PR #34). [\s_-]? also catches
         // the spaced "private key: <value>" form. Mirrors safety_guard.py.
-        /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)\b|\*{3,}|x{3,})\S+/i,
+        /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=\s|$)|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+/i,
         // Generic PEM header: BEGIN [TYPE] PRIVATE KEY — covers RSA/DSA/EC
         // plus generic "BEGIN PRIVATE KEY", OPENSSH and ENCRYPTED variants
         // that were missed (CodeRabbit, PR #34). Python applies re.I to all
@@ -681,7 +684,12 @@ export class SafetyGuard extends BaseGuard {
                 { error: String(err) },
             );
         }
-        const issues: string[] = [];
+        // Python parity: issues is a uniform array of
+        // {type, severity, details} objects for BOTH paths — the error path
+        // (all issues, errors AND warnings) and the warning-only path
+        // (Sentry, PR #34: PII used to be plain strings here and verbose
+        // {type: 'PII detected: email', details: []} objects there).
+        const issues: Array<{ type: string; severity: string; details: string[] }> = [];
         // Error-severity issues are COLLECTED across checks — matching
         // Python, which appends injection and harmful findings together and
         // reports the total (CodeAnt nitpick, PR #34: returning on the first
@@ -689,10 +697,16 @@ export class SafetyGuard extends BaseGuard {
         const errorIssues: Array<{ type: string; severity: string; details: string[] }> = [];
 
         if (this.checkPii) {
+            // Python parity: one {type:'pii', severity:'warning'} entry whose
+            // details carry the matched PII types (email, phone, ...).
+            const piiTypes: string[] = [];
             for (const [type, pattern] of Object.entries(SafetyGuard.PII_PATTERNS)) {
                 if (pattern.test(content)) {
-                    issues.push(`PII detected: ${type}`);
+                    piiTypes.push(type);
                 }
+            }
+            if (piiTypes.length > 0) {
+                issues.push({ type: 'pii', severity: 'warning', details: piiTypes });
             }
         }
 
@@ -704,7 +718,9 @@ export class SafetyGuard extends BaseGuard {
                 }
             }
             if (injections.length > 0) {
-                errorIssues.push({ type: 'injection', severity: 'error', details: injections });
+                const entry = { type: 'injection', severity: 'error', details: injections };
+                issues.push(entry);
+                errorIssues.push(entry);
             }
         }
 
@@ -718,7 +734,9 @@ export class SafetyGuard extends BaseGuard {
                 }
             }
             if (harmful.length > 0) {
-                errorIssues.push({ type: 'harmful', severity: 'error', details: harmful });
+                const entry = { type: 'harmful', severity: 'error', details: harmful };
+                issues.push(entry);
+                errorIssues.push(entry);
             }
         }
 
@@ -729,16 +747,16 @@ export class SafetyGuard extends BaseGuard {
                 // which returns details={'issues': issues} with everything
                 // (Sentry, PR #34: PII warnings were discarded when a
                 // critical issue co-existed).
-                {
-                    issues: errorIssues.concat(
-                        issues.map((w) => ({ type: w, severity: 'warning', details: [] })),
-                    ),
-                },
+                { issues },
             );
         }
 
         if (issues.length > 0) {
-            return this.failResult(`Safety issues detected: ${issues.join(', ')}`, { issues }, 'warning');
+            return this.failResult(
+                `Safety warnings: ${issues.length} warning(s)`,
+                { issues },
+                'warning',
+            );
         }
 
         return this.passResult('All safety checks passed');

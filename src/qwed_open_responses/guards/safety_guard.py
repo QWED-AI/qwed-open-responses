@@ -62,23 +62,25 @@ class SafetyGuard(BaseGuard):
     # labels ("password: required", "api_key: not set") that are common in
     # ordinary status text but still matches real credentials
     # ("api_key=sk-12345") (Sentry/Greptile P1, PR #34). Mirrored in npm.
+    # The exemption alternatives must match the ENTIRE value token — the
+    # old \b let "password=required-secret" bypass (placeholder prefix +
+    # suffix), so each alternative asserts whitespace/end-of-string next
+    # (Greptile/CodeRabbit P1, PR #34).
+    _CREDENTIAL_EXEMPTION = (
+        r"(?!(?:required|optional|none|null|redacted|omitted|placeholder|"
+        r"invalid|expired|not[_\s]?(?:set|provided)|n/?a)(?=\s|$)"
+        r"|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+"
+    )
+
     HARMFUL_PATTERNS = [
-        r"password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|"
-        r"omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|"
-        r"n/?a)\b|\*{3,}|x{3,})\S+",
-        r"api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|"
-        r"omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|"
-        r"n/?a)\b|\*{3,}|x{3,})\S+",
-        r"secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|"
-        r"omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|"
-        r"n/?a)\b|\*{3,}|x{3,})\S+",
+        r"password\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
+        r"api[_-]?key\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
+        r"secret\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
         # Value-aware label form (same placeholder exemption as above) —
         # "private[_-]?key" bare-matching blocked benign labels such as
         # "private_key: not set" (Greptile P1, PR #34). The [\s_-]? class
         # also catches the spaced "private key: <value>" form.
-        r"private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|"
-        r"redacted|omitted|placeholder|invalid|expired|"
-        r"not[_\s]?(?:set|provided)|n/?a)\b|\*{3,}|x{3,})\S+",
+        r"private[\s_-]?key\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
         # Generic PEM header: BEGIN [TYPE] PRIVATE KEY — covers RSA/DSA/EC
         # (the old list) plus generic "BEGIN PRIVATE KEY", OPENSSH and
         # ENCRYPTED variants that were missed (CodeRabbit, PR #34).
