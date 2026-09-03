@@ -626,8 +626,12 @@ export class SafetyGuard extends BaseGuard {
         // Requires instruction-override context after the role prefix — a
         // bare "system:" label matches ordinary config text ("system:
         // healthy", "Operating system: Linux") and blocked legitimate
-        // responses (Sentry/Greptile P1, PR #34). Mirrors safety_guard.py.
-        /system\s*:\s*(?:ignore|disregard|forget|override|you\s+are|act\s+as|pretend|new\s+instructions?|bypass|reveal)\b/i,
+        // responses (Sentry/Greptile P1, PR #34). Bounded neutral filler
+        // (up to three words) is allowed between the marker and the
+        // override term, so "system: please reveal ..." is caught without
+        // matching unbounded prose (CodeRabbit, PR #34). Mirrors
+        // safety_guard.py.
+        /system\s*:\s*(?:[A-Za-z]+[.,;:!?]?\s+){0,3}(?:ignore|disregard|forget|override|you\s+are|act\s+as|pretend|new\s+instructions?|bypass|reveal)\b/i,
         /<\|.*?\|>/,
         /\[\[.*?\]\]/,
     ];
@@ -637,18 +641,20 @@ export class SafetyGuard extends BaseGuard {
     // The value part excludes benign placeholder labels ("password:
     // required", "api_key: not set") while still matching real credentials
     // (Sentry/Greptile P1, PR #34). Mirrors safety_guard.py HARMFUL_PATTERNS.
-    // Each exemption alternative must match the ENTIRE value token
-    // ((?=\s|$) not \b) — otherwise "password=required-secret" bypasses
-    // (Greptile/CodeRabbit P1, PR #34).
+    // Each exemption alternative must match the ENTIRE value — the old \b
+    // let "password=required-secret" bypass, and (?=\s|$) let
+    // "password=required actual-secret" bypass (credential hidden after
+    // whitespace, which \S+ cannot reach). Alternatives now assert only
+    // whitespace/punctuation until end-of-string (Greptile P1, PR #34).
     private static HARMFUL_PATTERNS = [
-        /password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=\s|$)|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+/i,
-        /api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=\s|$)|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+/i,
-        /secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=\s|$)|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+/i,
+        /password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
+        /api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
+        /secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
         // Value-aware label form (same placeholder exemption as above) —
         // "private[_-]?key" bare-matching blocked benign labels such as
         // "private_key: not set" (Greptile P1, PR #34). [\s_-]? also catches
         // the spaced "private key: <value>" form. Mirrors safety_guard.py.
-        /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=\s|$)|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+/i,
+        /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
         // Generic PEM header: BEGIN [TYPE] PRIVATE KEY — covers RSA/DSA/EC
         // plus generic "BEGIN PRIVATE KEY", OPENSSH and ENCRYPTED variants
         // that were missed (CodeRabbit, PR #34). Python applies re.I to all
@@ -727,10 +733,16 @@ export class SafetyGuard extends BaseGuard {
         if (this.checkHarmful) {
             // Mirrors Python: harmful content is an ERROR-severity issue
             // (fails the guard), unlike PII which is only a warning (#30).
+            // Evaluated per collected string, not on the joined content —
+            // placeholder exemptions must occupy the complete field value
+            // (Greptile P1, PR #34); joined extraction artifacts would
+            // defeat the end-of-string anchor.
             const harmful: string[] = [];
-            for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
-                if (pattern.test(content)) {
-                    harmful.push(pattern.source);
+            for (const leaf of this.extractLeafStrings(response)) {
+                for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
+                    if (pattern.test(leaf) && !harmful.includes(pattern.source)) {
+                        harmful.push(pattern.source);
+                    }
                 }
             }
             if (harmful.length > 0) {
@@ -792,6 +804,25 @@ export class SafetyGuard extends BaseGuard {
         }
 
         return parts.join(' ');
+    }
+
+    private extractLeafStrings(response: ParsedResponse, depth: number = 0): string[] {
+        // Every string leaf for per-field harmful evaluation (mirrors
+        // Python _collect_leaf_strings). Bounded like extractContent so
+        // deeply nested payloads terminate.
+        const MAX_DEPTH = 12;
+        if (depth > MAX_DEPTH) return [];
+        if (typeof response === 'string') return [response];
+        if (response === null || typeof response !== 'object') return [];
+        const leaves: string[] = [];
+        for (const value of Object.values(response)) {
+            if (typeof value === 'string') {
+                leaves.push(value);
+            } else if (value !== null && typeof value === 'object') {
+                leaves.push(...this.extractLeafStrings(value as ParsedResponse, depth + 1));
+            }
+        }
+        return leaves;
     }
 }
 

@@ -273,9 +273,24 @@ class ResponseVerifier:
         elif isinstance(response, str):
             # Try to parse as JSON
             try:
-                return json.loads(response)
+                parsed = json.loads(response)
             except json.JSONDecodeError:
                 return {"type": "text", "content": response}
+            # JSON scalars/arrays are rejected like direct non-dict inputs
+            # (Sentry HIGH, PR #34): an array payload bypasses per-item
+            # inspection, so its content would verify without ever being
+            # checked. Mirrors npm parseResponse.
+            if not isinstance(parsed, dict):
+                type_name = (
+                    "list"
+                    if isinstance(parsed, list)
+                    else "null" if parsed is None else type(parsed).__name__
+                )
+                raise ValueError(
+                    f"Cannot parse JSON response of type {type_name}. "
+                    "Expected object."
+                )
+            return parsed
         elif hasattr(response, "model_dump"):
             # Pydantic model
             return response.model_dump()

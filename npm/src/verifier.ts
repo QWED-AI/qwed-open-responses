@@ -118,11 +118,24 @@ export class ResponseVerifier {
         }
 
         if (typeof response === 'string') {
+            let parsed: any;
             try {
-                return JSON.parse(response);
+                parsed = JSON.parse(response);
             } catch {
                 return { type: 'text', content: response };
             }
+            // JSON arrays are rejected like direct array inputs (Sentry HIGH,
+            // PR #34): an array payload bypasses per-item inspection, so its
+            // content would verify without ever being checked.
+            if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                const typeName = Array.isArray(parsed)
+                    ? 'list'
+                    : parsed === null ? 'null' : typeof parsed;
+                throw new Error(
+                    `Cannot parse JSON response of type ${typeName}. Expected object.`
+                );
+            }
+            return parsed;
         }
 
         const typeName = response === null ? 'null' : Array.isArray(response) ? 'list' : typeof response;

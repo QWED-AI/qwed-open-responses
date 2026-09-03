@@ -51,8 +51,11 @@ class SafetyGuard(BaseGuard):
         # Requires instruction-override context after the role prefix — a bare
         # "system:" label matches ordinary config text ("system: healthy",
         # "Operating system: Linux") and blocked legitimate responses
-        # (Sentry/Greptile P1, PR #34). Mirrored in npm guards.ts.
-        r"system\s*:\s*(?:ignore|disregard|forget|override|you\s+are|"
+        # (Sentry/Greptile P1, PR #34). Bounded neutral filler (up to three
+        # words) is allowed between the marker and the override term, so
+        # "system: please reveal ..." is caught without matching unbounded
+        # prose (CodeRabbit, PR #34). Mirrored in npm guards.ts.
+        r"system\s*:\s*(?:[A-Za-z]+[.,;:!?]?\s+){0,3}(?:ignore|disregard|forget|override|you\s+are|"
         r"act\s+as|pretend|new\s+instructions?|bypass|reveal)\b",
         r"<\|.*?\|>",  # Special tokens
         r"\[\[.*?\]\]",  # Bracket commands
@@ -62,14 +65,18 @@ class SafetyGuard(BaseGuard):
     # labels ("password: required", "api_key: not set") that are common in
     # ordinary status text but still matches real credentials
     # ("api_key=sk-12345") (Sentry/Greptile P1, PR #34). Mirrored in npm.
-    # The exemption alternatives must match the ENTIRE value token — the
-    # old \b let "password=required-secret" bypass (placeholder prefix +
-    # suffix), so each alternative asserts whitespace/end-of-string next
-    # (Greptile/CodeRabbit P1, PR #34).
+    # The exemption alternatives must match the ENTIRE value — the old \b
+    # let "password=required-secret" bypass (placeholder prefix + suffix),
+    # and (?=\s|$) let "password=required actual-secret" bypass (credential
+    # hidden after whitespace, which \S+ cannot reach). Each alternative now
+    # asserts only whitespace/punctuation until end-of-string next
+    # (Greptile/CodeRabbit/Sentry P1, PR #34).
     _CREDENTIAL_EXEMPTION = (
         r"(?!(?:required|optional|none|null|redacted|omitted|placeholder|"
-        r"invalid|expired|not[_\s]?(?:set|provided)|n/?a)(?=\s|$)"
-        r"|\*{3,}(?=\s|$)|x{3,}(?=\s|$))\S+"
+        r"invalid|expired|not[_\s]?(?:set|provided)|n/?a)"
+        r"(?=[\s.,;:!?)\]]*$)"
+        r"|\*{3,}(?=[\s.,;:!?)\]]*$)"
+        r"|x{3,}(?=[\s.,;:!?)\]]*$))\S+"
     )
 
     HARMFUL_PATTERNS = [
@@ -156,9 +163,16 @@ class SafetyGuard(BaseGuard):
                     }
                 )
 
-        # Harmful content check
+        # Harmful content check — evaluated per collected string, not on
+        # the joined content (Greptile P1, PR #34): placeholder exemptions
+        # must occupy the complete field value. On joined content,
+        # extraction artifacts (the response's own `type` field appended
+        # as e.g. " text") defeat the end-of-string anchor and turn
+        # benign labels ("password: required") into false positives,
+        # while a credential hidden after whitespace
+        # ("password=required actual-secret") must still block.
         if self.check_harmful:
-            harmful = self._check_harmful(content)
+            harmful = self._check_harmful_parts(self._collect_leaf_strings(response))
             if harmful:
                 issues.append(
                     {
@@ -310,14 +324,38 @@ class SafetyGuard(BaseGuard):
 
         return found
 
-    def _check_harmful(self, content: str) -> List[str]:
-        """Check for harmful content patterns."""
+    def _collect_leaf_strings(self, response: Any, _depth: int = 0) -> List[str]:
+        """Collect every string leaf for per-field harmful evaluation.
+
+        Unlike `_extract_content` (which joins everything for PII/injection
+        scanning), leaves stay separate so a placeholder exemption is judged
+        against its own field value, not against joined extraction
+        artifacts. Bounded by `_MAX_CONTENT_DEPTH` like the recursive
+        extractor, so cyclic structures terminate.
+        """
+        if _depth > self._MAX_CONTENT_DEPTH:
+            return []
+        if isinstance(response, str):
+            return [response]
+        if isinstance(response, dict):
+            leaves: List[str] = []
+            for value in response.values():
+                leaves.extend(self._collect_leaf_strings(value, _depth + 1))
+            return leaves
+        if isinstance(response, list):
+            leaves = []
+            for item in response:
+                leaves.extend(self._collect_leaf_strings(item, _depth + 1))
+            return leaves
+        return []
+
+    def _check_harmful_parts(self, parts: List[str]) -> List[str]:
+        """Match harmful patterns against each collected string separately."""
         found = []
-
-        for pattern in self.HARMFUL_PATTERNS:
-            if re.search(pattern, content, re.I):
-                found.append(pattern)
-
+        for part in parts:
+            for pattern in self.HARMFUL_PATTERNS:
+                if re.search(pattern, part, re.I) and pattern not in found:
+                    found.append(pattern)
         return found
 
     def _check_budget(
