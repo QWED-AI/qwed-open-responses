@@ -659,17 +659,20 @@ export class SafetyGuard extends BaseGuard {
 
     private static HARMFUL_PATTERNS = [
         ...SafetyGuard.CREDENTIAL_PATTERNS,
-        // Generic PEM header: BEGIN [TYPE] PRIVATE KEY — covers RSA/DSA/EC
-        // plus generic "BEGIN PRIVATE KEY", OPENSSH and ENCRYPTED variants
-        // that were missed (CodeRabbit, PR #34). Python applies re.I to all
+        // Dashed PEM header only: without the leading dashes the
+        // case-insensitive pattern matches ordinary prose like "begin
+        // private key rotation" (CodeRabbit, PR #34). Real PEM data
+        // always carries the delimiter. Python applies re.I to all
         // HARMFUL_PATTERNS — case-insensitive here too (CodeAnt, PR #34).
-        /BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY/i,
+        /-{3,}\s*BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY/i,
     ];
 
     // Credential-shaped tail tokens for guidance-prose detection below.
     // The prefix alternation is literal-only (linear, no nesting).
     private static CRED_PREFIX_RE = /sk-|ghp_|glpat-|xox[baprs]?-|eyJ|akia|-----BEGIN/i;
-    private static PROSE_MIN_TOKENS = 3;
+    private static PROSE_MIN_TOKENS = 5;
+    private static LABEL_VALUE_RE =
+        /\b(password|api[_-]?key|secret|private[\s_-]?key)\s*[=:]\s*(\S+)([\s\S]*)/i;
 
     private static isCredentialShapedToken(token: string): boolean {
         if (SafetyGuard.CRED_PREFIX_RE.test(token)) return true;
@@ -698,6 +701,17 @@ export class SafetyGuard extends BaseGuard {
         const tokens = text.split(/\s+/).filter(Boolean);
         if (tokens.length < SafetyGuard.PROSE_MIN_TOKENS) return false;
         return !tokens.some((t) => SafetyGuard.isCredentialShapedToken(t));
+    }
+
+    private static placeholderTailAllows(leaf: string): boolean {
+        const m = SafetyGuard.LABEL_VALUE_RE.exec(leaf);
+        if (!m) return false;
+        const probe = `${m[1]}=${m[2]}`;
+        if (SafetyGuard.CREDENTIAL_PATTERNS.some((p) => p.test(probe))) return false;
+        const tail = m[3].split(/\s+/).filter(Boolean);
+        if (tail.length === 0) return true;
+        if (tail.some((t) => SafetyGuard.isCredentialShapedToken(t))) return false;
+        return tail.length >= 2;
     }
 
     private checkPii: boolean;
@@ -778,11 +792,9 @@ export class SafetyGuard extends BaseGuard {
             // the credential patterns, never PEM (Sentry/Greptile P1).
             const harmful: string[] = [];
             for (const leaf of this.extractLeafStrings(response)) {
-                const prose = SafetyGuard.isGuidanceProse(leaf);
+                if (SafetyGuard.isGuidanceProse(leaf)) continue;
+                if (SafetyGuard.placeholderTailAllows(leaf)) continue;
                 for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
-                    if (prose && SafetyGuard.CREDENTIAL_PATTERNS.includes(pattern)) {
-                        continue;
-                    }
                     if (pattern.test(leaf) && !harmful.includes(pattern.source)) {
                         harmful.push(pattern.source);
                     }

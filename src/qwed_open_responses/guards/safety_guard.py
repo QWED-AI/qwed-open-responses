@@ -98,17 +98,27 @@ class SafetyGuard(BaseGuard):
 
     HARMFUL_PATTERNS = [
         *_CREDENTIAL_PATTERNS,
-        # Generic PEM header: BEGIN [TYPE] PRIVATE KEY — covers RSA/DSA/EC
-        # (the old list) plus generic "BEGIN PRIVATE KEY", OPENSSH and
-        # ENCRYPTED variants that were missed (CodeRabbit, PR #34).
-        r"BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY",
+        # Generic PEM header: dashed BEGIN [TYPE] PRIVATE KEY — covers
+        # RSA/DSA/EC plus generic "BEGIN PRIVATE KEY", OPENSSH and ENCRYPTED
+        # variants that were missed (CodeRabbit, PR #34). The leading dashes
+        # are required: without them the case-insensitive pattern matches
+        # ordinary prose like "begin private key rotation" (CodeRabbit).
+        r"-{3,}\s*BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY",
     ]
 
-    _CREDENTIAL_PATTERN_SET = frozenset(_CREDENTIAL_PATTERNS)
-
     # A guidance-prose value needs enough tokens to read as a sentence;
-    # shorter values stay on the strict placeholder rule.
-    _PROSE_MIN_TOKENS = 3
+    # shorter values stay on the strict placeholder rule. Five is the
+    # documented boundary: 4-token passphrases ("correct horse battery
+    # staple") still block while 5+-token guidance passes (Greptile P1).
+    _PROSE_MIN_TOKENS = 5
+
+    # `label = placeholder + tail` splitter for the placeholder-track
+    # exemption below. Mirrors the four credential labels.
+    _LABEL_VALUE_RE = re.compile(
+        r"\b(password|api[_-]?key|secret|private[\s_-]?key)\s*[=:]\s*"
+        r"(\S+)([\s\S]*)",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -422,14 +432,39 @@ class SafetyGuard(BaseGuard):
             return False
         return not any(self._token_is_cred_shaped(t) for t in tokens)
 
+    def _placeholder_tail_allows(self, leaf: str) -> bool:
+        """True when a placeholder-led value has a benign tail.
+
+        `password=required\\nContact admin` passes (placeholder + two
+        shapeless tail tokens), while `secret=none backdoor` still blocks
+        (single tail token stays strict) — verified against the pinned
+        matrix in tests/test_guards.py.
+        """
+        match = self._LABEL_VALUE_RE.search(leaf)
+        if not match:
+            return False
+        _, first, rest = match.groups()
+        probe = f"{match.group(1)}={first}"
+        if any(
+            re.search(pattern, probe, re.I) for pattern in self._CREDENTIAL_PATTERNS
+        ):
+            return False
+        tail = rest.split()
+        if not tail:
+            return True
+        if any(self._token_is_cred_shaped(t) for t in tail):
+            return False
+        return len(tail) >= 2
+
     def _check_harmful_parts(self, parts: List[str]) -> List[str]:
         """Match harmful patterns against each collected string separately."""
         found = []
         for part in parts:
-            prose = self._is_guidance_prose(part)
+            if self._is_guidance_prose(part):
+                continue
+            if self._placeholder_tail_allows(part):
+                continue
             for pattern in self.HARMFUL_PATTERNS:
-                if prose and pattern in self._CREDENTIAL_PATTERN_SET:
-                    continue
                 if re.search(pattern, part, re.I) and pattern not in found:
                     found.append(pattern)
         return found

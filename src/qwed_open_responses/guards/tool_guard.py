@@ -165,6 +165,7 @@ class ToolGuard(BaseGuard):
             allowed_tools: If set, only these tools allowed (whitelist mode)
             use_default_blocklist: Include default dangerous tools
             dangerous_patterns: Regex patterns to block in arguments
+                (compiled case-insensitively, like the defaults)
             use_default_patterns: Include default dangerous patterns
             custom_validators: Dict of tool_name -> validator function
             max_calls_per_response: Max tool calls in single response
@@ -186,7 +187,13 @@ class ToolGuard(BaseGuard):
                 for p in self.DEFAULT_DANGEROUS_PATTERNS
             )
         if dangerous_patterns:
-            self.dangerous_patterns.extend(re.compile(p) for p in dangerous_patterns)
+            # Case-insensitive like the defaults: the guard's whole pattern
+            # surface matches case-insensitively on both runtimes (#30).
+            # Pass inline (?i) scoping inside your pattern if you need a
+            # case-sensitive section.
+            self.dangerous_patterns.extend(
+                re.compile(p, re.IGNORECASE) for p in dangerous_patterns
+            )
 
         self.custom_validators = custom_validators or {}
         self.max_calls = max_calls_per_response

@@ -1406,6 +1406,24 @@ class TestCrossLanguageParity30:
             result = SafetyGuard().check(response)
             assert result.passed is False, response
 
+    def test_passphrase_credential_blocked(self):
+        # Greptile P1: a multiword passphrase in a credential field is
+        # credential material, not guidance — 4 tokens stay strict.
+        for response in [
+            {"password": "correct horse battery staple"},
+            {"api_key": "correct horse battery staple"},
+        ]:
+            result = SafetyGuard().check(response)
+            assert result.passed is False, response
+
+    def test_pem_prose_passes(self):
+        # CodeRabbit: the dashed PEM pattern must not match ordinary
+        # prose about key rotation.
+        result = SafetyGuard().check(
+            {"type": "text", "content": "Please begin private key rotation next week"}
+        )
+        assert result.passed is True
+
     # ------------------------------------------------------------------
     # #34: JSON strings that parse to arrays are rejected like direct
     # arrays — the array payload must never verify uninspected (Sentry).
