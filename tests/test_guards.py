@@ -1351,6 +1351,34 @@ class TestCrossLanguageParity30:
             assert result.passed is False, text
 
     # ------------------------------------------------------------------
+    # #34: dict keys are preserved alongside string values for harmful
+    # evaluation — {"password": "hunter2"} must block like the labelled
+    # text form, while {"password": "required"} keeps passing (Greptile P1).
+    # ------------------------------------------------------------------
+
+    def test_structured_credential_keys_blocked(self):
+        cases = [
+            {"password": "hunter2"},
+            {"api_key": "sk-12345"},
+            {"config": {"secret": "hunter2"}},
+            {"items": [{"password": "hunter2"}]},
+        ]
+        for response in cases:
+            result = SafetyGuard().check(response)
+            assert result.passed is False, response
+
+    def test_structured_placeholder_keys_pass(self):
+        cases = [
+            {"password": "required"},
+            {"api_key": "not set"},
+            {"secret": "none"},
+            {"type": "text", "content": "password: required"},
+        ]
+        for response in cases:
+            result = SafetyGuard().check(response)
+            assert result.passed is True, response
+
+    # ------------------------------------------------------------------
     # #34: JSON strings that parse to arrays are rejected like direct
     # arrays — the array payload must never verify uninspected (Sentry).
     # ------------------------------------------------------------------

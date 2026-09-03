@@ -808,16 +808,22 @@ export class SafetyGuard extends BaseGuard {
 
     private extractLeafStrings(response: ParsedResponse, depth: number = 0): string[] {
         // Every string leaf for per-field harmful evaluation (mirrors
-        // Python _collect_leaf_strings). Bounded like extractContent so
+        // Python _collect_leaf_strings). Dict entries contribute both the
+        // bare value and the `key=value` form: the bare value alone drops
+        // the field context credential patterns match on, so
+        // `{"password": "hunter2"}` would otherwise verify uninspected
+        // (Greptile P1, PR #34). The strict placeholder exemption still
+        // judges the `key=value` form. Bounded like extractContent so
         // deeply nested payloads terminate.
         const MAX_DEPTH = 12;
         if (depth > MAX_DEPTH) return [];
         if (typeof response === 'string') return [response];
         if (response === null || typeof response !== 'object') return [];
         const leaves: string[] = [];
-        for (const value of Object.values(response)) {
+        for (const [key, value] of Object.entries(response)) {
             if (typeof value === 'string') {
                 leaves.push(value);
+                leaves.push(`${key}=${value}`);
             } else if (value !== null && typeof value === 'object') {
                 leaves.push(...this.extractLeafStrings(value as ParsedResponse, depth + 1));
             }

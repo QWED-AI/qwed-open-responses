@@ -330,8 +330,14 @@ class SafetyGuard(BaseGuard):
         Unlike `_extract_content` (which joins everything for PII/injection
         scanning), leaves stay separate so a placeholder exemption is judged
         against its own field value, not against joined extraction
-        artifacts. Bounded by `_MAX_CONTENT_DEPTH` like the recursive
-        extractor, so cyclic structures terminate.
+        artifacts. Dict entries contribute both the bare value and the
+        `key=value` form: the bare value alone drops the field context
+        that credential patterns match on, so `{"password": "hunter2"}`
+        would otherwise verify uninspected (Greptile P1, PR #34). The
+        strict placeholder exemption still judges the `key=value` form,
+        so `{"password": "required"}` keeps passing. Bounded by
+        `_MAX_CONTENT_DEPTH` like the recursive extractor, so cyclic
+        structures terminate.
         """
         if _depth > self._MAX_CONTENT_DEPTH:
             return []
@@ -339,8 +345,12 @@ class SafetyGuard(BaseGuard):
             return [response]
         if isinstance(response, dict):
             leaves: List[str] = []
-            for value in response.values():
-                leaves.extend(self._collect_leaf_strings(value, _depth + 1))
+            for key, value in response.items():
+                if isinstance(value, str):
+                    leaves.append(value)
+                    leaves.append(f"{key}={value}")
+                else:
+                    leaves.extend(self._collect_leaf_strings(value, _depth + 1))
             return leaves
         if isinstance(response, list):
             leaves = []

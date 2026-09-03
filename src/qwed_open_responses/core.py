@@ -266,6 +266,15 @@ class ResponseVerifier:
         }
         return self.verify(structured, guards_list)
 
+    @staticmethod
+    def _json_scalar_type_name(parsed: Any) -> str:
+        """Type label for a rejected non-object JSON value (mirrors npm)."""
+        if isinstance(parsed, list):
+            return "list"
+        if parsed is None:
+            return "null"
+        return type(parsed).__name__
+
     def _parse_response(self, response: Any) -> Dict[str, Any]:
         """Parse response into a standard format."""
         if isinstance(response, dict):
@@ -281,14 +290,9 @@ class ResponseVerifier:
             # inspection, so its content would verify without ever being
             # checked. Mirrors npm parseResponse.
             if not isinstance(parsed, dict):
-                type_name = (
-                    "list"
-                    if isinstance(parsed, list)
-                    else "null" if parsed is None else type(parsed).__name__
-                )
                 raise ValueError(
-                    f"Cannot parse JSON response of type {type_name}. "
-                    "Expected object."
+                    f"Cannot parse JSON response of type "
+                    f"{self._json_scalar_type_name(parsed)}. Expected object."
                 )
             return parsed
         elif hasattr(response, "model_dump"):
