@@ -1379,6 +1379,34 @@ class TestCrossLanguageParity30:
             assert result.passed is True, response
 
     # ------------------------------------------------------------------
+    # #34: multiline and guidance-prose values must pass — a placeholder
+    # followed only by ordinary prose is a label, not a credential
+    # (Sentry), while natural-language password guidance is not a secret
+    # (Greptile). A placeholder followed by credential-shaped material
+    # must still block.
+    # ------------------------------------------------------------------
+
+    def test_multiline_and_guidance_values_pass(self):
+        cases = [
+            {"password": "required\nContact admin"},
+            {"password": "must be at least 8 characters"},
+            {"content": "password: required\nPlease contact admin to reset"},
+        ]
+        for response in cases:
+            result = SafetyGuard().check(response)
+            assert result.passed is True, response
+
+    def test_placeholder_with_credential_tail_blocked(self):
+        cases = [
+            {"password": "required\nsk-live-abc123xyz"},
+            {"password": "required actual-secret"},
+            {"api_key": "not set then sk-live-999"},
+        ]
+        for response in cases:
+            result = SafetyGuard().check(response)
+            assert result.passed is False, response
+
+    # ------------------------------------------------------------------
     # #34: JSON strings that parse to arrays are rejected like direct
     # arrays — the array payload must never verify uninspected (Sentry).
     # ------------------------------------------------------------------

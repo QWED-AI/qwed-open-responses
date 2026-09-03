@@ -646,7 +646,7 @@ export class SafetyGuard extends BaseGuard {
     // "password=required actual-secret" bypass (credential hidden after
     // whitespace, which \S+ cannot reach). Alternatives now assert only
     // whitespace/punctuation until end-of-string (Greptile P1, PR #34).
-    private static HARMFUL_PATTERNS = [
+    private static CREDENTIAL_PATTERNS = [
         /password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
         /api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
         /secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
@@ -655,12 +655,50 @@ export class SafetyGuard extends BaseGuard {
         // "private_key: not set" (Greptile P1, PR #34). [\s_-]? also catches
         // the spaced "private key: <value>" form. Mirrors safety_guard.py.
         /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
+    ];
+
+    private static HARMFUL_PATTERNS = [
+        ...SafetyGuard.CREDENTIAL_PATTERNS,
         // Generic PEM header: BEGIN [TYPE] PRIVATE KEY — covers RSA/DSA/EC
         // plus generic "BEGIN PRIVATE KEY", OPENSSH and ENCRYPTED variants
         // that were missed (CodeRabbit, PR #34). Python applies re.I to all
         // HARMFUL_PATTERNS — case-insensitive here too (CodeAnt, PR #34).
         /BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY/i,
     ];
+
+    // Credential-shaped tail tokens for guidance-prose detection below.
+    // The prefix alternation is literal-only (linear, no nesting).
+    private static CRED_PREFIX_RE = /sk-|ghp_|glpat-|xox[baprs]?-|eyJ|akia|-----BEGIN/i;
+    private static PROSE_MIN_TOKENS = 3;
+
+    private static isCredentialShapedToken(token: string): boolean {
+        if (SafetyGuard.CRED_PREFIX_RE.test(token)) return true;
+        if (token.length >= 16 && !token.includes('=') && !token.includes(':')) return true;
+        if ((token.includes('-') || token.includes('_')) && (/\d/.test(token) || token.length >= 12)) return true;
+        let run = 0;
+        let hasDigit = false;
+        const flush = () => {
+            const hit = run >= 6 && hasDigit;
+            run = 0;
+            hasDigit = false;
+            return hit;
+        };
+        for (const c of token) {
+            if (/[A-Za-z0-9_]/.test(c)) {
+                run++;
+                if (/\d/.test(c)) hasDigit = true;
+            } else if (flush()) {
+                return true;
+            }
+        }
+        return flush();
+    }
+
+    private static isGuidanceProse(text: string): boolean {
+        const tokens = text.split(/\s+/).filter(Boolean);
+        if (tokens.length < SafetyGuard.PROSE_MIN_TOKENS) return false;
+        return !tokens.some((t) => SafetyGuard.isCredentialShapedToken(t));
+    }
 
     private checkPii: boolean;
     private checkInjection: boolean;
@@ -736,10 +774,15 @@ export class SafetyGuard extends BaseGuard {
             // Evaluated per collected string, not on the joined content —
             // placeholder exemptions must occupy the complete field value
             // (Greptile P1, PR #34); joined extraction artifacts would
-            // defeat the end-of-string anchor.
+            // defeat the end-of-string anchor. Guidance prose skips only
+            // the credential patterns, never PEM (Sentry/Greptile P1).
             const harmful: string[] = [];
             for (const leaf of this.extractLeafStrings(response)) {
+                const prose = SafetyGuard.isGuidanceProse(leaf);
                 for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
+                    if (prose && SafetyGuard.CREDENTIAL_PATTERNS.includes(pattern)) {
+                        continue;
+                    }
                     if (pattern.test(leaf) && !harmful.includes(pattern.source)) {
                         harmful.push(pattern.source);
                     }

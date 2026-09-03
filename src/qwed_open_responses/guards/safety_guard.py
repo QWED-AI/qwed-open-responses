@@ -79,7 +79,7 @@ class SafetyGuard(BaseGuard):
         r"|x{3,}(?=[\s.,;:!?)\]]*$))\S+"
     )
 
-    HARMFUL_PATTERNS = [
+    _CREDENTIAL_PATTERNS = (
         r"password\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
         r"api[_-]?key\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
         r"secret\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
@@ -88,11 +88,27 @@ class SafetyGuard(BaseGuard):
         # "private_key: not set" (Greptile P1, PR #34). The [\s_-]? class
         # also catches the spaced "private key: <value>" form.
         r"private[\s_-]?key\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
+    )
+
+    # Credential-shaped tail tokens for guidance-prose detection below.
+    # Provider prefixes are literal alternations (linear, no nesting).
+    _CRED_PREFIX_RE = re.compile(
+        r"sk-|ghp_|glpat-|xox[baprs]?-|eyJ|akia|-----BEGIN", re.IGNORECASE
+    )
+
+    HARMFUL_PATTERNS = [
+        *_CREDENTIAL_PATTERNS,
         # Generic PEM header: BEGIN [TYPE] PRIVATE KEY — covers RSA/DSA/EC
         # (the old list) plus generic "BEGIN PRIVATE KEY", OPENSSH and
         # ENCRYPTED variants that were missed (CodeRabbit, PR #34).
         r"BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY",
     ]
+
+    _CREDENTIAL_PATTERN_SET = frozenset(_CREDENTIAL_PATTERNS)
+
+    # A guidance-prose value needs enough tokens to read as a sentence;
+    # shorter values stay on the strict placeholder rule.
+    _PROSE_MIN_TOKENS = 3
 
     def __init__(
         self,
@@ -359,11 +375,61 @@ class SafetyGuard(BaseGuard):
             return leaves
         return []
 
+    def _token_is_cred_shaped(self, token: str) -> bool:
+        """True when a prose token looks like credential material.
+
+        Plain string scans only — no nested quantifiers, so there is no
+        backtracking surface (unlike the ReDoS-prone alternations this
+        replaces for prose tails). A token carrying `=`/`:` is label
+        structure (e.g. `password=required`), not a measurable value, so
+        the length rule skips it — the strict placeholder rule still
+        judges short values.
+        """
+        if SafetyGuard._CRED_PREFIX_RE.search(token):
+            return True
+        if len(token) >= 16 and "=" not in token and ":" not in token:
+            return True
+        if ("-" in token or "_" in token) and (
+            any("0" <= c <= "9" for c in token) or len(token) >= 12
+        ):
+            return True
+        run = 0
+        has_digit = False
+        for c in token:
+            if "a" <= c <= "z" or "A" <= c <= "Z" or "0" <= c <= "9" or c == "_":
+                run += 1
+                if "0" <= c <= "9":
+                    has_digit = True
+            else:
+                if run >= 6 and has_digit:
+                    return True
+                run = 0
+                has_digit = False
+        return run >= 6 and has_digit
+
+    def _is_guidance_prose(self, text: str) -> bool:
+        """True when a leaf reads as guidance prose, not a credential value.
+
+        Multiline values (`password: required\\nContact admin`) and
+        explanatory values (`password=must be at least 8 characters`) must
+        pass, while a placeholder followed by credential-shaped material
+        (`password=required\\nsk-live-xyz`) must still block (Sentry and
+        Greptile P1, PR #34). Short values stay on the strict placeholder
+        rule — `secret=none backdoor` blocks there, not here.
+        """
+        tokens = text.split()
+        if len(tokens) < self._PROSE_MIN_TOKENS:
+            return False
+        return not any(self._token_is_cred_shaped(t) for t in tokens)
+
     def _check_harmful_parts(self, parts: List[str]) -> List[str]:
         """Match harmful patterns against each collected string separately."""
         found = []
         for part in parts:
+            prose = self._is_guidance_prose(part)
             for pattern in self.HARMFUL_PATTERNS:
+                if prose and pattern in self._CREDENTIAL_PATTERN_SET:
+                    continue
                 if re.search(pattern, part, re.I) and pattern not in found:
                     found.append(pattern)
         return found
