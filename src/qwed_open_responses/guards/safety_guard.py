@@ -51,12 +51,18 @@ class SafetyGuard(BaseGuard):
         # Requires instruction-override context after the role prefix — a bare
         # "system:" label matches ordinary config text ("system: healthy",
         # "Operating system: Linux") and blocked legitimate responses
-        # (Sentry/Greptile P1, PR #34). Bounded neutral filler (up to three
-        # words) is allowed between the marker and the override term, so
-        # "system: please reveal ..." is caught without matching unbounded
-        # prose (CodeRabbit, PR #34). Mirrored in npm guards.ts.
-        r"system\s*:\s*(?:[A-Za-z]+[.,;:!?]?\s+){0,3}(?:ignore|disregard|forget|override|you\s+are|"
-        r"act\s+as|pretend|new\s+instructions?|bypass|reveal)\b",
+        # (Sentry/Greptile P1, PR #34). Filler between the marker and the
+        # override term is unbounded but cannot cross another "system:"
+        # marker (so rotation history/flooding cannot blow up matching —
+        # verified linear on adversarial input) and cannot cross sentence
+        # boundaries (periods excluded, so benign multi-sentence text like
+        # "system: operational. The team will reveal results" stays passing).
+        # Directives include disclose/leak/expose alongside reveal
+        # (Greptile P1, PR #34). Mirrored in npm guards.ts.
+        r"system\s*:\s*(?:(?!\bsystem\s*:)[A-Za-z]+[,:;!?]?\s+)*"
+        r"(?:ignore|disregard|forget|override|you\s+are|"
+        r"act\s+as|pretend|new\s+instructions?|bypass|reveal|disclose|"
+        r"leak|expose)\b",
         r"<\|.*?\|>",  # Special tokens
         r"\[\[.*?\]\]",  # Bracket commands
     ]
@@ -385,6 +391,22 @@ class SafetyGuard(BaseGuard):
             return leaves
         return []
 
+    def _has_digit_word(self, token: str) -> bool:
+        """True when the token holds a 6+ alnum run containing a digit."""
+        run = 0
+        has_digit = False
+        for c in token:
+            if "a" <= c <= "z" or "A" <= c <= "Z" or "0" <= c <= "9" or c == "_":
+                run += 1
+                if "0" <= c <= "9":
+                    has_digit = True
+            else:
+                if run >= 6 and has_digit:
+                    return True
+                run = 0
+                has_digit = False
+        return run >= 6 and has_digit
+
     def _token_is_cred_shaped(self, token: str) -> bool:
         """True when a prose token looks like credential material.
 
@@ -403,19 +425,7 @@ class SafetyGuard(BaseGuard):
             any("0" <= c <= "9" for c in token) or len(token) >= 12
         ):
             return True
-        run = 0
-        has_digit = False
-        for c in token:
-            if "a" <= c <= "z" or "A" <= c <= "Z" or "0" <= c <= "9" or c == "_":
-                run += 1
-                if "0" <= c <= "9":
-                    has_digit = True
-            else:
-                if run >= 6 and has_digit:
-                    return True
-                run = 0
-                has_digit = False
-        return run >= 6 and has_digit
+        return self._has_digit_word(token)
 
     def _is_guidance_prose(self, text: str) -> bool:
         """True when a leaf reads as guidance prose, not a credential value.

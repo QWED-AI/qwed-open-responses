@@ -626,12 +626,13 @@ export class SafetyGuard extends BaseGuard {
         // Requires instruction-override context after the role prefix — a
         // bare "system:" label matches ordinary config text ("system:
         // healthy", "Operating system: Linux") and blocked legitimate
-        // responses (Sentry/Greptile P1, PR #34). Bounded neutral filler
-        // (up to three words) is allowed between the marker and the
-        // override term, so "system: please reveal ..." is caught without
-        // matching unbounded prose (CodeRabbit, PR #34). Mirrors
-        // safety_guard.py.
-        /system\s*:\s*(?:[A-Za-z]+[.,;:!?]?\s+){0,3}(?:ignore|disregard|forget|override|you\s+are|act\s+as|pretend|new\s+instructions?|bypass|reveal)\b/i,
+        // responses (Sentry/Greptile P1, PR #34). Filler between the marker
+        // and the override term is unbounded but cannot cross another
+        // "system:" marker (linear on adversarial input) and cannot cross
+        // sentence boundaries (periods excluded, so benign multi-sentence
+        // text stays passing). Directives include disclose/leak/expose
+        // alongside reveal (Greptile P1, PR #34). Mirrors safety_guard.py.
+        /system\s*:\s*(?:(?!\bsystem\s*:)[A-Za-z]+[,:;!?]?\s+)*(?:ignore|disregard|forget|override|you\s+are|act\s+as|pretend|new\s+instructions?|bypass|reveal|disclose|leak|expose)\b/i,
         /<\|.*?\|>/,
         /\[\[.*?\]\]/,
     ];
