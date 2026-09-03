@@ -53,15 +53,25 @@ export class ToolGuard extends BaseGuard {
         'send_email', 'transfer_money', 'make_payment',
     ]);
 
+    // Unified cross-language superset — every pattern case-insensitive.
+    // Mirrors Python DEFAULT_DANGEROUS_PATTERNS exactly; the previously
+    // missing del/format/sudo/chmod/subprocess/os.system entries are the
+    // #30 divergences (Python blocked them, npm passed them).
     private static DEFAULT_DANGEROUS_PATTERNS = [
         /DROP\s+TABLE/i,
         /DELETE\s+FROM/i,
         /TRUNCATE\s+TABLE/i,
         /rm\s+-rf/i,
         /rmdir\s+\/s/i,
+        /del\s+\/f/i,
+        /format\s+c:/i,
+        /sudo\s+/i,
+        /chmod\s+777/i,
         /eval\s*\(/i,
         /exec\s*\(/i,
         /__import__/i,
+        /subprocess/i,
+        /os\.system/i,
     ];
 
     constructor(options: {
@@ -594,28 +604,135 @@ export class SafetyGuard extends BaseGuard {
     name = 'SafetyGuard';
     description = 'Comprehensive safety checks';
 
-    private checkPii: boolean;
-    private checkInjection: boolean;
-
     private static PII_PATTERNS = {
         email: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
         phone: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,
         ssn: /\b\d{3}-\d{2}-\d{4}\b/,
         creditCard: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,
+        // #30 parity: Python detects IPs, npm silently passed them.
+        ipAddress: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/,
     };
 
+    // #30 parity: mirrors Python INJECTION_PATTERNS — the missing five
+    // patterns let injection payloads pass on npm while Python blocked them.
     private static INJECTION_PATTERNS = [
         /ignore\s+(previous|all|above)\s+(instructions?|prompts?)/i,
         /disregard\s+(previous|all|above)/i,
         /forget\s+(everything|all|your\s+instructions)/i,
         /you\s+are\s+now\s+/i,
+        /act\s+as\s+if\s+you\s+are/i,
         /pretend\s+(you|to\s+be)/i,
+        /new\s+instructions?\s*:/i,
+        // Requires instruction-override context after the role prefix — a
+        // bare "system:" label matches ordinary config text ("system:
+        // healthy", "Operating system: Linux") and blocked legitimate
+        // responses (Sentry/Greptile P1, PR #34). Filler between the marker
+        // and the override term is unbounded but cannot cross another
+        // "system:" marker (linear on adversarial input) and cannot cross
+        // sentence boundaries (periods excluded, so benign multi-sentence
+        // text stays passing). Directives include disclose/leak/expose
+        // alongside reveal (Greptile P1, PR #34). Mirrors safety_guard.py.
+        /system\s*:\s*(?:(?!\bsystem\s*:)[A-Za-z]+[,:;!?]?\s+)*(?:ignore|disregard|forget|override|you\s+are|act\s+as|pretend|new\s+instructions?|bypass|reveal|disclose|leak|expose)\b/i,
+        /<\|.*?\|>/,
+        /\[\[.*?\]\]/,
     ];
 
-    constructor(options: { checkPii?: boolean; checkInjection?: boolean } = {}) {
+    // #30 parity: Python's harmful-content check had no npm counterpart at
+    // all — "api_key=sk-12345" was BLOCKED on Python and passed on npm.
+    // The value part excludes benign placeholder labels ("password:
+    // required", "api_key: not set") while still matching real credentials
+    // (Sentry/Greptile P1, PR #34). Mirrors safety_guard.py HARMFUL_PATTERNS.
+    // Each exemption alternative must match the ENTIRE value — the old \b
+    // let "password=required-secret" bypass, and (?=\s|$) let
+    // "password=required actual-secret" bypass (credential hidden after
+    // whitespace, which \S+ cannot reach). Alternatives now assert only
+    // whitespace/punctuation until end-of-string (Greptile P1, PR #34).
+    private static CREDENTIAL_PATTERNS = [
+        /password\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
+        /api[_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
+        /secret\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
+        // Value-aware label form (same placeholder exemption as above) —
+        // "private[_-]?key" bare-matching blocked benign labels such as
+        // "private_key: not set" (Greptile P1, PR #34). [\s_-]? also catches
+        // the spaced "private key: <value>" form. Mirrors safety_guard.py.
+        /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
+    ];
+
+    private static HARMFUL_PATTERNS = [
+        ...SafetyGuard.CREDENTIAL_PATTERNS,
+        // Dashed PEM header only: without the leading dashes the
+        // case-insensitive pattern matches ordinary prose like "begin
+        // private key rotation" (CodeRabbit, PR #34). Real PEM data
+        // always carries the delimiter. Python applies re.I to all
+        // HARMFUL_PATTERNS — case-insensitive here too (CodeAnt, PR #34).
+        /-{3,}\s*BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY/i,
+    ];
+
+    // Credential-shaped tail tokens for guidance-prose detection below.
+    // The prefix alternation is literal-only (linear, no nesting).
+    private static CRED_PREFIX_RE = /sk-|ghp_|glpat-|xox[baprs]?-|eyJ|akia|-----BEGIN/i;
+    // Six is the documented boundary (Greptile P1, PR #34): five-token
+    // passphrases still block while longer guidance passes. Prose-shaped
+    // exfiltration and guidance prose are indistinguishable by
+    // construction — high-entropy/prefixed/hyphenated/digit credentials
+    // are still caught by shape regardless of length.
+    private static PROSE_MIN_TOKENS = 6;
+    private static LABEL_VALUE_RE =
+        /\b(password|api[_-]?key|secret|private[\s_-]?key)\s*[=:]\s*(\S+)([\s\S]*)/i;
+
+    private static isCredentialShapedToken(token: string): boolean {
+        if (SafetyGuard.CRED_PREFIX_RE.test(token)) return true;
+        if (token.length >= 16 && !token.includes('=') && !token.includes(':')) return true;
+        if ((token.includes('-') || token.includes('_')) && (/\d/.test(token) || token.length >= 12)) return true;
+        let run = 0;
+        let hasDigit = false;
+        const flush = () => {
+            const hit = run >= 6 && hasDigit;
+            run = 0;
+            hasDigit = false;
+            return hit;
+        };
+        for (const c of token) {
+            if (/[A-Za-z0-9_]/.test(c)) {
+                run++;
+                if (/\d/.test(c)) hasDigit = true;
+            } else if (flush()) {
+                return true;
+            }
+        }
+        return flush();
+    }
+
+    private static isGuidanceProse(text: string): boolean {
+        const tokens = text.split(/\s+/).filter(Boolean);
+        if (tokens.length < SafetyGuard.PROSE_MIN_TOKENS) return false;
+        return !tokens.some((t) => SafetyGuard.isCredentialShapedToken(t));
+    }
+
+    private static placeholderTailAllows(leaf: string): boolean {
+        const m = SafetyGuard.LABEL_VALUE_RE.exec(leaf);
+        if (!m) return false;
+        const probe = `${m[1]}=${m[2]}`;
+        if (SafetyGuard.CREDENTIAL_PATTERNS.some((p) => p.test(probe))) return false;
+        const tail = m[3].split(/\s+/).filter(Boolean);
+        if (tail.length === 0) return true;
+        if (tail.some((t) => SafetyGuard.isCredentialShapedToken(t))) return false;
+        return tail.length >= 2;
+    }
+
+    private checkPii: boolean;
+    private checkInjection: boolean;
+    private checkHarmful: boolean;
+
+    constructor(options: {
+        checkPii?: boolean;
+        checkInjection?: boolean;
+        checkHarmful?: boolean;
+    } = {}) {
         super();
         this.checkPii = options.checkPii ?? true;
         this.checkInjection = options.checkInjection ?? true;
+        this.checkHarmful = options.checkHarmful ?? true;
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
@@ -631,26 +748,88 @@ export class SafetyGuard extends BaseGuard {
                 { error: String(err) },
             );
         }
-        const issues: string[] = [];
+        // Python parity: issues is a uniform array of
+        // {type, severity, details} objects for BOTH paths — the error path
+        // (all issues, errors AND warnings) and the warning-only path
+        // (Sentry, PR #34: PII used to be plain strings here and verbose
+        // {type: 'PII detected: email', details: []} objects there).
+        const issues: Array<{ type: string; severity: string; details: string[] }> = [];
+        // Error-severity issues are COLLECTED across checks — matching
+        // Python, which appends injection and harmful findings together and
+        // reports the total (CodeAnt nitpick, PR #34: returning on the first
+        // harmful pattern discarded PII and other diagnostics).
+        const errorIssues: Array<{ type: string; severity: string; details: string[] }> = [];
 
         if (this.checkPii) {
+            // Python parity: one {type:'pii', severity:'warning'} entry whose
+            // details carry the matched PII types (email, phone, ...).
+            const piiTypes: string[] = [];
             for (const [type, pattern] of Object.entries(SafetyGuard.PII_PATTERNS)) {
                 if (pattern.test(content)) {
-                    issues.push(`PII detected: ${type}`);
+                    piiTypes.push(type);
                 }
+            }
+            if (piiTypes.length > 0) {
+                issues.push({ type: 'pii', severity: 'warning', details: piiTypes });
             }
         }
 
         if (this.checkInjection) {
+            const injections: string[] = [];
             for (const pattern of SafetyGuard.INJECTION_PATTERNS) {
                 if (pattern.test(content)) {
-                    return this.failResult('BLOCKED: Prompt injection detected', { pattern: pattern.source });
+                    injections.push(pattern.source);
                 }
+            }
+            if (injections.length > 0) {
+                const entry = { type: 'injection', severity: 'error', details: injections };
+                issues.push(entry);
+                errorIssues.push(entry);
             }
         }
 
+        if (this.checkHarmful) {
+            // Mirrors Python: harmful content is an ERROR-severity issue
+            // (fails the guard), unlike PII which is only a warning (#30).
+            // Evaluated per collected string, not on the joined content —
+            // placeholder exemptions must occupy the complete field value
+            // (Greptile P1, PR #34); joined extraction artifacts would
+            // defeat the end-of-string anchor. Guidance prose skips only
+            // the credential patterns, never PEM (Sentry/Greptile P1).
+            const harmful: string[] = [];
+            for (const leaf of this.extractLeafStrings(response)) {
+                if (SafetyGuard.isGuidanceProse(leaf)) continue;
+                if (SafetyGuard.placeholderTailAllows(leaf)) continue;
+                for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
+                    if (pattern.test(leaf) && !harmful.includes(pattern.source)) {
+                        harmful.push(pattern.source);
+                    }
+                }
+            }
+            if (harmful.length > 0) {
+                const entry = { type: 'harmful', severity: 'error', details: harmful };
+                issues.push(entry);
+                errorIssues.push(entry);
+            }
+        }
+
+        if (errorIssues.length > 0) {
+            return this.failResult(
+                `Safety check failed: ${errorIssues.length} critical issue(s)`,
+                // All detected issues — errors AND warnings — match Python,
+                // which returns details={'issues': issues} with everything
+                // (Sentry, PR #34: PII warnings were discarded when a
+                // critical issue co-existed).
+                { issues },
+            );
+        }
+
         if (issues.length > 0) {
-            return this.failResult(`Safety issues detected: ${issues.join(', ')}`, { issues }, 'warning');
+            return this.failResult(
+                `Safety warnings: ${issues.length} warning(s)`,
+                { issues },
+                'warning',
+            );
         }
 
         return this.passResult('All safety checks passed');
@@ -686,6 +865,31 @@ export class SafetyGuard extends BaseGuard {
         }
 
         return parts.join(' ');
+    }
+
+    private extractLeafStrings(response: ParsedResponse, depth: number = 0): string[] {
+        // Every string leaf for per-field harmful evaluation (mirrors
+        // Python _collect_leaf_strings). Dict entries contribute both the
+        // bare value and the `key=value` form: the bare value alone drops
+        // the field context credential patterns match on, so
+        // `{"password": "hunter2"}` would otherwise verify uninspected
+        // (Greptile P1, PR #34). The strict placeholder exemption still
+        // judges the `key=value` form. Bounded like extractContent so
+        // deeply nested payloads terminate.
+        const MAX_DEPTH = 12;
+        if (depth > MAX_DEPTH) return [];
+        if (typeof response === 'string') return [response];
+        if (response === null || typeof response !== 'object') return [];
+        const leaves: string[] = [];
+        for (const [key, value] of Object.entries(response)) {
+            if (typeof value === 'string') {
+                leaves.push(value);
+                leaves.push(`${key}=${value}`);
+            } else if (value !== null && typeof value === 'object') {
+                leaves.push(...this.extractLeafStrings(value as ParsedResponse, depth + 1));
+            }
+        }
+        return leaves;
     }
 }
 
