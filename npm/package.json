@@ -28,11 +28,11 @@
         "middleware",
         "qwed"
     ],
-    "author": "QWED-AI <team@qwedai.com>",
+    "author": "QWED-AI <support@qwedai.com>",
     "license": "Apache-2.0",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/QWED-AI/qwed-open-responses.git"
+        "url": "https://github.com/QWED-AI/qwed-open-responses.git"
     },
     "bugs": {
         "url": "https://github.com/QWED-AI/qwed-open-responses/issues"

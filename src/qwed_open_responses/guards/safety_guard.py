@@ -60,9 +60,9 @@ class SafetyGuard(BaseGuard):
         # Directives include disclose/leak/expose alongside reveal
         # (Greptile P1, PR #34). Mirrored in npm guards.ts.
         r"system\s*:\s*(?:(?!\bsystem\s*:)[A-Za-z]+[,:;!?]?\s+)*"
-        r"(?:ignore|disregard|forget|override|you\s+are|"
-        r"act\s+as|pretend|new\s+instructions?|bypass|reveal|disclose|"
-        r"leak|expose)\b",
+        + r"(?:ignore|disregard|forget|override|you\s+are|"
+        + r"act\s+as|pretend|new\s+instructions?|bypass|reveal|disclose|"
+        + r"leak|expose)\b",
         r"<\|.*?\|>",  # Special tokens
         r"\[\[.*?\]\]",  # Bracket commands
     ]
@@ -113,10 +113,15 @@ class SafetyGuard(BaseGuard):
     ]
 
     # A guidance-prose value needs enough tokens to read as a sentence;
-    # shorter values stay on the strict placeholder rule. Five is the
-    # documented boundary: 4-token passphrases ("correct horse battery
-    # staple") still block while 5+-token guidance passes (Greptile P1).
-    _PROSE_MIN_TOKENS = 5
+    # shorter values stay on the strict placeholder rule. Six is the
+    # documented boundary (Greptile P1, PR #34): five-token passphrases
+    # ("correct horse battery staple extra") still block, while longer
+    # guidance ("must be at least 8 characters") passes. This boundary is
+    # policy, not science — prose-shaped exfiltration and guidance prose
+    # are indistinguishable by construction, so any fixed threshold falls
+    # to N+1 words; high-entropy/prefixed/hyphenated/digit credentials
+    # are still caught by shape regardless of length.
+    _PROSE_MIN_TOKENS = 6
 
     # `label = placeholder + tail` splitter for the placeholder-track
     # exemption below. Mirrors the four credential labels.

@@ -671,7 +671,12 @@ export class SafetyGuard extends BaseGuard {
     // Credential-shaped tail tokens for guidance-prose detection below.
     // The prefix alternation is literal-only (linear, no nesting).
     private static CRED_PREFIX_RE = /sk-|ghp_|glpat-|xox[baprs]?-|eyJ|akia|-----BEGIN/i;
-    private static PROSE_MIN_TOKENS = 5;
+    // Six is the documented boundary (Greptile P1, PR #34): five-token
+    // passphrases still block while longer guidance passes. Prose-shaped
+    // exfiltration and guidance prose are indistinguishable by
+    // construction — high-entropy/prefixed/hyphenated/digit credentials
+    // are still caught by shape regardless of length.
+    private static PROSE_MIN_TOKENS = 6;
     private static LABEL_VALUE_RE =
         /\b(password|api[_-]?key|secret|private[\s_-]?key)\s*[=:]\s*(\S+)([\s\S]*)/i;
 

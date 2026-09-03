@@ -1418,10 +1418,12 @@ class TestCrossLanguageParity30:
 
     def test_passphrase_credential_blocked(self):
         # Greptile P1: a multiword passphrase in a credential field is
-        # credential material, not guidance — 4 tokens stay strict.
+        # credential material, not guidance — 4-token and 5-token forms
+        # stay strict.
         for response in [
             {"password": "correct horse battery staple"},
             {"api_key": "correct horse battery staple"},
+            {"password": "correct horse battery staple extra"},
         ]:
             result = SafetyGuard().check(response)
             assert result.passed is False, response
