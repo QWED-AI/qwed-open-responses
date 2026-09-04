@@ -5,6 +5,39 @@ All notable changes to QWED Open Responses will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — issue #31 correctness batch
+
+- **ToolGuard**: blocklist/allowlist matching is now case-insensitive; the
+  default blocklist covers common shells and OS command interpreters
+  (`sh`, `powershell`, `pwsh`, `zsh`, `fish`, `cmd.exe`, ...); argument
+  pattern scanning decodes bounded base64 payloads. Pattern scanning is
+  documented as a heuristic, not a security boundary.
+- **Warning semantics**: `warn_result` now PASSES the guard
+  (`passed=True`, `severity="warning"`), matching its documented behavior.
+  Warnings are surfaced via `VerificationResult.warnings` and no longer
+  flip `verified` to False on their own; verifiers created with
+  `allow_warnings=False` escalate warnings to failures/blocks as before.
+- **VerificationResult**: results produced by `ResponseVerifier.verify`
+  now carry a `binding` (SHA-256 digest of the verified response plus the
+  guard names); call `verify_binding()` to detect forged or replayed
+  results. Results remain plain, publicly constructible dataclasses —
+  treat externally supplied results as untrusted (full attestation is
+  tracked in qwed-verification #319).
+- **`verify_structured_output`** raises `ValueError` when called with
+  neither a schema nor guards (it previously could verify nothing).
+- **SafetyGuard budget check** validates model-reported `usage` values
+  (must be finite non-negative numbers; anything else fails closed) and
+  documents the trust model for trusted-side accounting.
+- **VerifiedOpenAI** warns loudly when created without guards (fail-closed
+  verification would block every response).
+- **Streaming interceptor** warns and documents that
+  `block_on_failure=False` disables the trust boundary (warn-only mode).
+- **README**: claims rescoped ("100% Deterministic", "formal verification
+  rules", "AST analysis" → precise descriptions) and a new
+  Scope & Limitations section added.
+
 ## [0.4.0] - 2026-07-26
 
 ### Security

@@ -2,11 +2,47 @@
  * QWED Open Responses - Response Verifier
  */
 
+import { createHash } from 'crypto';
 import { BaseGuard } from './guards';
-import { VerificationResult, GuardResult, ParsedResponse } from './types';
+import { VerificationResult, GuardResult, ParsedResponse, ResultBinding } from './types';
 
 // Re-export types
 export { VerificationResult, GuardResult };
+
+/**
+ * Canonical JSON serialization for digest computation (#31).
+ * Mirrors Python json.dumps(sort_keys=True, separators=(",", ":")).
+ */
+function canonicalJson(value: any): string {
+    if (value === null || typeof value !== 'object') {
+        return JSON.stringify(value) ?? 'null';
+    }
+    if (Array.isArray(value)) {
+        return '[' + value.map((v) => canonicalJson(v)).join(',') + ']';
+    }
+    const keys = Object.keys(value).sort();
+    return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalJson(value[k])).join(',') + '}';
+}
+
+function responseDigest(response: any): string {
+    return createHash('sha256').update(canonicalJson(response), 'utf8').digest('hex');
+}
+
+/**
+ * Re-check the binding of a VerificationResult (#31). Returns true only
+ * when the result carries a binding set by ResponseVerifier.verify AND the
+ * digest matches. Detects forged or replayed results attached to a
+ * different response payload. Results are NOT cryptographically attested —
+ * only trust results produced in-process.
+ */
+export function verifyBinding(
+    result: VerificationResult,
+    response?: any
+): boolean {
+    if (!result.binding) return false;
+    const payload = response === undefined ? result.response : response;
+    return responseDigest(payload) === result.binding.responseSha256;
+}
 
 /**
  * Main verifier for AI responses.
@@ -14,10 +50,15 @@ export { VerificationResult, GuardResult };
 export class ResponseVerifier {
     private defaultGuards: BaseGuard[];
     private strictMode: boolean;
+    private allowWarnings: boolean;
 
-    constructor(guards: BaseGuard[] = [], options: { strictMode?: boolean } = {}) {
+    constructor(
+        guards: BaseGuard[] = [],
+        options: { strictMode?: boolean; allowWarnings?: boolean } = {}
+    ) {
         this.defaultGuards = guards;
         this.strictMode = options.strictMode ?? true;
+        this.allowWarnings = options.allowWarnings ?? true;
     }
 
     /**
@@ -47,6 +88,10 @@ export class ResponseVerifier {
                 blocked: this.strictMode,
                 blockReason: 'No guards configured — fail-closed (zero-guard verify).',
                 timestamp: new Date().toISOString(),
+                binding: {
+                    responseSha256: responseDigest(parsedResponse),
+                    guards: [],
+                },
             };
         }
 
@@ -61,14 +106,24 @@ export class ResponseVerifier {
                 const result = guard.check(parsedResponse, context);
                 guardResults.push(result);
 
-                if (result.passed) {
-                    guardsPassed++;
-                } else {
+                // #31 semantics: a warning PASSES the guard but stays
+                // visible via severity. It only fails/blocks verification
+                // when warnings are not allowed (allowWarnings=false).
+                const failed = !result.passed
+                    || (result.severity === 'warning' && !this.allowWarnings);
+
+                if (failed) {
                     guardsFailed++;
-                    if (result.severity === 'error' && this.strictMode) {
+                    if (
+                        this.strictMode
+                        && (result.severity === 'error'
+                            || (result.severity === 'warning' && !this.allowWarnings))
+                    ) {
                         blocked = true;
                         blockReason = result.message;
                     }
+                } else {
+                    guardsPassed++;
                 }
             } catch (error) {
                 guardResults.push({
@@ -90,6 +145,11 @@ export class ResponseVerifier {
             blocked,
             blockReason,
             timestamp: new Date().toISOString(),
+            // #31: tamper-evidence binding — not a signature; see types.ts.
+            binding: {
+                responseSha256: responseDigest(parsedResponse),
+                guards: guardsToUse.map((g) => g.name),
+            },
         };
     }
 

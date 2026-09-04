@@ -6,6 +6,7 @@ Combines multiple safety checks into a single guard.
 
 from typing import Any, Dict, Optional, List, Set
 from .base import BaseGuard, GuardResult
+import math
 import re
 
 
@@ -484,19 +485,55 @@ class SafetyGuard(BaseGuard):
                     found.append(pattern)
         return found
 
+    @staticmethod
+    def _is_usable_amount(value: Any) -> bool:
+        """True when a model-reported usage amount is a usable number (#31).
+
+        ``response["usage"]`` is supplied by the very output under
+        verification, so anything that is not a finite, non-negative real
+        number (strings, bools, negatives, NaN/inf) is rejected — failing
+        closed rather than letting a malformed report silence the cap.
+        """
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
+        )
+
     def _check_budget(
         self,
         response: Dict,
         context: Dict,
     ) -> List[str]:
-        """Check budget/limit constraints."""
+        """Check budget/limit constraints.
+
+        Trust model (#31): ``response["usage"]`` is model-reported and
+        untrusted — a compromised model can under-report usage, or send
+        negative/non-numeric values to defeat the cap. Reported values are
+        validated (must be finite non-negative numbers) and anything else
+        fails closed. Under-reporting cannot be detected from the response
+        itself: for authoritative enforcement, supply trusted-side
+        accounting via ``context["total_cost"]`` / ``context["total_tokens"]``
+        (added on top of the reported usage) or reconcile against signed
+        provider reports.
+        """
         issues = []
+
+        usage = response.get("usage", {})
+        if not isinstance(usage, dict):
+            usage = {}
 
         # Check cost
         if self.max_cost:
             current_cost = context.get("total_cost", 0)
-            response_cost = response.get("usage", {}).get("cost", 0)
-            if current_cost + response_cost > self.max_cost:
+            response_cost = usage.get("cost", 0)
+            if not self._is_usable_amount(response_cost):
+                issues.append(
+                    "Model-reported usage cost is not a finite non-negative "
+                    "number — failing closed (untrusted input)."
+                )
+            elif current_cost + response_cost > self.max_cost:
                 issues.append(
                     f"Cost exceeds limit: ${current_cost + response_cost} > ${self.max_cost}"
                 )
@@ -504,8 +541,13 @@ class SafetyGuard(BaseGuard):
         # Check tokens
         if self.max_tokens:
             current_tokens = context.get("total_tokens", 0)
-            response_tokens = response.get("usage", {}).get("total_tokens", 0)
-            if current_tokens + response_tokens > self.max_tokens:
+            response_tokens = usage.get("total_tokens", 0)
+            if not self._is_usable_amount(response_tokens):
+                issues.append(
+                    "Model-reported usage token count is not a finite "
+                    "non-negative number — failing closed (untrusted input)."
+                )
+            elif current_tokens + response_tokens > self.max_tokens:
                 issues.append(
                     f"Tokens exceed limit: {current_tokens + response_tokens} > {self.max_tokens}"
                 )

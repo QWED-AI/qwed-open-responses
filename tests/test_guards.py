@@ -789,7 +789,8 @@ class TestLegalGuard:
                 ],
             }
         )
-        assert result.passed is False
+        # (#31) Warnings pass the guard; severity carries the warning state.
+        assert result.passed is True
         assert result.severity == "warning"
         assert "COMPLETENESS_WARNING" in result.message
 
@@ -898,7 +899,8 @@ class TestLegalGuard:
                 ],
             }
         )
-        assert result.passed is False
+        # (#31) Warnings pass the guard; severity carries the warning state.
+        assert result.passed is True
         assert result.severity == "warning"
 
         j_mock.return_value.verify_choice_of_law.side_effect = ValueError("bad value")
@@ -915,7 +917,7 @@ class TestLegalGuard:
                 ],
             }
         )
-        assert result.passed is False
+        assert result.passed is True
         assert result.severity == "warning"
 
     def test_jurisdiction_object_with_conflicts_fails(self):
@@ -1075,7 +1077,8 @@ class TestLegalGuard:
                 "clauses": None,
             }
         )
-        assert result.passed is False
+        # (#31) Warnings pass the guard; severity carries the warning state.
+        assert result.passed is True
         assert result.severity == "warning"
         assert "COMPLETENESS_WARNING" in result.message
 
@@ -1244,7 +1247,12 @@ class TestCrossLanguageParity30:
 
     def test_pii_ip_detected(self):
         result = SafetyGuard().check({"content": "server at 192.168.1.1 down"})
-        assert result.passed is False
+        # (#31) PII is a warning: it passes the guard but stays visible as
+        # a warning in details/severity.
+        assert result.severity == "warning"
+        assert any(
+            issue.get("type") == "pii" for issue in result.details["issues"]
+        )
 
     def test_harmful_content_detected(self):
         result = SafetyGuard().check({"content": "api_key=sk-12345"})

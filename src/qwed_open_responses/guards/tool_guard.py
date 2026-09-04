@@ -6,6 +6,7 @@ Blocks dangerous tools and validates tool arguments.
 
 from typing import Any, Dict, Optional, List, Set, Callable, Tuple
 from .base import BaseGuard, GuardResult
+import base64
 import json
 import re
 
@@ -19,6 +20,17 @@ class ToolGuard(BaseGuard):
     - Validate tool arguments
     - Rate limit tool calls
     - Custom validation functions
+
+    Security model (#31):
+    - The blocklist/allowlist is matched case-insensitively (names are
+      normalized with ``str.casefold()``), and the default blocklist
+      covers common shells and OS command interpreters.
+    - Argument pattern scanning additionally decodes bounded, printable
+      base64 tokens and scans the decoded text with the same patterns.
+    - Pattern scanning is a HEURISTIC, not a security boundary: encoding
+      tricks beyond these mitigations can defeat regex scanning. For real
+      enforcement prefer allowlists (``allowed_tools``) plus OS-level
+      sandboxing.
 
     Usage:
         guard = ToolGuard(
@@ -45,6 +57,27 @@ class ToolGuard(BaseGuard):
         "cmd",
         "exec",
         "eval",
+        # Common shells / OS command interpreters (#31): exact-name
+        # matching previously let "sh", "powershell", "zsh", ... pass.
+        "sh",
+        "ash",
+        "dash",
+        "zsh",
+        "ksh",
+        "csh",
+        "tcsh",
+        "fish",
+        "powershell",
+        "pwsh",
+        "bash.exe",
+        "sh.exe",
+        "zsh.exe",
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "osascript",
+        "wscript",
+        "cscript",
         "delete_file",
         "remove_file",
         "write_file",
@@ -79,6 +112,31 @@ class ToolGuard(BaseGuard):
     _MAX_ARGS_JSON_CHARS = 10_000
     _MAX_ARGS_JSON_DEPTH = 128
     _MAX_NESTED_SCAN_DEPTH = 12
+
+    # #31: candidate base64 tokens inside serialized arguments. >= 24 chars
+    # so ordinary words never match; padding optional (added on decode).
+    _BASE64_TOKEN_RE = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
+    _MAX_BASE64_TOKEN_CHARS = 4096
+
+    @staticmethod
+    def _try_base64_decode(token: str) -> Optional[str]:
+        """Decode a bounded base64 token to printable text, else None (#31).
+
+        Heuristic: only accepts tokens that decode to valid UTF-8 consisting
+        of printable characters (plus whitespace), to avoid false positives
+        on binary blobs and unpadded/truncated junk.
+        """
+        if not token or len(token) > ToolGuard._MAX_BASE64_TOKEN_CHARS:
+            return None
+        candidates = [token] if len(token) % 4 == 0 else [token + "=" * (-len(token) % 4)]
+        for cand in candidates:
+            try:
+                text = base64.b64decode(cand, validate=True).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if text and all(ch.isprintable() or ch in "\r\n\t" for ch in text):
+                return text
+        return None
 
     @staticmethod
     def _max_sequence_depth(text: str) -> int:
@@ -170,12 +228,15 @@ class ToolGuard(BaseGuard):
             custom_validators: Dict of tool_name -> validator function
             max_calls_per_response: Max tool calls in single response
         """
-        self.blocked_tools: Set[str] = set(blocked_tools or [])
+        # #31: blocklist/allowlist matching is case-insensitive — names are
+        # normalized via str.casefold() here and at match time, so "Bash"
+        # cannot walk past a blocklist entry of "bash".
+        self.blocked_tools: Set[str] = {t.casefold() for t in (blocked_tools or [])}
         if use_default_blocklist:
             self.blocked_tools.update(self.DEFAULT_BLOCKED_TOOLS)
 
         self.allowed_tools: Optional[Set[str]] = (
-            set(allowed_tools) if allowed_tools else None
+            {t.casefold() for t in allowed_tools} if allowed_tools else None
         )
 
         self.dangerous_patterns: List[re.Pattern] = []
@@ -265,15 +326,18 @@ class ToolGuard(BaseGuard):
 
             arguments = call.get("arguments", {})
 
+            # #31: casefolded matching — see __init__.
+            folded_name = tool_name.casefold()
+
             # Check blocked list
-            if tool_name in self.blocked_tools:
+            if folded_name in self.blocked_tools:
                 return self.fail_result(
                     f"BLOCKED: Tool '{tool_name}' is not allowed",
                     details={"blocked_tool": tool_name},
                 )
 
             # Check allowed list (whitelist mode)
-            if self.allowed_tools and tool_name not in self.allowed_tools:
+            if self.allowed_tools and folded_name not in self.allowed_tools:
                 return self.fail_result(
                     f"BLOCKED: Tool '{tool_name}' is not in allowed list",
                     details={
@@ -301,8 +365,28 @@ class ToolGuard(BaseGuard):
                         },
                     )
 
+            # #31: base64-encoded payloads defeat plain pattern scanning
+            # ("cm0gLXJmIC8=" carries "rm -rf /" invisibly). Decode bounded,
+            # printable-looking base64 tokens and scan the decoded text with
+            # the same patterns. Heuristic mitigation, not a boundary.
+            for token in ToolGuard._BASE64_TOKEN_RE.findall(args_str):
+                decoded = ToolGuard._try_base64_decode(token)
+                if decoded is None:
+                    continue
+                for pattern in self.dangerous_patterns:
+                    if pattern.search(decoded):
+                        return self.fail_result(
+                            "BLOCKED: Dangerous pattern detected in "
+                            "base64-encoded tool arguments",
+                            details={
+                                "tool": tool_name,
+                                "pattern": pattern.pattern,
+                                "encoding": "base64",
+                            },
+                        )
+
             # Run custom validator if exists
-            if tool_name in self.custom_validators:
+            if folded_name in self.custom_validators:
                 try:
                     validator = self.custom_validators[tool_name]
                     is_valid, error_msg = validator(arguments)

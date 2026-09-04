@@ -10,6 +10,16 @@ export interface GuardResult {
     severity: 'error' | 'warning' | 'info';
 }
 
+/**
+ * Tamper-evidence binding set by ResponseVerifier.verify (#31): SHA-256 of
+ * the canonical verified response plus the guard names. Results without a
+ * binding are untrusted (hand-constructed / replayed).
+ */
+export interface ResultBinding {
+    responseSha256: string;
+    guards: string[];
+}
+
 export interface VerificationResult {
     verified: boolean;
     response: any;
@@ -19,6 +29,7 @@ export interface VerificationResult {
     blocked: boolean;
     blockReason?: string;
     timestamp: string;
+    binding?: ResultBinding;
 }
 
 export interface ToolCall {

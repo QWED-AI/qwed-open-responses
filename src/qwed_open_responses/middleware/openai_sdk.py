@@ -60,6 +60,20 @@ class VerifiedOpenAI:
                 "Install with: pip install qwed-open-responses[openai]"
             )
 
+        if not guards:
+            # #31: the wrapper advertises "automatically verified before
+            # returning", but zero guards inherit the empty-verifier
+            # fail-closed semantics — every response fails verification and
+            # raises ResponseBlocked. Surface that loudly instead of
+            # silently producing a wrapper that blocks everything.
+            warnings.warn(
+                "VerifiedOpenAI was created with no guards. Verification is "
+                "fail-closed: with zero guards every response fails "
+                "verification and will raise ResponseBlocked. Pass "
+                "guards=[...] to enable verification.",
+                stacklevel=2,
+            )
+
         self._client = openai.OpenAI(api_key=api_key, **kwargs)
         self._verifier = ResponseVerifier(default_guards=guards or [])
         self._block_on_failure = block_on_failure

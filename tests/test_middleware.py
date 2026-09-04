@@ -136,14 +136,15 @@ class TestToolGuardEdgeCases:
         assert result.passed is True
 
     def test_case_sensitivity(self):
-        """Tool names are case sensitive."""
+        """(#31) Tool-name matching is case-insensitive: 'execute_shell'
+        still hits a blocked_tools entry of 'Execute_Shell'."""
         guard = ToolGuard(blocked_tools=["Execute_Shell"], use_default_blocklist=False)
 
-        # Lowercase not blocked (different case)
         result = guard.check(
             {"type": "tool_call", "tool_name": "execute_shell", "arguments": {}}
         )
-        assert result.passed is True
+        assert result.passed is False
+        assert "not allowed" in result.message
 
     def test_nested_dangerous_pattern(self):
         """Dangerous pattern in nested arguments."""
