@@ -20,6 +20,17 @@ class ToolGuard(BaseGuard):
     - Rate limit tool calls
     - Custom validation functions
 
+    Security model (#31):
+    - The blocklist/allowlist is matched case-insensitively (names are
+      normalized with ``str.casefold()``), and the default blocklist
+      covers common shells and OS command interpreters.
+    - Argument pattern scanning additionally decodes bounded, printable
+      base64 tokens and scans the decoded text with the same patterns.
+    - Pattern scanning is a HEURISTIC, not a security boundary: encoding
+      tricks beyond these mitigations can defeat regex scanning. For real
+      enforcement prefer allowlists (``allowed_tools``) plus OS-level
+      sandboxing.
+
     Usage:
         guard = ToolGuard(
             blocked_tools=["execute_shell", "delete_file"],
@@ -45,6 +56,27 @@ class ToolGuard(BaseGuard):
         "cmd",
         "exec",
         "eval",
+        # Common shells / OS command interpreters (#31): exact-name
+        # matching previously let "sh", "powershell", "zsh", ... pass.
+        "sh",
+        "ash",
+        "dash",
+        "zsh",
+        "ksh",
+        "csh",
+        "tcsh",
+        "fish",
+        "powershell",
+        "pwsh",
+        "bash.exe",
+        "sh.exe",
+        "zsh.exe",
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "osascript",
+        "wscript",
+        "cscript",
         "delete_file",
         "remove_file",
         "write_file",
@@ -79,6 +111,53 @@ class ToolGuard(BaseGuard):
     _MAX_ARGS_JSON_CHARS = 10_000
     _MAX_ARGS_JSON_DEPTH = 128
     _MAX_NESTED_SCAN_DEPTH = 12
+
+    # #31: candidate encoded tokens (6-bit-group text encoding) inside
+    # serialized arguments. >= 7 alphabet chars — the minimum that can carry
+    # a 5-byte decoded payload ("eval(" / "sudo "), so padded short tokens
+    # like "ZXhlYyg=" (-> "exec(") and "cm0gLXJmIC8=" (-> "rm -rf /") are
+    # caught. Strict decoding (alphabet, canonical trailing bits, printable
+    # UTF-8) filters ordinary words.
+    _ENCODED_TOKEN_RE = re.compile(r"[A-Za-z0-9+/]{7,}={0,2}")
+    _MAX_TOKEN_CHARS = 4096
+    _TOKEN_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+    @staticmethod
+    def _try_decode_encoded_token(token: str) -> Optional[str]:
+        """Strictly decode a bounded 6-bit-group token to text, else None.
+
+        Decoded text is never executed or returned raw — it is scanned with
+        the same dangerous-pattern regexes applied to the raw arguments.
+        Decoding is performed directly over 6-bit groups (strict alphabet,
+        canonical trailing bits, printable UTF-8 output only) so malformed,
+        binary, or non-canonical tokens are rejected deterministically.
+        """
+        if not token or len(token) > ToolGuard._MAX_TOKEN_CHARS:
+            return None
+        body = token.rstrip("=")
+        if not body or len(body) % 4 == 1:
+            return None  # impossible group structure
+        acc = 0
+        bits = 0
+        out = bytearray()
+        for ch in body:
+            idx = ToolGuard._TOKEN_CHARS.find(ch)
+            if idx < 0:
+                return None  # strict: any non-alphabet character rejects
+            acc = (acc << 6) | idx
+            bits += 6
+            if bits >= 8:
+                bits -= 8
+                out.append((acc >> bits) & 0xFF)
+        if bits and acc & ((1 << bits) - 1):
+            return None  # non-canonical trailing bits
+        try:
+            text = out.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if text and all(ch.isprintable() or ch in "\r\n\t" for ch in text):
+            return text
+        return None
 
     @staticmethod
     def _max_sequence_depth(text: str) -> int:
@@ -170,12 +249,15 @@ class ToolGuard(BaseGuard):
             custom_validators: Dict of tool_name -> validator function
             max_calls_per_response: Max tool calls in single response
         """
-        self.blocked_tools: Set[str] = set(blocked_tools or [])
+        # #31: blocklist/allowlist matching is case-insensitive — names are
+        # normalized via str.casefold() here and at match time, so "Bash"
+        # cannot walk past a blocklist entry of "bash".
+        self.blocked_tools: Set[str] = {t.casefold() for t in (blocked_tools or [])}
         if use_default_blocklist:
             self.blocked_tools.update(self.DEFAULT_BLOCKED_TOOLS)
 
         self.allowed_tools: Optional[Set[str]] = (
-            set(allowed_tools) if allowed_tools else None
+            {t.casefold() for t in allowed_tools} if allowed_tools else None
         )
 
         self.dangerous_patterns: List[re.Pattern] = []
@@ -195,7 +277,13 @@ class ToolGuard(BaseGuard):
                 re.compile(p, re.IGNORECASE) for p in dangerous_patterns
             )
 
-        self.custom_validators = custom_validators or {}
+        self.custom_validators = {
+            # #31: keys casefolded like the blocklist — validator lookup in
+            # check() uses the casefolded tool name on both sides, so a
+            # casing mismatch can never raise KeyError.
+            name.casefold(): validator
+            for name, validator in (custom_validators or {}).items()
+        }
         self.max_calls = max_calls_per_response
 
     def check(
@@ -265,15 +353,18 @@ class ToolGuard(BaseGuard):
 
             arguments = call.get("arguments", {})
 
+            # #31: casefolded matching — see __init__.
+            folded_name = tool_name.casefold()
+
             # Check blocked list
-            if tool_name in self.blocked_tools:
+            if folded_name in self.blocked_tools:
                 return self.fail_result(
                     f"BLOCKED: Tool '{tool_name}' is not allowed",
                     details={"blocked_tool": tool_name},
                 )
 
             # Check allowed list (whitelist mode)
-            if self.allowed_tools and tool_name not in self.allowed_tools:
+            if self.allowed_tools and folded_name not in self.allowed_tools:
                 return self.fail_result(
                     f"BLOCKED: Tool '{tool_name}' is not in allowed list",
                     details={
@@ -301,10 +392,31 @@ class ToolGuard(BaseGuard):
                         },
                     )
 
+            # #31: encoded payloads (6-bit-group text encoding) defeat plain
+            # pattern scanning ("cm0gLXJmIC8=" carries "rm -rf /" invisibly).
+            # Decode bounded, printable-looking tokens and scan the decoded
+            # text with the same patterns. Heuristic mitigation, not a
+            # boundary.
+            for token in ToolGuard._ENCODED_TOKEN_RE.findall(args_str):
+                decoded = ToolGuard._try_decode_encoded_token(token)
+                if decoded is None:
+                    continue
+                for pattern in self.dangerous_patterns:
+                    if pattern.search(decoded):
+                        return self.fail_result(
+                            "BLOCKED: Dangerous pattern detected in "
+                            "base64-encoded tool arguments",
+                            details={
+                                "tool": tool_name,
+                                "pattern": pattern.pattern,
+                                "encoding": "base64",
+                            },
+                        )
+
             # Run custom validator if exists
-            if tool_name in self.custom_validators:
+            if folded_name in self.custom_validators:
                 try:
-                    validator = self.custom_validators[tool_name]
+                    validator = self.custom_validators[folded_name]
                     is_valid, error_msg = validator(arguments)
                     if not is_valid:
                         return self.fail_result(

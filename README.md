@@ -13,7 +13,7 @@
 </div>
 **Verification guards for AI agent outputs. Verify before you execute.**
 
-QWED Open Responses provides deterministic verification guards for AI responses, tool calls, and structured outputs. Works with OpenAI Responses API, LangChain, LlamaIndex, and other AI agent frameworks.
+QWED Open Responses provides deterministic, rule-based verification guards for AI responses, tool calls, and structured outputs. Works with OpenAI Responses API, LangChain, LlamaIndex, and other AI agent frameworks.
 
 ---
 
@@ -40,15 +40,15 @@ pip install qwed-open-responses[all]         # All integrations
 
 ### ✅ QWED Open Responses IS:
 - **Verification middleware** for AI agents (OpenAI, LangChain, LlamaIndex)
-- **Deterministic** — uses symbolic logic and formal verification rules
+- **Deterministic** — every check is an explicit, inspectable rule (schema validation, arithmetic recomputation, configurable pattern lists). No LLM calls in the verification path
 - **Framework-agnostic** — works with any LLM or agent framework
-- **A safety layer** — prevents dangerous tool calls and incorrect outputs
+- **A safety layer** — blocks known-dangerous tool calls (configurable blocklist) and incorrect outputs
 
 ### ❌ QWED Open Responses is NOT:
 - ~~An agent framework~~ — use LangChain or AutoGen for that
 - ~~A prompt engineering tool~~ — use DSPy for that
 - ~~A vector database~~ — use Pinecone or Weaviate for that
-- ~~A vaguely defined "guardrail"~~ — we use mathematical proofs, not regex
+- ~~A vaguely defined "guardrail"~~ — every check is an explicit, inspectable rule (regex-based pattern scans included, and labeled as heuristics)
 
 > **Think of QWED as the "firewall" for your AI agent's actions and outputs.**
 > 
@@ -61,11 +61,11 @@ pip install qwed-open-responses[all]         # All integrations
 | Aspect | Guardrails AI / NVIDIA NeMo | DSPy | QWED Open Responses |
 |--------|-----------------------------|------|---------------------|
 | **Primary Goal** | Format validation (XML/RAIL) | Prompt optimization | Deterministic verification |
-| **Tool Security** | Regex-based blocking | N/A | AST analysis + whitelist |
+| **Tool Security** | Regex-based blocking | N/A | Configurable blocklist/allowlist + argument pattern scan (heuristic) |
 | **Math Accuracy** | LLM self-correction | Prompt tuning | SymPy symbolic math |
 | **Approach** | "Re-ask the LLM" | "Train the prompt" | "Verify legally/mathematically" |
 | **Integration** | Wraps LLM calls | Replaces prompt pipeline | Middleware / Callback |
-| **Determinism** | Probabilistic | Probabilistic | **100% Deterministic** |
+| **Determinism** | Probabilistic | Probabilistic | **Deterministic rules** (pattern scans are heuristics) |
 
 ### Use Together (Best Practice)
 ```
@@ -282,6 +282,43 @@ client = VerifiedOpenAI(
 response = client.responses.create(...)
 # Automatically verified before returning
 ```
+
+---
+
+## ⚠️ Scope & Limitations
+
+Read this before relying on QWED as a trust boundary (issue #31 audit):
+
+- **Tool blocking is a configurable blocklist, not a sandbox.** Matching is
+  case-insensitive and the default list covers common shells (`bash`, `sh`,
+  `powershell`, `zsh`, ...), and argument pattern scanning also decodes
+  bounded base64 payloads — but pattern scanning is a **heuristic**, not a
+  security boundary. Prefer `allowed_tools` allowlists and OS-level
+  sandboxing for real enforcement.
+- **PII detection produces warnings, not blocks.** PII matches surface as a
+  separate warning state (`VerificationResult.warnings`); they do not fail
+  `verified` or block unless you create the verifier with
+  `allow_warnings=False`.
+- **Budget checks use model-reported usage.** `response["usage"]` comes
+  from the model output under verification: negative or non-numeric
+  reports fail closed, but under-reporting cannot be detected from the
+  response itself. Supply trusted-side totals via
+  `context["total_cost"]` / `context["total_tokens"]` or reconcile against
+  provider reports.
+- **`VerificationResult` is not cryptographically attested.** Anyone can
+  construct one — including one with a valid-looking `binding`. The
+  binding hash only detects a mismatch between a result and its
+  response/metadata; it does **not** authenticate the result itself.
+  Before acting on a result you did not produce in-process, require
+  trusted provenance or cryptographic attestation (tracked in
+  qwed-verification #319).
+- **Zero guards fail closed.** `ResponseVerifier.verify()` without guards
+  returns `verified=False`; `verify_structured_output()` raises
+  `ValueError` when both a schema and guards are absent — absence of
+  verification is never success.
+- **Streaming warn-only mode disables the trust boundary.**
+  `OpenResponsesMiddleware(block_on_failure=False)` passes failed items
+  through unmodified — use it for monitoring only.
 
 ---
 

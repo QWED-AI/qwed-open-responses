@@ -8,7 +8,46 @@ It orchestrates multiple guards to ensure responses are safe and correct.
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
+import hashlib
 import json
+
+
+def _canonical_json(obj: Any) -> str:
+    """Canonical JSON serialization for digest computation (#31).
+
+    No ``default=str``: values JSON cannot represent must fail closed
+    (TypeError -> ``_safe_binding`` returns None) instead of masking
+    mutations behind a lossy string conversion.
+    """
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def _canonicalize_numbers(obj: Any) -> Any:
+    """Collapse integral floats to ints so digests are runtime-portable.
+
+    Python serializes ``1.0`` as ``1.0`` while JavaScript emits ``1`` for
+    the same value — binding digests must match across runtimes (#31
+    review). Non-integral floats keep their repr in both runtimes.
+    """
+    if isinstance(obj, float) and obj.is_integer() and abs(obj) < 1e15:
+        return int(obj)
+    if isinstance(obj, dict):
+        return {k: _canonicalize_numbers(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_canonicalize_numbers(v) for v in obj]
+    return obj
+
+
+def _binding_digest(response: Any, guard_names: List[str]) -> str:
+    """SHA-256 digest over the response AND the guard list (#31 review).
+
+    Covering the guard names too means neither the verified payload nor the
+    verification metadata can be altered without invalidating the binding.
+    """
+    payload = _canonical_json(
+        _canonicalize_numbers({"guards": guard_names, "response": response})
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -37,13 +76,33 @@ class VerificationResult:
     Result of verifying an AI response.
 
     Attributes:
-        verified: True if all guards passed
+        verified: True if all guards passed (warnings are not failures
+            unless the verifier was created with ``allow_warnings=False``;
+            see ``warnings``)
         response: The original response (potentially modified)
         guards_passed: Number of guards that passed
         guards_failed: Number of guards that failed
         guard_results: Individual results from each guard
         blocked: True if response was blocked (critical failure)
+        block_reason: Why the response was blocked
         timestamp: When verification occurred
+        binding: Tamper-evidence set by ``ResponseVerifier.verify`` —
+            SHA-256 digest covering the verified response AND the guard
+            names. ``None`` on hand-constructed results.
+
+    .. warning::
+        ``VerificationResult`` is a plain, publicly constructible dataclass
+        (#31) and carries **no cryptographic attestation**: anyone can mint
+        ``VerificationResult(verified=True, ...)``. Only trust results
+        produced in-process by your own verifier; treat results received
+        from external parties as untrusted. The ``binding`` hash ties a
+        result to the exact response payload and guard list, so replaying
+        or reattaching it is detected via :meth:`verify_binding` — but a
+        binding is public, recomputable data and authenticates nothing: an
+        external caller can mint a result with a matching binding. Require
+        trusted in-process provenance or cryptographic attestation (tracked
+        in qwed-verification #319) before acting on results you did not
+        produce yourself.
     """
 
     verified: bool
@@ -54,16 +113,55 @@ class VerificationResult:
     blocked: bool = False
     block_reason: Optional[str] = None
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    binding: Optional[Dict[str, Any]] = None
+
+    @property
+    def warnings(self) -> List[GuardResult]:
+        """Guard results that passed with a warning (#31).
+
+        Warnings are a separate visible state — they neither fail
+        ``verified`` nor block, unless the verifier was created with
+        ``allow_warnings=False``.
+        """
+        return [g for g in self.guard_results if g.severity == "warning"]
+
+    def verify_binding(self, response: Any = None) -> bool:
+        """Recompute the digest and compare it to ``binding`` (#31).
+
+        Returns True only when this result carries a binding set by
+        ``ResponseVerifier.verify`` AND the digest matches. The digest
+        covers the response payload and the guard list, so a result cannot
+        be replayed against a different response, or have its verification
+        metadata (guards) altered, without detection. A hand-forged result
+        with no binding fails immediately.
+
+        Note: this detects mismatches only — it does not authenticate the
+        result itself (a binding is public, recomputable data). See the
+        class docstring for the trust model.
+        """
+        if not self.binding:
+            return False
+        try:
+            expected = _binding_digest(
+                self.response if response is None else response,
+                self.binding.get("guards", []),
+            )
+        except (ValueError, TypeError, RecursionError):
+            # Cyclic / non-serializable payload — cannot match any binding.
+            return False
+        return expected == self.binding.get("digest")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "verified": self.verified,
             "guards_passed": self.guards_passed,
             "guards_failed": self.guards_failed,
+            "warning_count": len(self.warnings),
             "guard_results": [g.to_dict() for g in self.guard_results],
             "blocked": self.blocked,
             "block_reason": self.block_reason,
             "timestamp": self.timestamp,
+            "binding": self.binding,
         }
 
     def __str__(self) -> str:
@@ -141,6 +239,21 @@ class ResponseVerifier:
         # Parse response if needed
         parsed_response = self._parse_response(response)
 
+        def _safe_binding(resp: Any, names: List[str]) -> Optional[Dict[str, Any]]:
+            """Binding digest, or ``None`` when the response cannot be bound.
+
+            Cyclic / non-serializable response graphs raise inside the JSON
+            canonicalizer (#31 review, Greptile P1) — callers must fail
+            closed with a failed VerificationResult instead of crashing.
+            """
+            try:
+                return {
+                    "guards": names,
+                    "digest": _binding_digest(resp, names),
+                }
+            except (ValueError, TypeError, RecursionError):
+                return None
+
         # Fail-closed: zero guards must never produce verified=True (#27).
         # Absence of verification is not success — it is the opposite.
         if not guards_to_use:
@@ -160,6 +273,7 @@ class ResponseVerifier:
                 ],
                 blocked=self.strict_mode,
                 block_reason="No guards configured — fail-closed (zero-guard verify).",
+                binding=_safe_binding(parsed_response, []),
             )
 
         # Run all guards
@@ -174,18 +288,26 @@ class ResponseVerifier:
                 result = guard.check(parsed_response, context)
                 guard_results.append(result)
 
-                if result.passed:
-                    guards_passed += 1
-                else:
+                # #31 semantics: a warning PASSES the guard (see
+                # BaseGuard.warn_result) but remains visible as a warning
+                # via VerificationResult.warnings. It only fails/blocks
+                # verification when warnings are not allowed.
+                failed = not result.passed
+                if result.severity == "warning" and not self.allow_warnings:
+                    failed = True
+
+                if failed:
                     guards_failed += 1
 
                     # Check if this blocks
-                    if result.severity == "error" or (
-                        result.severity == "warning" and not self.allow_warnings
+                    if self.strict_mode and (
+                        result.severity == "error"
+                        or (result.severity == "warning" and not self.allow_warnings)
                     ):
-                        if self.strict_mode:
-                            blocked = True
-                            block_reason = result.message
+                        blocked = True
+                        block_reason = result.message
+                else:
+                    guards_passed += 1
 
             except Exception as e:
                 # Guard threw exception - treat as failure
@@ -202,6 +324,38 @@ class ResponseVerifier:
         # Determine overall verification status
         verified = guards_failed == 0
 
+        guard_names = [getattr(g, "name", type(g).__name__) for g in guards_to_use]
+
+        binding = _safe_binding(parsed_response, guard_names)
+        if binding is None:
+            # #31 review (Greptile P1): a cyclic / non-serializable response
+            # must yield a failed VerificationResult, never an exception.
+            guard_results.append(
+                GuardResult(
+                    guard_name="ResponseVerifier",
+                    passed=False,
+                    message=(
+                        "Response could not be bound — cyclic or "
+                        "non-serializable structure. Failing closed."
+                    ),
+                    severity="error",
+                )
+            )
+            return VerificationResult(
+                verified=False,
+                response=parsed_response,
+                guards_passed=guards_passed,
+                guards_failed=guards_failed + 1,
+                guard_results=guard_results,
+                blocked=self.strict_mode,
+                block_reason=(
+                    "Response could not be bound — cyclic or "
+                    "non-serializable structure."
+                    if self.strict_mode
+                    else None
+                ),
+            )
+
         return VerificationResult(
             verified=verified,
             response=parsed_response,
@@ -210,6 +364,11 @@ class ResponseVerifier:
             guard_results=guard_results,
             blocked=blocked,
             block_reason=block_reason,
+            # #31: tamper-evidence binding — the digest covers the response
+            # AND the guard list, so neither can be altered or replayed
+            # elsewhere without detection. Not a signature; see the class
+            # docstring.
+            binding=binding,
         )
 
     def verify_tool_call(
@@ -247,17 +406,31 @@ class ResponseVerifier:
 
         Args:
             output: The structured output from the AI
-            schema: JSON Schema to validate against
+            schema: JSON Schema to validate against. Required unless
+                ``guards`` are supplied (#31) — with neither, nothing
+                would be verified.
             guards: Additional guards to apply
 
         Returns:
             VerificationResult with verification status
+
+        Raises:
+            ValueError: If both ``schema`` and ``guards`` are empty —
+                the call would otherwise verify nothing (#31).
         """
         from .guards import SchemaGuard
 
+        if schema is None and not guards:
+            raise ValueError(
+                "verify_structured_output requires a JSON schema or at least "
+                "one guard — with neither, nothing would be verified (#31)."
+            )
+
         guards_list = list(guards) if guards else []
 
-        if schema:
+        # {} is a valid JSON Schema (matches anything) — distinguish a
+        # supplied schema from an omitted one (#31 review).
+        if schema is not None:
             guards_list.insert(0, SchemaGuard(schema=schema))
 
         structured = {

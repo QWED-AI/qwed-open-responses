@@ -58,10 +58,21 @@ class OpenResponsesMiddleware:
             block_on_failure: If True, dangerous items are replaced with
                 a ``system_intervention`` item instead of being yielded.
                 If False, failed items pass through unmodified (warn-only).
+                **This disables the trust boundary** (issue #31): nothing
+                is actually stopped — use only for monitoring/observation,
+                never in paths that depend on verification.
             on_blocked: Optional callback invoked when an item is blocked.
         """
         self._verifier = ResponseVerifier(default_guards=guards or [])
         self._block_on_failure = block_on_failure
+        if not block_on_failure:
+            # #31: warn-only mode is an explicit opt-out of interception —
+            # surface it loudly so it cannot be enabled by accident.
+            logger.warning(
+                "OpenResponsesMiddleware: block_on_failure=False disables "
+                "the trust boundary — failed tool-call items will pass "
+                "through unmodified. Use only for monitoring/observation."
+            )
         self._on_blocked = on_blocked
         self._stats: Dict[str, int] = {"total": 0, "verified": 0, "blocked": 0}
 
@@ -170,5 +181,9 @@ class OpenResponsesMiddleware:
                 },
             }
 
-        # Non-blocking mode: pass through unmodified (warn-only)
+        # Non-blocking mode: pass through unmodified (warn-only).
+        # #31: this deliberately disables the trust boundary — the failed
+        # item reaches the consumer exactly as the model produced it. The
+        # blocked-mode system_intervention replacement only protects a
+        # consumer that honors it; document both sides of that contract.
         return item

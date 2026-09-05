@@ -4,8 +4,9 @@ Safety Guard - Comprehensive safety checks for AI responses.
 Combines multiple safety checks into a single guard.
 """
 
-from typing import Any, Dict, Optional, List, Set
+from typing import Any, Callable, Dict, Optional, List, Set
 from .base import BaseGuard, GuardResult
+import math
 import re
 
 
@@ -484,30 +485,116 @@ class SafetyGuard(BaseGuard):
                     found.append(pattern)
         return found
 
+    @staticmethod
+    def _is_usable_amount(value: Any) -> bool:
+        """True when a model-reported usage amount is a usable number (#31).
+
+        ``response["usage"]`` is supplied by the very output under
+        verification, so anything that is not a finite, non-negative real
+        number (strings, bools, negatives, NaN/inf) is rejected — failing
+        closed rather than letting a malformed report silence the cap.
+        """
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
+        )
+
     def _check_budget(
         self,
         response: Dict,
         context: Dict,
     ) -> List[str]:
-        """Check budget/limit constraints."""
+        """Check budget/limit constraints.
+
+        Trust model (#31): ``response["usage"]`` is model-reported and
+        untrusted — a compromised model can under-report usage, or send
+        negative/non-numeric values to defeat the cap. Reported values are
+        validated (must be finite non-negative numbers) and anything else
+        fails closed. Under-reporting cannot be detected from the response
+        itself: for authoritative enforcement, supply trusted-side
+        accounting via ``context["total_cost"]`` / ``context["total_tokens"]``
+        (added on top of the reported usage) or reconcile against signed
+        provider reports.
+        """
         issues = []
 
+        usage = response.get("usage")
+        malformed_usage = usage is not None and not isinstance(usage, dict)
+        if not isinstance(usage, dict):
+            usage = {}
+
+        if malformed_usage:
+            # #31 review (Greptile P1): a present non-dict usage value is
+            # malformed model output — reject it once, regardless of how
+            # many caps are configured (Sentry: no duplicate messages).
+            issues.append(
+                "Response usage is not an object — failing closed " "(untrusted input)."
+            )
+            return issues
+
         # Check cost
-        if self.max_cost:
-            current_cost = context.get("total_cost", 0)
-            response_cost = response.get("usage", {}).get("cost", 0)
-            if current_cost + response_cost > self.max_cost:
-                issues.append(
-                    f"Cost exceeds limit: ${current_cost + response_cost} > ${self.max_cost}"
-                )
+        if self.max_cost is not None:
+            issue = self._usage_cap_issue(
+                reported=usage.get("cost"),
+                trusted_total=context.get("total_cost"),
+                trusted_key="total_cost",
+                kind="cost",
+                cap=self.max_cost,
+                exceed=lambda total: f"Cost exceeds limit: ${total} > ${self.max_cost}",
+            )
+            if issue:
+                issues.append(issue)
 
         # Check tokens
-        if self.max_tokens:
-            current_tokens = context.get("total_tokens", 0)
-            response_tokens = response.get("usage", {}).get("total_tokens", 0)
-            if current_tokens + response_tokens > self.max_tokens:
-                issues.append(
-                    f"Tokens exceed limit: {current_tokens + response_tokens} > {self.max_tokens}"
-                )
+        if self.max_tokens is not None:
+            issue = self._usage_cap_issue(
+                reported=usage.get("total_tokens"),
+                trusted_total=context.get("total_tokens"),
+                trusted_key="total_tokens",
+                kind="token count",
+                cap=self.max_tokens,
+                exceed=lambda total: f"Tokens exceed limit: {total} > {self.max_tokens}",
+            )
+            if issue:
+                issues.append(issue)
 
         return issues
+
+    @staticmethod
+    def _usage_cap_issue(
+        reported: Any,
+        trusted_total: Any,
+        trusted_key: str,
+        kind: str,
+        cap: float,
+        exceed: Callable[[float], str],
+    ) -> Optional[str]:
+        """Return the budget issue for one cap, or None when within budget.
+
+        Trust model: ``reported`` comes from the model output (untrusted) —
+        it must be a finite non-negative number; missing accounting fails
+        closed unless the caller supplies trusted-side totals
+        (``context[trusted_key]``).
+        """
+        if reported is None:
+            if trusted_total is None:
+                # #31 review: missing accounting must not silently pass a
+                # configured cap — either the response reports usage or the
+                # caller supplies trusted-side context totals.
+                return (
+                    f"No usage {kind} reported and no trusted context "
+                    f"{trusted_key} — budget cap cannot be verified "
+                    "(fail-closed)."
+                )
+            reported = 0
+        elif not SafetyGuard._is_usable_amount(reported):
+            return (
+                f"Model-reported usage {kind} is not a finite non-negative "
+                "number — failing closed (untrusted input)."
+            )
+        total = (trusted_total or 0) + reported
+        if total > cap:
+            return exceed(total)
+        return None

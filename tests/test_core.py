@@ -174,10 +174,11 @@ class TestGuardResult:
         assert result.severity == "error"
 
     def test_warn_result(self):
+        """(#31) A warning passes the guard but stays visible as a warning."""
         guard = MockWarnGuard()
         result = guard.warn_result("Test warning")
 
-        assert result.passed is False
+        assert result.passed is True
         assert result.severity == "warning"
 
     def test_to_dict(self):
