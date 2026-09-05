@@ -520,36 +520,73 @@ class SafetyGuard(BaseGuard):
         """
         issues = []
 
-        usage = response.get("usage", {})
+        usage = response.get("usage")
+        malformed_usage = usage is not None and not isinstance(usage, dict)
         if not isinstance(usage, dict):
             usage = {}
 
         # Check cost
-        if self.max_cost:
-            current_cost = context.get("total_cost", 0)
-            response_cost = usage.get("cost", 0)
-            if not self._is_usable_amount(response_cost):
+        if self.max_cost is not None:
+            if malformed_usage:
+                # #31 review (Greptile P1): a present non-dict usage value is
+                # malformed model output — reject it instead of treating it
+                # as zero accounting.
                 issues.append(
-                    "Model-reported usage cost is not a finite non-negative "
-                    "number — failing closed (untrusted input)."
+                    "Response usage is not an object — failing closed "
+                    "(untrusted input)."
                 )
-            elif current_cost + response_cost > self.max_cost:
-                issues.append(
-                    f"Cost exceeds limit: ${current_cost + response_cost} > ${self.max_cost}"
-                )
+            else:
+                current_cost = context.get("total_cost", 0)
+                reported_cost = usage.get("cost")
+                if reported_cost is None and "total_cost" not in context:
+                    # #31 review: missing accounting must not silently pass a
+                    # configured cap — either the response reports usage or
+                    # the caller supplies trusted-side context totals.
+                    issues.append(
+                        "No usage cost reported and no trusted context "
+                        "total_cost — budget cap cannot be verified "
+                        "(fail-closed)."
+                    )
+                elif reported_cost is not None and not self._is_usable_amount(
+                    reported_cost
+                ):
+                    issues.append(
+                        "Model-reported usage cost is not a finite "
+                        "non-negative number — failing closed (untrusted "
+                        "input)."
+                    )
+                elif current_cost + (reported_cost or 0) > self.max_cost:
+                    issues.append(
+                        f"Cost exceeds limit: ${current_cost + (reported_cost or 0)} > ${self.max_cost}"
+                    )
 
         # Check tokens
-        if self.max_tokens:
-            current_tokens = context.get("total_tokens", 0)
-            response_tokens = usage.get("total_tokens", 0)
-            if not self._is_usable_amount(response_tokens):
+        if self.max_tokens is not None:
+            if malformed_usage:
                 issues.append(
-                    "Model-reported usage token count is not a finite "
-                    "non-negative number — failing closed (untrusted input)."
+                    "Response usage is not an object — failing closed "
+                    "(untrusted input)."
                 )
-            elif current_tokens + response_tokens > self.max_tokens:
-                issues.append(
-                    f"Tokens exceed limit: {current_tokens + response_tokens} > {self.max_tokens}"
-                )
+            else:
+                current_tokens = context.get("total_tokens", 0)
+                reported_tokens = usage.get("total_tokens")
+                if reported_tokens is None and "total_tokens" not in context:
+                    issues.append(
+                        "No usage token count reported and no trusted "
+                        "context total_tokens — budget cap cannot be "
+                        "verified (fail-closed)."
+                    )
+                elif reported_tokens is not None and not self._is_usable_amount(
+                    reported_tokens
+                ):
+                    issues.append(
+                        "Model-reported usage token count is not a finite "
+                        "non-negative number — failing closed (untrusted "
+                        "input)."
+                    )
+                elif current_tokens + (reported_tokens or 0) > self.max_tokens:
+                    issues.append(
+                        f"Tokens exceed limit: {current_tokens + (reported_tokens or 0)} > {self.max_tokens}"
+                    )
 
         return issues

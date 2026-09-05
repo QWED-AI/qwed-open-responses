@@ -306,12 +306,16 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
   `context["total_cost"]` / `context["total_tokens"]` or reconcile against
   provider reports.
 - **`VerificationResult` is not cryptographically attested.** Anyone can
-  construct one. Results produced by `ResponseVerifier.verify` carry a
-  `binding` hash of the exact verified response — call
-  `result.verify_binding()` before acting on a result you did not produce
-  yourself.
-- **Zero guards fail closed.** Verifying with no guards returns
-  `verified=False` — absence of verification is never success.
+  construct one — including one with a valid-looking `binding`. The
+  binding hash only detects a mismatch between a result and its
+  response/metadata; it does **not** authenticate the result itself.
+  Before acting on a result you did not produce in-process, require
+  trusted provenance or cryptographic attestation (tracked in
+  qwed-verification #319).
+- **Zero guards fail closed.** `ResponseVerifier.verify()` without guards
+  returns `verified=False`; `verify_structured_output()` raises
+  `ValueError` when both a schema and guards are absent — absence of
+  verification is never success.
 - **Streaming warn-only mode disables the trust boundary.**
   `OpenResponsesMiddleware(block_on_failure=False)` passes failed items
   through unmodified — use it for monitoring only.

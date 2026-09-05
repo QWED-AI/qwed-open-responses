@@ -105,13 +105,13 @@ export class ToolGuard extends BaseGuard {
             dangerousPatterns = [],
         } = options;
 
-        this.blockedTools = new Set(blockedTools.map((t) => t.toLowerCase()));
+        this.blockedTools = new Set(blockedTools.map((t) => ToolGuard.casefold(t)));
         if (useDefaultBlocklist) {
             ToolGuard.DEFAULT_BLOCKED_TOOLS.forEach(t => this.blockedTools.add(t));
         }
 
         this.allowedTools = allowedTools
-            ? new Set(allowedTools.map((t) => t.toLowerCase()))
+            ? new Set(allowedTools.map((t) => ToolGuard.casefold(t)))
             : null;
         this.dangerousPatterns = [
             ...ToolGuard.DEFAULT_DANGEROUS_PATTERNS,
@@ -175,7 +175,7 @@ export class ToolGuard extends BaseGuard {
             const args = call.arguments || {};
 
             // #31: case-insensitive matching — mirrors Python casefold().
-            const folded = toolName.toLowerCase();
+            const folded = ToolGuard.casefold(toolName);
 
             // Check blocked list
             if (this.blockedTools.has(folded)) {
@@ -199,7 +199,7 @@ export class ToolGuard extends BaseGuard {
                 return this.failResult('BLOCKED: Tool arguments could not be serialized');
             }
             for (const pattern of this.dangerousPatterns) {
-                if (pattern.test(argsStr)) {
+                if (ToolGuard.matches(pattern, argsStr)) {
                     return this.failResult('BLOCKED: Dangerous pattern detected in tool arguments', {
                         tool: toolName,
                         pattern: pattern.source,
@@ -214,7 +214,7 @@ export class ToolGuard extends BaseGuard {
                 const decoded = ToolGuard.tryBase64Decode(token);
                 if (decoded === null) continue;
                 for (const pattern of this.dangerousPatterns) {
-                    if (pattern.test(decoded)) {
+                    if (ToolGuard.matches(pattern, decoded)) {
                         return this.failResult(
                             'BLOCKED: Dangerous pattern detected in base64-encoded tool arguments',
                             {
@@ -236,9 +236,36 @@ export class ToolGuard extends BaseGuard {
         return typeof name === 'string' && name.trim().length > 0;
     }
 
-    // #31: candidate base64 tokens inside serialized arguments (>= 24 chars,
-    // padding optional). Mirrors Python ToolGuard._BASE64_TOKEN_RE.
-    private static BASE64_TOKEN_RE = /[A-Za-z0-9+/]{24,}={0,2}/g;
+    // #31 parity: Python matches with str.casefold(); plain toLowerCase()
+    // misses full-folding pairs (ß→ss, ligatures), which would give
+    // STRASSE and Straße different decisions across runtimes. ASCII-only
+    // names are unaffected by these entries.
+    private static FULL_FOLD_RE = /[ßﬀﬁﬂﬃﬄﬅﬆ]/g;
+    private static FULL_FOLD_MAP: Record<string, string> = {
+        'ß': 'ss', 'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl',
+        'ﬃ': 'ffi', 'ﬄ': 'ffl', 'ﬅ': 'st', 'ﬆ': 'st',
+    };
+
+    private static casefold(name: string): string {
+        return name
+            .toLowerCase()
+            .replace(ToolGuard.FULL_FOLD_RE, (ch) => ToolGuard.FULL_FOLD_MAP[ch] ?? ch);
+    }
+
+    // Caller-supplied /g or /y regexes retain lastIndex across test()
+    // calls, which can skip dangerous matches — reset before every test
+    // (#31 review).
+    private static matches(pattern: RegExp, text: string): boolean {
+        if (pattern.global || pattern.sticky) {
+            pattern.lastIndex = 0;
+        }
+        return pattern.test(text);
+    }
+
+    // #31: candidate base64 tokens inside serialized arguments (>= 8 chars
+    // so short encoded payloads like "cm0gLXJmIC8=" are caught; padding
+    // optional). Mirrors Python ToolGuard._BASE64_TOKEN_RE.
+    private static BASE64_TOKEN_RE = /[A-Za-z0-9+/]{8,}={0,2}/g;
     private static MAX_BASE64_TOKEN_CHARS = 4096;
 
     private static tryBase64Decode(token: string): string | null {

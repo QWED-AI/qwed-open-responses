@@ -11,13 +11,13 @@ export interface GuardResult {
 }
 
 /**
- * Tamper-evidence binding set by ResponseVerifier.verify (#31): SHA-256 of
- * the canonical verified response plus the guard names. Results without a
- * binding are untrusted (hand-constructed / replayed).
+ * Tamper-evidence binding set by ResponseVerifier.verify (#31): SHA-256
+ * digest covering the canonical verified response AND the guard names.
+ * Results without a binding are untrusted (hand-constructed / replayed).
  */
 export interface ResultBinding {
-    responseSha256: string;
     guards: string[];
+    digest: string;
 }
 
 export interface VerificationResult {

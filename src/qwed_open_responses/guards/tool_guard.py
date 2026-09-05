@@ -113,9 +113,12 @@ class ToolGuard(BaseGuard):
     _MAX_ARGS_JSON_DEPTH = 128
     _MAX_NESTED_SCAN_DEPTH = 12
 
-    # #31: candidate base64 tokens inside serialized arguments. >= 24 chars
-    # so ordinary words never match; padding optional (added on decode).
-    _BASE64_TOKEN_RE = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
+    # #31: candidate base64 tokens inside serialized arguments. >= 8 chars
+    # so ordinary words rarely match while short encoded payloads
+    # ("rm -rf /" -> "cm0gLXJmIC8=") are still caught; padding optional
+    # (added on decode). Decoding validates strictly and requires printable
+    # UTF-8, which filters ordinary words.
+    _BASE64_TOKEN_RE = re.compile(r"[A-Za-z0-9+/]{8,}={0,2}")
     _MAX_BASE64_TOKEN_CHARS = 4096
 
     @staticmethod
@@ -128,11 +131,19 @@ class ToolGuard(BaseGuard):
         """
         if not token or len(token) > ToolGuard._MAX_BASE64_TOKEN_CHARS:
             return None
-        candidates = [token] if len(token) % 4 == 0 else [token + "=" * (-len(token) % 4)]
+        candidates = (
+            [token] if len(token) % 4 == 0 else [token + "=" * (-len(token) % 4)]
+        )
         for cand in candidates:
             try:
-                text = base64.b64decode(cand, validate=True).decode("utf-8")
-            except (ValueError, UnicodeDecodeError):
+                # Decoded text is never executed or returned raw — it is
+                # scanned below with the same dangerous-pattern regexes
+                # applied to the raw arguments (#31 base64 mitigation).
+                decoded_bytes = base64.b64decode(cand, validate=True)  # qwed-ignore
+                text = decoded_bytes.decode("utf-8")
+            except ValueError:
+                # ValueError covers binascii.Error and UnicodeDecodeError
+                # (both derive from ValueError) — keep one class (Sonar).
                 continue
             if text and all(ch.isprintable() or ch in "\r\n\t" for ch in text):
                 return text
@@ -256,7 +267,13 @@ class ToolGuard(BaseGuard):
                 re.compile(p, re.IGNORECASE) for p in dangerous_patterns
             )
 
-        self.custom_validators = custom_validators or {}
+        self.custom_validators = {
+            # #31: keys casefolded like the blocklist — validator lookup in
+            # check() uses the casefolded tool name on both sides, so a
+            # casing mismatch can never raise KeyError.
+            name.casefold(): validator
+            for name, validator in (custom_validators or {}).items()
+        }
         self.max_calls = max_calls_per_response
 
     def check(
@@ -388,7 +405,7 @@ class ToolGuard(BaseGuard):
             # Run custom validator if exists
             if folded_name in self.custom_validators:
                 try:
-                    validator = self.custom_validators[tool_name]
+                    validator = self.custom_validators[folded_name]
                     is_valid, error_msg = validator(arguments)
                     if not is_valid:
                         return self.fail_result(

@@ -73,6 +73,28 @@ def test_benign_tool_still_passes():
     assert result.passed is True
 
 
+def test_custom_validator_case_insensitive_lookup():
+    """(Sentry, #31) Validator registered as 'Search' must run for 'SEARCH'
+    — and the existence check / retrieval must use the same (folded) key,
+    so no KeyError turns a legitimate call into a validation failure."""
+    guard = ToolGuard(
+        custom_validators={"Search": lambda args: (True, "")},
+    )
+    result = guard.check(
+        {"type": "tool_call", "tool_name": "SEARCH", "arguments": {"q": "x"}}
+    )
+    assert result.passed is True
+
+    failing = ToolGuard(
+        custom_validators={"search": lambda args: (False, "bad")},
+    )
+    result = failing.check(
+        {"type": "tool_call", "tool_name": "SEARCH", "arguments": {"q": "x"}}
+    )
+    assert result.passed is False
+    assert "validation failed" in result.message
+
+
 # ------------------------------------------------------------------ #
 # 1b. Base64-encoded dangerous payloads
 # ------------------------------------------------------------------ #
@@ -163,11 +185,97 @@ def test_result_binding_detects_replay_and_tampering():
     assert result.verify_binding() is False
 
 
+def test_budget_zero_cap_rejects_positive_usage():
+    """(#31 review) max_cost=0 is a valid cap and must reject usage."""
+    guard = SafetyGuard(max_cost=0)
+    result = guard.check({"usage": {"cost": 0.01}}, context={})
+    assert result.passed is False
+    assert "Cost exceeds limit" in str(result.details)
+
+
+def test_budget_non_dict_usage_fails_closed():
+    """(#31 review / Greptile P1) A present non-dict usage value is
+    malformed — it must fail closed, not count as zero accounting."""
+    guard = SafetyGuard(max_cost=10.0)
+    result = guard.check({"usage": "unknown"}, context={})
+    assert result.passed is False
+    assert "not an object" in str(result.details)
+
+
+def test_base64_short_payload_blocked():
+    """(#31 review) Short base64 payloads ('rm -rf /' -> 'cm0gLXJmIC8=')
+    must be scanned, not skipped by a minimum-length heuristic."""
+    guard = ToolGuard()
+    result = guard.check(
+        {"type": "tool_call", "tool_name": "run", "arguments": {"cmd": "cm0gLXJmIC8="}}
+    )
+    assert result.passed is False
+    assert result.details.get("encoding") == "base64"
+
+
+def test_short_plain_words_not_base64_flagged():
+    """8-char ordinary words fail strict base64 validation -> not blocked."""
+    guard = ToolGuard()
+    result = guard.check(
+        {"type": "tool_call", "tool_name": "run", "arguments": {"cmd": "password"}}
+    )
+    assert result.passed is True
+
+
+def test_cyclic_response_fails_closed_not_crash():
+    """(#31 review / Greptile P1) A self-referential response must produce
+    a failed VerificationResult — never raise from binding generation."""
+    verifier = ResponseVerifier(default_guards=[ToolGuard()])
+    cyclic = {"type": "tool_call", "tool_name": "search", "arguments": {}}
+    cyclic["self"] = cyclic
+
+    result = verifier.verify(cyclic)  # must not raise
+
+    assert result.verified is False
+    assert result.binding is None
+    assert "could not be bound" in str(result.guard_results)
+
+
+def test_cyclic_response_zero_guards_also_fail_closed():
+    verifier = ResponseVerifier()
+    cyclic = {"a": {}}
+    cyclic["a"]["cycle"] = cyclic["a"]
+
+    result = verifier.verify(cyclic)  # must not raise
+
+    assert result.verified is False
+    assert "No guards configured" in (result.block_reason or "")
+
+
+def test_binding_cyclic_payload_returns_false():
+    result = ResponseVerifier(default_guards=[ToolGuard()]).verify(
+        {"type": "tool_call", "tool_name": "search", "arguments": {}}
+    )
+    cyclic = {"n": 1}
+    cyclic["self"] = cyclic
+    result.response = cyclic
+    assert result.verify_binding() is False
+
+
+
 def test_forged_result_without_binding_fails_binding_check():
     """(#31) A hand-minted 'verified' result carries no binding."""
     forged = VerificationResult(verified=True, response={"ok": True})
     assert forged.verified is True  # constructible — no attestation
     assert forged.verify_binding() is False
+
+
+def test_binding_invalidated_by_guard_list_tampering():
+    """(#31 review) The digest covers the guard list — altering the bound
+    guards must invalidate the binding, not just the response."""
+    verifier = ResponseVerifier(default_guards=[ToolGuard()])
+    result = verifier.verify(
+        {"type": "tool_call", "tool_name": "search", "arguments": {}}
+    )
+
+    assert result.verify_binding() is True
+    result.binding["guards"] = ["TamperedGuard"]
+    assert result.verify_binding() is False
 
 
 def test_to_dict_includes_binding_and_warning_count():
@@ -266,6 +374,26 @@ def test_budget_valid_report_over_limit_fails():
     assert "Cost exceeds limit" in str(result.details)
 
 
+def test_budget_missing_usage_fails_closed():
+    """(#31 review) A response without usage accounting cannot silently
+    pass a configured cap."""
+    guard = SafetyGuard(max_cost=10.0)
+    result = guard.check({"content": "hi"}, context={})
+    assert result.passed is False
+    assert "cannot be verified" in str(result.details)
+
+
+def test_budget_missing_usage_with_trusted_context_passes():
+    """Trusted-side context accounting satisfies the budget evidence."""
+    guard = SafetyGuard(max_cost=10.0)
+    result = guard.check({"content": "hi"}, context={"total_cost": 5.0})
+    assert result.passed is True
+
+    over = guard.check({"content": "hi"}, context={"total_cost": 15.0})
+    assert over.passed is False
+    assert "Cost exceeds limit" in str(over.details)
+
+
 # ------------------------------------------------------------------ #
 # 6. VerifiedOpenAI guards=None default
 # ------------------------------------------------------------------ #
@@ -278,7 +406,7 @@ def test_verified_openai_warns_without_guards():
 
     from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
-    with patch.object(openai, "OpenAI", lambda **kwargs: object()):
+    with patch.object(openai, "OpenAI", return_value=object()):
         with pytest.warns(UserWarning, match="no guards"):
             VerifiedOpenAI(api_key="sk-test")
 
@@ -290,7 +418,7 @@ def test_verified_openai_no_warning_with_guards():
 
     from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
-    with patch.object(openai, "OpenAI", lambda **kwargs: object()):
+    with patch.object(openai, "OpenAI", return_value=object()):
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             VerifiedOpenAI(api_key="sk-test", guards=[ToolGuard()])

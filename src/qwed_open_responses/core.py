@@ -17,9 +17,14 @@ def _canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _response_digest(response: Any) -> str:
-    """SHA-256 digest of the canonical form of a response (#31)."""
-    return hashlib.sha256(_canonical_json(response).encode("utf-8")).hexdigest()
+def _binding_digest(response: Any, guard_names: List[str]) -> str:
+    """SHA-256 digest over the response AND the guard list (#31 review).
+
+    Covering the guard names too means neither the verified payload nor the
+    verification metadata can be altered without invalidating the binding.
+    """
+    payload = _canonical_json({"guards": guard_names, "response": response})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -59,8 +64,8 @@ class VerificationResult:
         block_reason: Why the response was blocked
         timestamp: When verification occurred
         binding: Tamper-evidence set by ``ResponseVerifier.verify`` —
-            SHA-256 digest of the verified response plus the guard names.
-            ``None`` on hand-constructed results.
+            SHA-256 digest covering the verified response AND the guard
+            names. ``None`` on hand-constructed results.
 
     .. warning::
         ``VerificationResult`` is a plain, publicly constructible dataclass
@@ -68,10 +73,13 @@ class VerificationResult:
         ``VerificationResult(verified=True, ...)``. Only trust results
         produced in-process by your own verifier; treat results received
         from external parties as untrusted. The ``binding`` hash ties a
-        result to the exact response payload, so a result cannot be
-        replayed against, or attached to, a different action without
-        detection — check it with :meth:`verify_binding`. Full attestation
-        (request IDs, signatures) is tracked in qwed-verification #319.
+        result to the exact response payload and guard list, so replaying
+        or reattaching it is detected via :meth:`verify_binding` — but a
+        binding is public, recomputable data and authenticates nothing: an
+        external caller can mint a result with a matching binding. Require
+        trusted in-process provenance or cryptographic attestation (tracked
+        in qwed-verification #319) before acting on results you did not
+        produce yourself.
     """
 
     verified: bool
@@ -95,19 +103,30 @@ class VerificationResult:
         return [g for g in self.guard_results if g.severity == "warning"]
 
     def verify_binding(self, response: Any = None) -> bool:
-        """Recompute the response digest and compare it to ``binding`` (#31).
+        """Recompute the digest and compare it to ``binding`` (#31).
 
         Returns True only when this result carries a binding set by
-        ``ResponseVerifier.verify`` AND the digest matches. Detects a
-        replayed result attached to a different response payload, or a
-        forged result with no binding at all.
+        ``ResponseVerifier.verify`` AND the digest matches. The digest
+        covers the response payload and the guard list, so a result cannot
+        be replayed against a different response, or have its verification
+        metadata (guards) altered, without detection. A hand-forged result
+        with no binding fails immediately.
+
+        Note: this detects mismatches only — it does not authenticate the
+        result itself (a binding is public, recomputable data). See the
+        class docstring for the trust model.
         """
         if not self.binding:
             return False
-        digest = _response_digest(
-            self.response if response is None else response
-        )
-        return digest == self.binding.get("response_sha256")
+        try:
+            expected = _binding_digest(
+                self.response if response is None else response,
+                self.binding.get("guards", []),
+            )
+        except (ValueError, TypeError, RecursionError):
+            # Cyclic / non-serializable payload — cannot match any binding.
+            return False
+        return expected == self.binding.get("digest")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -197,6 +216,21 @@ class ResponseVerifier:
         # Parse response if needed
         parsed_response = self._parse_response(response)
 
+        def _safe_binding(resp: Any, names: List[str]) -> Optional[Dict[str, Any]]:
+            """Binding digest, or ``None`` when the response cannot be bound.
+
+            Cyclic / non-serializable response graphs raise inside the JSON
+            canonicalizer (#31 review, Greptile P1) — callers must fail
+            closed with a failed VerificationResult instead of crashing.
+            """
+            try:
+                return {
+                    "guards": names,
+                    "digest": _binding_digest(resp, names),
+                }
+            except (ValueError, TypeError, RecursionError):
+                return None
+
         # Fail-closed: zero guards must never produce verified=True (#27).
         # Absence of verification is not success — it is the opposite.
         if not guards_to_use:
@@ -216,10 +250,7 @@ class ResponseVerifier:
                 ],
                 blocked=self.strict_mode,
                 block_reason="No guards configured — fail-closed (zero-guard verify).",
-                binding={
-                    "response_sha256": _response_digest(parsed_response),
-                    "guards": [],
-                },
+                binding=_safe_binding(parsed_response, []),
             )
 
         # Run all guards
@@ -270,6 +301,38 @@ class ResponseVerifier:
         # Determine overall verification status
         verified = guards_failed == 0
 
+        guard_names = [getattr(g, "name", type(g).__name__) for g in guards_to_use]
+
+        binding = _safe_binding(parsed_response, guard_names)
+        if binding is None:
+            # #31 review (Greptile P1): a cyclic / non-serializable response
+            # must yield a failed VerificationResult, never an exception.
+            guard_results.append(
+                GuardResult(
+                    guard_name="ResponseVerifier",
+                    passed=False,
+                    message=(
+                        "Response could not be bound — cyclic or "
+                        "non-serializable structure. Failing closed."
+                    ),
+                    severity="error",
+                )
+            )
+            return VerificationResult(
+                verified=False,
+                response=parsed_response,
+                guards_passed=guards_passed,
+                guards_failed=guards_failed + 1,
+                guard_results=guard_results,
+                blocked=self.strict_mode,
+                block_reason=(
+                    "Response could not be bound — cyclic or "
+                    "non-serializable structure."
+                    if self.strict_mode
+                    else None
+                ),
+            )
+
         return VerificationResult(
             verified=verified,
             response=parsed_response,
@@ -278,15 +341,11 @@ class ResponseVerifier:
             guard_results=guard_results,
             blocked=blocked,
             block_reason=block_reason,
-            # #31: tamper-evidence binding — ties this result to the exact
-            # response payload so it cannot be replayed/reattached elsewhere
-            # without detection. Not a signature; see the class docstring.
-            binding={
-                "response_sha256": _response_digest(parsed_response),
-                "guards": [
-                    getattr(g, "name", type(g).__name__) for g in guards_to_use
-                ],
-            },
+            # #31: tamper-evidence binding — the digest covers the response
+            # AND the guard list, so neither can be altered or replayed
+            # elsewhere without detection. Not a signature; see the class
+            # docstring.
+            binding=binding,
         )
 
     def verify_tool_call(

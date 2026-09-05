@@ -9,27 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed — issue #31 correctness batch
 
-- **ToolGuard**: blocklist/allowlist matching is now case-insensitive; the
+- **ToolGuard**: blocklist/allowlist matching is now case-insensitive
+  (casefold on Python, full-folding casefold approximation on TS); the
   default blocklist covers common shells and OS command interpreters
   (`sh`, `powershell`, `pwsh`, `zsh`, `fish`, `cmd.exe`, ...); argument
-  pattern scanning decodes bounded base64 payloads. Pattern scanning is
-  documented as a heuristic, not a security boundary.
+  pattern scanning decodes base64 payloads down to 8-char tokens (short
+  payloads like `cm0gLXJmIC8=` are caught) and respects `/g`-flagged
+  caller regexes (`lastIndex` reset). Custom-validator keys are
+  normalized case-insensitively. Pattern scanning is documented as a
+  heuristic, not a security boundary.
 - **Warning semantics**: `warn_result` now PASSES the guard
   (`passed=True`, `severity="warning"`), matching its documented behavior.
   Warnings are surfaced via `VerificationResult.warnings` and no longer
   flip `verified` to False on their own; verifiers created with
   `allow_warnings=False` escalate warnings to failures/blocks as before.
 - **VerificationResult**: results produced by `ResponseVerifier.verify`
-  now carry a `binding` (SHA-256 digest of the verified response plus the
-  guard names); call `verify_binding()` to detect forged or replayed
-  results. Results remain plain, publicly constructible dataclasses —
-  treat externally supplied results as untrusted (full attestation is
-  tracked in qwed-verification #319).
+  now carry a `binding` — a SHA-256 digest covering the verified response
+  AND the guard list; call `verify_binding()` to detect forged or replayed
+  results, or altered verification metadata. Results remain plain, publicly
+  constructible dataclasses — treat externally supplied results as
+  untrusted (full attestation is tracked in qwed-verification #319).
 - **`verify_structured_output`** raises `ValueError` when called with
   neither a schema nor guards (it previously could verify nothing).
+- **Cyclic / non-serializable responses** fail closed with a failed
+  `VerificationResult` in both runtimes instead of raising from binding
+  generation.
 - **SafetyGuard budget check** validates model-reported `usage` values
-  (must be finite non-negative numbers; anything else fails closed) and
-  documents the trust model for trusted-side accounting.
+  (must be finite non-negative numbers; anything else — including a
+  non-object `usage` container — fails closed); zero-valued caps are
+  enforced; missing usage accounting also fails closed when a cap is
+  configured, unless trusted-side context totals are supplied; documents
+  the trust model.
 - **VerifiedOpenAI** warns loudly when created without guards (fail-closed
   verification would block every response).
 - **Streaming interceptor** warns and documents that

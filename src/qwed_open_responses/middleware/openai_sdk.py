@@ -63,14 +63,16 @@ class VerifiedOpenAI:
         if not guards:
             # #31: the wrapper advertises "automatically verified before
             # returning", but zero guards inherit the empty-verifier
-            # fail-closed semantics — every response fails verification and
-            # raises ResponseBlocked. Surface that loudly instead of
-            # silently producing a wrapper that blocks everything.
+            # fail-closed semantics — every response fails verification.
+            # Surface that loudly instead of silently producing a wrapper
+            # that blocks everything.
             warnings.warn(
                 "VerifiedOpenAI was created with no guards. Verification is "
                 "fail-closed: with zero guards every response fails "
-                "verification and will raise ResponseBlocked. Pass "
-                "guards=[...] to enable verification.",
+                "verification and will raise ResponseBlocked "
+                "(block_on_failure=True) or be returned unverified "
+                "(block_on_failure=False). Pass guards=[...] to enable "
+                "verification.",
                 stacklevel=2,
             )
 
