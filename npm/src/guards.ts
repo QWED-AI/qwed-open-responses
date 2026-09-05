@@ -244,6 +244,8 @@ export class ToolGuard extends BaseGuard {
     private static FULL_FOLD_MAP: Record<string, string> = {
         'ß': 'ss', 'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl',
         'ﬃ': 'ffi', 'ﬄ': 'ffl', 'ﬅ': 'st', 'ﬆ': 'st',
+        // Greek final sigma folds to standard sigma (Python casefold does).
+        'ς': 'σ',
     };
 
     private static casefold(name: string): string {
@@ -262,10 +264,11 @@ export class ToolGuard extends BaseGuard {
         return pattern.test(text);
     }
 
-    // #31: candidate base64 tokens inside serialized arguments (>= 8 chars
-    // so short encoded payloads like "cm0gLXJmIC8=" are caught; padding
-    // optional). Mirrors Python ToolGuard._BASE64_TOKEN_RE.
-    private static BASE64_TOKEN_RE = /[A-Za-z0-9+/]{8,}={0,2}/g;
+    // #31: candidate encoded tokens inside serialized arguments (>= 7
+    // alphabet chars — minimum for a 5-byte decoded payload like "exec(";
+    // padding optional, so "ZXhlYyg=" and "cm0gLXJmIC8=" are caught).
+    // Mirrors Python ToolGuard._ENCODED_TOKEN_RE.
+    private static BASE64_TOKEN_RE = /[A-Za-z0-9+/]{7,}={0,2}/g;
     private static MAX_BASE64_TOKEN_CHARS = 4096;
 
     private static tryBase64Decode(token: string): string | null {

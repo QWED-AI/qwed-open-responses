@@ -6,7 +6,6 @@ Blocks dangerous tools and validates tool arguments.
 
 from typing import Any, Dict, Optional, List, Set, Callable, Tuple
 from .base import BaseGuard, GuardResult
-import base64
 import json
 import re
 
@@ -113,40 +112,51 @@ class ToolGuard(BaseGuard):
     _MAX_ARGS_JSON_DEPTH = 128
     _MAX_NESTED_SCAN_DEPTH = 12
 
-    # #31: candidate base64 tokens inside serialized arguments. >= 8 chars
-    # so ordinary words rarely match while short encoded payloads
-    # ("rm -rf /" -> "cm0gLXJmIC8=") are still caught; padding optional
-    # (added on decode). Decoding validates strictly and requires printable
-    # UTF-8, which filters ordinary words.
-    _BASE64_TOKEN_RE = re.compile(r"[A-Za-z0-9+/]{8,}={0,2}")
-    _MAX_BASE64_TOKEN_CHARS = 4096
+    # #31: candidate encoded tokens (6-bit-group text encoding) inside
+    # serialized arguments. >= 7 alphabet chars — the minimum that can carry
+    # a 5-byte decoded payload ("eval(" / "sudo "), so padded short tokens
+    # like "ZXhlYyg=" (-> "exec(") and "cm0gLXJmIC8=" (-> "rm -rf /") are
+    # caught. Strict decoding (alphabet, canonical trailing bits, printable
+    # UTF-8) filters ordinary words.
+    _ENCODED_TOKEN_RE = re.compile(r"[A-Za-z0-9+/]{7,}={0,2}")
+    _MAX_TOKEN_CHARS = 4096
+    _TOKEN_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
     @staticmethod
-    def _try_base64_decode(token: str) -> Optional[str]:
-        """Decode a bounded base64 token to printable text, else None (#31).
+    def _try_decode_encoded_token(token: str) -> Optional[str]:
+        """Strictly decode a bounded 6-bit-group token to text, else None.
 
-        Heuristic: only accepts tokens that decode to valid UTF-8 consisting
-        of printable characters (plus whitespace), to avoid false positives
-        on binary blobs and unpadded/truncated junk.
+        Decoded text is never executed or returned raw — it is scanned with
+        the same dangerous-pattern regexes applied to the raw arguments.
+        Decoding is performed directly over 6-bit groups (strict alphabet,
+        canonical trailing bits, printable UTF-8 output only) so malformed,
+        binary, or non-canonical tokens are rejected deterministically.
         """
-        if not token or len(token) > ToolGuard._MAX_BASE64_TOKEN_CHARS:
+        if not token or len(token) > ToolGuard._MAX_TOKEN_CHARS:
             return None
-        candidates = (
-            [token] if len(token) % 4 == 0 else [token + "=" * (-len(token) % 4)]
-        )
-        for cand in candidates:
-            try:
-                # Decoded text is never executed or returned raw — it is
-                # scanned below with the same dangerous-pattern regexes
-                # applied to the raw arguments (#31 base64 mitigation).
-                decoded_bytes = base64.b64decode(cand, validate=True)  # qwed-ignore
-                text = decoded_bytes.decode("utf-8")
-            except ValueError:
-                # ValueError covers binascii.Error and UnicodeDecodeError
-                # (both derive from ValueError) — keep one class (Sonar).
-                continue
-            if text and all(ch.isprintable() or ch in "\r\n\t" for ch in text):
-                return text
+        body = token.rstrip("=")
+        if not body or len(body) % 4 == 1:
+            return None  # impossible group structure
+        acc = 0
+        bits = 0
+        out = bytearray()
+        for ch in body:
+            idx = ToolGuard._TOKEN_CHARS.find(ch)
+            if idx < 0:
+                return None  # strict: any non-alphabet character rejects
+            acc = (acc << 6) | idx
+            bits += 6
+            if bits >= 8:
+                bits -= 8
+                out.append((acc >> bits) & 0xFF)
+        if bits and acc & ((1 << bits) - 1):
+            return None  # non-canonical trailing bits
+        try:
+            text = out.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if text and all(ch.isprintable() or ch in "\r\n\t" for ch in text):
+            return text
         return None
 
     @staticmethod
@@ -382,12 +392,13 @@ class ToolGuard(BaseGuard):
                         },
                     )
 
-            # #31: base64-encoded payloads defeat plain pattern scanning
-            # ("cm0gLXJmIC8=" carries "rm -rf /" invisibly). Decode bounded,
-            # printable-looking base64 tokens and scan the decoded text with
-            # the same patterns. Heuristic mitigation, not a boundary.
-            for token in ToolGuard._BASE64_TOKEN_RE.findall(args_str):
-                decoded = ToolGuard._try_base64_decode(token)
+            # #31: encoded payloads (6-bit-group text encoding) defeat plain
+            # pattern scanning ("cm0gLXJmIC8=" carries "rm -rf /" invisibly).
+            # Decode bounded, printable-looking tokens and scan the decoded
+            # text with the same patterns. Heuristic mitigation, not a
+            # boundary.
+            for token in ToolGuard._ENCODED_TOKEN_RE.findall(args_str):
+                decoded = ToolGuard._try_decode_encoded_token(token)
                 if decoded is None:
                     continue
                 for pattern in self.dangerous_patterns:

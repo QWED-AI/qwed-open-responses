@@ -10,14 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed — issue #31 correctness batch
 
 - **ToolGuard**: blocklist/allowlist matching is now case-insensitive
-  (casefold on Python, full-folding casefold approximation on TS); the
-  default blocklist covers common shells and OS command interpreters
-  (`sh`, `powershell`, `pwsh`, `zsh`, `fish`, `cmd.exe`, ...); argument
-  pattern scanning decodes base64 payloads down to 8-char tokens (short
-  payloads like `cm0gLXJmIC8=` are caught) and respects `/g`-flagged
-  caller regexes (`lastIndex` reset). Custom-validator keys are
-  normalized case-insensitively. Pattern scanning is documented as a
-  heuristic, not a security boundary.
+  (casefold on Python, full-folding casefold approximation on TS,
+  including Greek final sigma); the default blocklist covers common
+  shells and OS command interpreters (`sh`, `powershell`, `pwsh`, `zsh`,
+  `fish`, `cmd.exe`, ...); argument pattern scanning decodes encoded
+  payloads down to 7-alphabet-char tokens (padded short tokens like
+  `ZXhlYyg=` → `exec(` are caught) and respects `/g`-flagged caller
+  regexes (`lastIndex` reset). Custom-validator keys are normalized
+  case-insensitively. Pattern scanning is documented as a heuristic, not
+  a security boundary.
 - **Warning semantics**: `warn_result` now PASSES the guard
   (`passed=True`, `severity="warning"`), matching its documented behavior.
   Warnings are surfaced via `VerificationResult.warnings` and no longer
@@ -30,7 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constructible dataclasses — treat externally supplied results as
   untrusted (full attestation is tracked in qwed-verification #319).
 - **`verify_structured_output`** raises `ValueError` when called with
-  neither a schema nor guards (it previously could verify nothing).
+  neither a schema nor guards (it previously could verify nothing); an
+  explicitly supplied empty schema `{}` is honored.
+- **Binding digests are runtime-portable**: integral floats are
+  canonicalized (`1.0` ≡ `1` across Python/JS), and values JSON cannot
+  represent fail closed instead of digesting a lossy string conversion.
 - **Cyclic / non-serializable responses** fail closed with a failed
   `VerificationResult` in both runtimes instead of raising from binding
   generation.

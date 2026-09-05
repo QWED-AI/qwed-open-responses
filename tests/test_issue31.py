@@ -383,6 +383,70 @@ def test_budget_missing_usage_fails_closed():
     assert "cannot be verified" in str(result.details)
 
 
+def test_budget_malformed_usage_reported_once():
+    """(Sentry) Both caps set + malformed usage -> a single issue, not two."""
+    guard = SafetyGuard(max_cost=10.0, max_tokens=100)
+    result = guard.check({"usage": "unknown"}, context={})
+    assert result.passed is False
+    budget_issues = [
+        i for i in result.details["issues"] if i.get("type") == "budget"
+    ]
+    assert len(budget_issues) == 1
+    assert len(budget_issues[0]["details"]) == 1
+
+
+def test_verify_structured_output_empty_schema_still_verifies():
+    """(#31 review) {} is a valid JSON Schema — it must register
+    SchemaGuard instead of falling through to zero-guard failure."""
+    verifier = ResponseVerifier()
+    result = verifier.verify_structured_output(output={"anything": 1}, schema={})
+    assert result.verified is True
+    assert result.binding["guards"] == ["SchemaGuard"]
+
+
+def test_base64_short_padded_payload_blocked():
+    """(#31 review) 'ZXhlYyg=' (7 alphabet chars + padding) decodes to
+    'exec(' and must be blocked."""
+    guard = ToolGuard()
+    result = guard.check(
+        {"type": "tool_call", "tool_name": "run", "arguments": {"cmd": "ZXhlYyg="}}
+    )
+    assert result.passed is False
+    assert result.details.get("encoding") == "base64"
+
+
+def test_binding_non_serializable_response_fails_closed():
+    """(#31 review) default=str removed: values JSON cannot represent fail
+    closed (binding=None) instead of digesting a lossy str() that could
+    mask later mutations."""
+    class _Opaque:
+        def __str__(self):
+            return "constant"
+
+    verifier = ResponseVerifier(default_guards=[ToolGuard()])
+    result = verifier.verify({"data": _Opaque()})
+    assert result.verified is False
+    assert result.binding is None
+
+
+def test_binding_digest_integral_float_parity():
+    """(#31 review) 1.0 and 1 must produce the same digest so bindings are
+    portable across runtimes (JS cannot distinguish them)."""
+    from qwed_open_responses.core import _binding_digest
+
+    assert _binding_digest({"cost": 1.0}, ["G"]) == _binding_digest({"cost": 1}, ["G"])
+
+
+def test_greek_final_sigma_casefold_parity():
+    """(#31 review) Final sigma folds to standard sigma — allowed-list
+    lookups must treat ος / ΟΣ / οΣ identically (all casefold to ος→ος)."""
+    guard = ToolGuard(allowed_tools=["ος"], use_default_blocklist=False)
+    assert guard.check({"type": "tool_call", "tool_name": "ΟΣ", "arguments": {}}).passed
+    assert guard.check({"type": "tool_call", "tool_name": "οΣ", "arguments": {}}).passed
+    # Final-form sigma in the call must fold to standard sigma too.
+    assert guard.check({"type": "tool_call", "tool_name": "ος", "arguments": {}}).passed
+
+
 def test_budget_missing_usage_with_trusted_context_passes():
     """Trusted-side context accounting satisfies the budget evidence."""
     guard = SafetyGuard(max_cost=10.0)
@@ -392,6 +456,7 @@ def test_budget_missing_usage_with_trusted_context_passes():
     over = guard.check({"content": "hi"}, context={"total_cost": 15.0})
     assert over.passed is False
     assert "Cost exceeds limit" in str(over.details)
+
 
 
 # ------------------------------------------------------------------ #

@@ -13,8 +13,29 @@ import json
 
 
 def _canonical_json(obj: Any) -> str:
-    """Canonical JSON serialization for digest computation (#31)."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+    """Canonical JSON serialization for digest computation (#31).
+
+    No ``default=str``: values JSON cannot represent must fail closed
+    (TypeError -> ``_safe_binding`` returns None) instead of masking
+    mutations behind a lossy string conversion.
+    """
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def _canonicalize_numbers(obj: Any) -> Any:
+    """Collapse integral floats to ints so digests are runtime-portable.
+
+    Python serializes ``1.0`` as ``1.0`` while JavaScript emits ``1`` for
+    the same value — binding digests must match across runtimes (#31
+    review). Non-integral floats keep their repr in both runtimes.
+    """
+    if isinstance(obj, float) and obj.is_integer() and abs(obj) < 1e15:
+        return int(obj)
+    if isinstance(obj, dict):
+        return {k: _canonicalize_numbers(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_canonicalize_numbers(v) for v in obj]
+    return obj
 
 
 def _binding_digest(response: Any, guard_names: List[str]) -> str:
@@ -23,7 +44,9 @@ def _binding_digest(response: Any, guard_names: List[str]) -> str:
     Covering the guard names too means neither the verified payload nor the
     verification metadata can be altered without invalidating the binding.
     """
-    payload = _canonical_json({"guards": guard_names, "response": response})
+    payload = _canonical_json(
+        _canonicalize_numbers({"guards": guard_names, "response": response})
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -405,7 +428,9 @@ class ResponseVerifier:
 
         guards_list = list(guards) if guards else []
 
-        if schema:
+        # {} is a valid JSON Schema (matches anything) — distinguish a
+        # supplied schema from an omitted one (#31 review).
+        if schema is not None:
             guards_list.insert(0, SchemaGuard(schema=schema))
 
         structured = {
