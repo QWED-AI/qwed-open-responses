@@ -576,8 +576,17 @@ class SafetyGuard(BaseGuard):
         Trust model: ``reported`` comes from the model output (untrusted) —
         it must be a finite non-negative number; missing accounting fails
         closed unless the caller supplies trusted-side totals
-        (``context[trusted_key]``).
+        (``context[trusted_key]``). Even trusted-side totals are validated:
+        a non-numeric context value must fail closed, not crash the guard
+        with a TypeError (Sentry).
         """
+        if trusted_total is not None and not SafetyGuard._is_usable_amount(
+            trusted_total
+        ):
+            return (
+                f"Context {trusted_key} is not a finite non-negative number "
+                "— failing closed."
+            )
         if reported is None:
             if trusted_total is None:
                 # #31 review: missing accounting must not silently pass a

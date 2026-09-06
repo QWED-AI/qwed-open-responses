@@ -458,6 +458,30 @@ def test_binding_non_finite_value_fails_closed():
     assert result.binding is None
 
 
+def test_canonical_json_small_float_js_format():
+    """(#31 review) Non-integral floats must serialize with JavaScript
+    Number::toString semantics (Python '1e-05' vs JS '0.00001',
+    '1e-07' vs '1e-7')."""
+    from qwed_open_responses.core import _canonical_json
+
+    assert '"a":0.00001' in _canonical_json({"a": 1e-5})
+    assert '"a":1e-7' in _canonical_json({"a": 1e-7})
+    assert '"a":1.5e-8' in _canonical_json({"a": 1.5e-8})
+    assert '"a":123.456' in _canonical_json({"a": 123.456})
+    assert '"a":0.5' in _canonical_json({"a": 0.5})
+    assert '"a":1e+21' in _canonical_json({"a": 1e21})
+    assert '"a":0.0001' in _canonical_json({"a": 0.0001})
+
+
+def test_budget_non_numeric_trusted_context_fails_closed():
+    """(Sentry) A non-numeric trusted context total must fail closed, not
+    crash the guard with a TypeError."""
+    guard = SafetyGuard(max_cost=10.0)
+    result = guard.check({"usage": {"cost": 1.0}}, context={"total_cost": "5"})
+    assert result.passed is False
+    assert "not a finite non-negative" in str(result.details)
+
+
 def test_greek_final_sigma_casefold_parity():
     """(#31 review) Final sigma folds to standard sigma — allowed-list
     lookups must treat ος / ΟΣ / οΣ identically (all casefold to ος→ος)."""

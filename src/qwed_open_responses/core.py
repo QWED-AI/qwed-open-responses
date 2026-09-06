@@ -13,37 +13,82 @@ import json
 import math
 
 
+from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from datetime import datetime
+from uuid import uuid4
+import hashlib
+import json
+import math
+
+
+def _format_number_js(value: float) -> str:
+    """Format a float with JavaScript ``Number::toString`` semantics.
+
+    Python repr and JS diverge for extreme magnitudes: Python emits
+    ``1e-05`` where JS emits ``0.00001``, and pads exponents (``1e-07`` vs
+    ``1e-7``). Both use shortest round-trip digits, so Python's repr is
+    re-rendered with JS's fixed/exponential thresholds (#31 review):
+    fixed notation for ``1e-6 <= |x| < 1e21``, exponential otherwise with
+    an unpadded exponent.
+    """
+    rep = repr(value)
+    sign = ""
+    if rep.startswith("-"):
+        sign, rep = "-", rep[1:]
+    if "e" in rep:
+        mantissa, _, exp_text = rep.partition("e")
+        shift = int(exp_text)
+    else:
+        mantissa, shift = rep, 0
+    int_part, _, frac_part = mantissa.partition(".")
+    digits = (int_part + frac_part).lstrip("0") or "0"
+    dec_exp = len(int_part) - (len(int_part + frac_part) - len(digits)) + shift
+    if -5 <= dec_exp <= 21:
+        # Fixed notation.
+        if dec_exp <= 0:
+            return sign + "0." + "0" * (-dec_exp) + digits
+        if len(digits) <= dec_exp:
+            return sign + digits + "0" * (dec_exp - len(digits))
+        return sign + digits[:dec_exp] + "." + digits[dec_exp:]
+    # Exponential notation: one leading digit, then the unpadded exponent.
+    mantissa_out = digits[0] + ("." + digits[1:] if len(digits) > 1 else "")
+    exp1 = dec_exp - 1
+    return sign + mantissa_out + "e" + ("+" if exp1 >= 0 else "-") + str(abs(exp1))
+
+
 def _canonical_json(obj: Any) -> str:
     """Canonical JSON serialization for digest computation (#31).
 
-    No ``default=str``: values JSON cannot represent must fail closed
-    (TypeError -> ``_safe_binding`` returns None) instead of masking
-    mutations behind a lossy string conversion.
+    Floats are rendered with JavaScript ``Number::toString`` semantics via
+    placeholder substitution (Python repr diverges: ``1e-05`` vs
+    ``0.00001``, ``1e-07`` vs ``1e-7`` — binding digests must match across
+    runtimes). No ``default=str``: values JSON cannot represent fail
+    closed (TypeError -> ``_safe_binding`` returns None) instead of
+    masking mutations behind a lossy string conversion.
     """
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    marker = f"__qwedf{uuid4().hex[:12]}_"
+    substitutions: Dict[str, str] = {}
 
+    def _walk(node: Any) -> Any:
+        if isinstance(node, float):
+            if not math.isfinite(node):
+                raise TypeError("Non-finite numbers cannot be canonicalized")
+            if node.is_integer() and abs(node) < 1e21:
+                return int(node)
+            key = f"{marker}{len(substitutions)}"
+            substitutions[key] = _format_number_js(node)
+            return key
+        if isinstance(node, dict):
+            return {key: _walk(value) for key, value in node.items()}
+        if isinstance(node, (list, tuple)):
+            return [_walk(item) for item in node]
+        return node
 
-def _canonicalize_numbers(obj: Any) -> Any:
-    """Normalize numbers so binding digests are runtime-portable (#31 review).
-
-    - Integral floats become ints: Python prints ``1e16`` as ``1e+16``
-      while JavaScript prints ``10000000000000000`` — integer form matches
-      below JavaScript's 1e21 exponential switch (at/above it both emit
-      ``1e+21``, so larger integral floats stay floats).
-    - Non-finite floats raise: Python would emit ``NaN``/``Infinity`` while
-      JavaScript emits ``null`` — parity is impossible, so fail closed
-      (TypeError -> ``_safe_binding`` -> ``binding=None``).
-    """
-    if isinstance(obj, float):
-        if not math.isfinite(obj):
-            raise TypeError("Non-finite numbers cannot be canonicalized")
-        if obj.is_integer() and abs(obj) < 1e21:
-            return int(obj)
-    if isinstance(obj, dict):
-        return {k: _canonicalize_numbers(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_canonicalize_numbers(v) for v in obj]
-    return obj
+    serialized = json.dumps(_walk(obj), sort_keys=True, separators=(",", ":"))
+    for key, number_text in substitutions.items():
+        serialized = serialized.replace(f'"{key}"', number_text)
+    return serialized
 
 
 def _binding_digest(response: Any, guard_names: List[str]) -> str:
@@ -52,9 +97,7 @@ def _binding_digest(response: Any, guard_names: List[str]) -> str:
     Covering the guard names too means neither the verified payload nor the
     verification metadata can be altered without invalidating the binding.
     """
-    payload = _canonical_json(
-        _canonicalize_numbers({"guards": guard_names, "response": response})
-    )
+    payload = _canonical_json({"guards": guard_names, "response": response})
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
