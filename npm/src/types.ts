@@ -26,6 +26,13 @@ export interface VerificationResult {
     guardsPassed: number;
     guardsFailed: number;
     guardResults: GuardResult[];
+    /**
+     * Guard results that passed with a warning (#31, mirrors the Python
+     * `warnings` property). Warnings are a separate visible state — they
+     * neither fail `verified` nor block, unless the verifier was created
+     * with allowWarnings=false.
+     */
+    warnings: GuardResult[];
     blocked: boolean;
     blockReason?: string;
     timestamp: string;
