@@ -278,6 +278,7 @@ class VerificationResult:
             "blocked": self.blocked,
             "block_reason": self.block_reason,
             "timestamp": self.timestamp,
+            "request_id": self.request_id,
             "binding": self.binding,
         }
 

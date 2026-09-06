@@ -20,13 +20,69 @@ class TestMathGuardNoVerifiableMath:
         assert result.severity == "warning"
         assert "No verifiable math" in result.message
 
-    def test_lone_total_without_components_fails_as_mismatch(self):
-        # a lone total verifies against zero-defaulted components (mirrors
-        # the npm guard) — 999 vs 0 is a mismatch, not a vacuous pass
+    def test_lone_total_without_components_fails(self):
+        # a lone total with NO components verifies nothing (CodeAnt on
+        # PR #36: zero-defaulting made {"net": 0} pass vacuously)
         guard = MathGuard()
         result = guard.check({"output": {"total": 999}})
         assert result.passed is False
-        assert result.details["errors"][0].startswith("total mismatch")
+        assert result.severity == "warning"
+        assert "No verifiable math" in result.message
+
+    def test_lone_zero_net_fails(self):
+        # the zero-default edge: {"net": 0} with no components must not
+        # pass just because 0 == 0
+        guard = MathGuard()
+        result = guard.check({"output": {"net": 0}})
+        assert result.passed is False
+        assert "No verifiable math" in result.message
+
+    def test_supplied_shipping_mismatch_fails(self):
+        # Greptile P1 on PR #36: subtotal 100 + tax 8 + shipping 10 = 118,
+        # but the receipt claims 108 — the discount-less formula must NOT
+        # launder the mismatch by defaulting discount to 0
+        guard = MathGuard()
+        result = guard.check(
+            {"output": {"subtotal": 100, "tax": 8, "shipping": 10, "total": 108}}
+        )
+        assert result.passed is False
+        assert "total mismatch" in result.details["errors"][0]
+
+    def test_full_formula_with_discount_passes(self):
+        guard = MathGuard()
+        result = guard.check(
+            {
+                "output": {
+                    "subtotal": 100,
+                    "tax": 8,
+                    "shipping": 10,
+                    "discount": 10,
+                    "total": 108,
+                }
+            }
+        )
+        assert result.passed is True
+
+    def test_percentage_mismatch_fails(self):
+        # Greptile P1 on PR #36: found-any was conflated with ok —
+        # {tax_percent: 10, tax: 100, tax_amount: 50} verified silently
+        guard = MathGuard()
+        result = guard.check(
+            {"output": {"tax_percent": 10, "tax": 100, "tax_amount": 50}}
+        )
+        assert result.passed is False
+        assert any("Percentage" in e for e in result.details["errors"])
+
+    def test_non_numeric_math_field_fails_as_guard_result(self):
+        # CodeRabbit on PR #36: float('invalid') escaped check() as an
+        # exception; direct callers must receive a failing GuardResult
+        guard = MathGuard()
+        result = guard.check(
+            {"output": {"subtotal": "invalid", "tax": 8, "total": 108}}
+        )
+        assert result.passed is False
+        assert result.severity == "error"
+        assert "non-numeric" in result.message
 
     def test_prose_without_math_fails(self):
         guard = MathGuard()

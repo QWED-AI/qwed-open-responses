@@ -138,7 +138,7 @@ export class ResponseVerifier {
                     severity: 'error',
                 }],
                 warnings: [],
-                requestId: context?.requestId,
+                requestId: context?.request_id ?? context?.requestId,
                 blocked: this.strictMode,
                 blockReason: 'No guards configured — fail-closed (zero-guard verify).',
                 timestamp: new Date().toISOString(),
@@ -217,7 +217,7 @@ export class ResponseVerifier {
                 guardsFailed: guardsFailed + 1,
                 guardResults,
                 warnings: guardResults.filter((r) => r.passed && r.severity === 'warning'),
-                requestId: context?.requestId,
+                requestId: context?.request_id ?? context?.requestId,
                 blocked: this.strictMode,
                 blockReason: this.strictMode
                     ? 'Response could not be bound — cyclic or non-serializable structure.'
@@ -233,7 +233,7 @@ export class ResponseVerifier {
             guardsFailed,
             guardResults,
             warnings: guardResults.filter((r) => r.passed && r.severity === 'warning'),
-            requestId: context?.requestId,
+            requestId: context?.request_id ?? context?.requestId,
             blocked,
             blockReason,
             timestamp: new Date().toISOString(),

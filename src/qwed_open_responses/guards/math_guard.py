@@ -61,45 +61,30 @@ class MathGuard(BaseGuard):
         context: Optional[Dict[str, Any]] = None,
     ) -> GuardResult:
         """Verify math in response."""
-
         data = response.get("output", response)
         errors: List[str] = []
-        verifiable = False
+        # Configured custom rules are an explicit operator assertion that
+        # the response contains verifiable content — the operator owns each
+        # rule's applicability logic, so their presence marks the response
+        # verifiable for every shape (CodeAnt on PR #36, refuted).
+        verifiable = bool(self.custom_rules)
 
-        # Check for common math patterns — only shapes the guard can
-        # actually verify count as verifiable math (issue #32: a vacuous
-        # pass on arbitrary shapes hid unverifiable responses)
         if isinstance(data, dict):
-            if self.verify_totals and self._totals_applicable(data):
-                verifiable = True
-                # the TOTAL_PATTERNS are alternative formulas: the response
-                # verifies if ANY applicable pattern checks out (a receipt
-                # with shipping legitimately mismatches the discount-less
-                # formula)
-                total_errors, totals_ok = self._verify_totals(data)
-                if not totals_ok:
-                    errors.extend(total_errors)
-
-            if self.verify_percentages and self._percentages_applicable(data):
-                verifiable = True
-                pct_errors, pct_ok = self._verify_percentages(data)
-                if not pct_ok:
-                    errors.extend(pct_errors)
-
-            if self.custom_rules:
-                verifiable = True
-
-        # Check text content for inline calculations
-        elif isinstance(data, str):
-            if self._CALC_PATTERN.search(data):
-                verifiable = True
-                errors.extend(self._verify_inline_calculations(data))
-
-        # Run custom rules
-        if self.custom_rules:
-            for rule in self.custom_rules:
-                rule_errors = self._run_custom_rule(rule, data)
-                errors.extend(rule_errors)
+            try:
+                verifiable = self._verify_dict_math(data, errors) or verifiable
+            except (ValueError, TypeError):
+                # float("invalid") on a supplied math field: fail the guard
+                # with a GuardResult instead of escaping to the verifier's
+                # generic exception handler (CodeRabbit on PR #36)
+                return self.fail_result(
+                    message="Math fields contain non-numeric values",
+                    severity="error",
+                )
+        elif isinstance(data, str) and self._CALC_PATTERN.search(data):
+            # merged condition (Sonar): the bounded-pattern search gates
+            # the inline-calculation verifier
+            verifiable = True
+            errors.extend(self._verify_inline_calculations(data))
 
         if errors:
             return self.fail_result(
@@ -121,31 +106,83 @@ class MathGuard(BaseGuard):
     # Common total patterns (issue #32: hoisted so applicability detection
     # and verification share one source of truth)
     TOTAL_PATTERNS = [
-        # (total_field, component_fields, operation)
-        ("total", ["subtotal", "tax", "shipping"], "add"),
-        ("total", ["subtotal", "-discount", "tax"], "add"),
+        # ONE canonical total formula (Greptile P1 on PR #36: the two
+        # overlapping "total" formulas let a receipt with supplied shipping
+        # pass via the discount-less variant — total = 108 vs components
+        # totaling 118). net/balance are distinct vocabularies, so
+        # any-verifies remains sound across them.
+        ("total", ["subtotal", "tax", "shipping", "-discount"], "add"),
         ("net", ["gross", "-deductions"], "add"),
         ("balance", ["credits", "-debits"], "add"),
     ]
 
+    # Bounded quantifiers (Sonar on PR #36): the unbounded version had
+    # super-linear search behavior on non-matching text. 30 digits and 10
+    # whitespace characters cover every realistic input while capping the
+    # backtracking work.
     _CALC_PATTERN = re.compile(
-        r"(\d+(?:\.\d+)?)\s*([\+\-\*\/])\s*(\d+(?:\.\d+)?)\s*=\s*(\d+(?:\.\d+)?)"
+        r"(\d{1,30}(?:\.\d{1,30})?)\s{0,10}([\+\-\*\/])\s{0,10}"
+        r"(\d{1,30}(?:\.\d{1,30})?)\s{0,10}=\s{0,10}(\d{1,30}(?:\.\d{1,30})?)"
     )
+    _PERCENT_SUFFIXES = ("_percent", "_rate")
+
+    def _verify_dict_math(self, data: Dict, errors: List[str]) -> bool:
+        """Verify dict-shaped responses. Returns True when any check
+        applied (verifiable math present)."""
+        verifiable = False
+
+        if self.verify_totals and self._totals_applicable(data):
+            verifiable = True
+            # the TOTAL_PATTERNS are alternative formulas: the response
+            # verifies if ANY applicable pattern checks out (a receipt
+            # with shipping legitimately mismatches the discount-less
+            # formula)
+            total_errors, totals_ok = self._verify_totals(data)
+            if not totals_ok:
+                errors.extend(total_errors)
+
+        if self.verify_percentages and self._percentages_applicable(data):
+            verifiable = True
+            pct_errors, pct_ok = self._verify_percentages(data)
+            if not pct_ok:
+                errors.extend(pct_errors)
+
+        return verifiable
 
     def _totals_applicable(self, data: Dict) -> bool:
-        """True when a totals pattern's total field is present — missing
-        components are treated as zero, mirroring the npm guard."""
-        return any(total_field in data for total_field, _c, _op in self.TOTAL_PATTERNS)
+        """True when a totals pattern's total field AND at least one
+        component are present — a lone total with no components verifies
+        nothing (CodeAnt on PR #36: zero-defaulting made {"net": 0} pass
+        vacuously)."""
+        for total_field, components, _op in self.TOTAL_PATTERNS:
+            if total_field not in data:
+                continue
+            if any(
+                (comp[1:] if comp.startswith("-") else comp) in data
+                for comp in components
+            ):
+                return True
+        return False
 
     def _percentages_applicable(self, data: Dict) -> bool:
         """True when a percentage shape is fully present (rate key + base +
         amount), mirroring what _verify_percentages can actually check."""
         for key in data:
-            if key.endswith("_percent") or key.endswith("_rate"):
+            if key.endswith(self._PERCENT_SUFFIXES):
                 base_key = key.replace("_percent", "").replace("_rate", "")
                 if base_key in data and base_key + "_amount" in data:
                     return True
         return False
+
+    def _pattern_calculated(self, data: Dict, components: List[str]) -> float:
+        """Sum a totals pattern's components — missing components count as
+        zero, mirroring the npm guard."""
+        calculated = 0.0
+        for comp in components:
+            field = comp[1:] if comp.startswith("-") else comp
+            value = float(data[field]) if field in data else 0.0
+            calculated += -value if comp.startswith("-") else value
+        return calculated
 
     def _verify_totals(self, data: Dict) -> tuple:
         """Verify totals against their components (missing components count
@@ -155,15 +192,17 @@ class MathGuard(BaseGuard):
         errors = []
         verified_any = False
 
-        for total_field, components, op in self.TOTAL_PATTERNS:
+        for total_field, components, _op in self.TOTAL_PATTERNS:
             if total_field not in data:
                 continue
+            if not any(
+                (comp[1:] if comp.startswith("-") else comp) in data
+                for comp in components
+            ):
+                # a lone total with no components verifies nothing
+                continue
             expected_total = float(data[total_field])
-            calculated = 0.0
-            for comp in components:
-                field = comp[1:] if comp.startswith("-") else comp
-                value = float(data[field]) if field in data else 0.0
-                calculated += -value if comp.startswith("-") else value
+            calculated = self._pattern_calculated(data, components)
 
             if abs(calculated - expected_total) <= self.tolerance:
                 verified_any = True
@@ -183,16 +222,14 @@ class MathGuard(BaseGuard):
         # Look for percentage patterns
         for key, value in data.items():
             # Find fields that might be percentages
-            if key.endswith("_percent") or key.endswith("_rate"):
+            if key.endswith(self._PERCENT_SUFFIXES):
                 base_key = key.replace("_percent", "").replace("_rate", "")
-                amount_key = base_key + "_amount"
-
-                if base_key in data and amount_key in data:
+                if base_key in data and base_key + "_amount" in data:
                     found_any = True
                     base = float(data[base_key])
                     rate = float(value) / 100.0
                     expected_amount = base * rate
-                    actual = float(data[amount_key])
+                    actual = float(data[base_key + "_amount"])
 
                     if abs(expected_amount - actual) > self.tolerance:
                         errors.append(
@@ -200,7 +237,10 @@ class MathGuard(BaseGuard):
                             f"should be {expected_amount}, got {actual}"
                         )
 
-        return errors, found_any
+        # found_any is APPLICABILITY, not success (Greptile P1 on PR #36:
+        # treating it as ok silently ignored percentage mismatches —
+        # {tax_percent: 10, tax: 100, tax_amount: 50} verified)
+        return errors, found_any and not errors
 
     def _verify_inline_calculations(self, text: str) -> List[str]:
         """Verify calculations written in text."""
