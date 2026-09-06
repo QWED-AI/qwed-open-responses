@@ -99,10 +99,17 @@ class BaseGuard(ABC):
         message: str,
         details: Optional[Dict[str, Any]] = None,
     ) -> GuardResult:
-        """Create a warning result (passes but with warning)."""
+        """Create a warning result (issue #31).
+
+        A warning PASSES the guard: ``verified`` reflects whether any check
+        *failed*, while the warning is carried as a separate visible state
+        via ``severity == "warning"`` (and ``VerificationResult.warnings``).
+        A verifier configured with ``allow_warnings=False`` escalates
+        warnings to failures, and strict mode then blocks on them.
+        """
         return GuardResult(
             guard_name=self.name,
-            passed=False,
+            passed=True,
             message=message,
             details=details,
             severity="warning",

@@ -8,7 +8,152 @@ It orchestrates multiple guards to ensure responses are safe and correct.
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
+import hashlib
 import json
+import math
+
+
+def _format_number_js(value: float) -> str:
+    """Format a float with JavaScript ``Number::toString`` semantics.
+
+    Python repr and JS diverge for extreme magnitudes: Python emits
+    ``1e-05`` where JS emits ``0.00001``, and pads exponents (``1e-07`` vs
+    ``1e-7``). Both use shortest round-trip digits, so Python's repr is
+    re-rendered with JS's fixed/exponential thresholds (#31 review):
+    fixed notation for ``1e-6 <= |x| < 1e21``, exponential otherwise with
+    an unpadded exponent.
+    """
+    rep = repr(value)
+    # JS has no ".0" — integral floats print as bare integers, but the
+    # shortest repr DIGITS must still come from repr: for |x| >= 2^53 the
+    # exact int can be LONGER than the shortest round-trip digits (JS
+    # String(9.999999999999999e20) is "999999999999999900000", while
+    # repr(int(x)) is the 21-digit exact binary value — Sentry on PR #35).
+    if rep.endswith(".0"):
+        rep = rep[:-2]
+    if rep in ("0", "-0"):
+        # JS String(-0) === "0"
+        return "0"
+    sign = ""
+    if rep.startswith("-"):
+        sign, rep = "-", rep[1:]
+    if "e" in rep:
+        mantissa, _, exp_text = rep.partition("e")
+        shift = int(exp_text)
+    else:
+        mantissa, shift = rep, 0
+    int_part, _, frac_part = mantissa.partition(".")
+    digits = (int_part + frac_part).lstrip("0") or "0"
+    dec_exp = len(int_part) - (len(int_part + frac_part) - len(digits)) + shift
+    if -5 <= dec_exp <= 21:
+        # Fixed notation.
+        if dec_exp <= 0:
+            return sign + "0." + "0" * (-dec_exp) + digits
+        if len(digits) <= dec_exp:
+            return sign + digits + "0" * (dec_exp - len(digits))
+        return sign + digits[:dec_exp] + "." + digits[dec_exp:]
+    # Exponential notation: one leading digit, then the unpadded exponent.
+    mantissa_out = digits[0] + ("." + digits[1:] if len(digits) > 1 else "")
+    exp1 = dec_exp - 1
+    return sign + mantissa_out + "e" + ("+" if exp1 >= 0 else "-") + str(abs(exp1))
+
+
+def _emit_scalar(node: Any) -> str:
+    """Emit a JSON scalar; unsupported types fail closed with TypeError."""
+    if node is True:
+        return "true"
+    if node is False:
+        return "false"
+    if node is None:
+        return "null"
+    if isinstance(node, float):
+        if not math.isfinite(node):
+            raise TypeError("Non-finite numbers cannot be canonicalized")
+        # ALL finite floats go through the JS toString port — the previous
+        # repr(int(node)) shortcut emitted the EXACT binary integer for
+        # integral floats >= 2^53, whose shortest round-trip digits are
+        # shorter (Sentry on PR #35: 9.999999999999999e20 -> JS
+        # "999999999999999900000", exact int "999999999999999868928")
+        return _format_number_js(node)
+    if isinstance(node, int):
+        # JS safe-integer range: JSON.parse in the TS runtime rounds
+        # integers beyond +/- (2^53 - 1) to the nearest double, so the two
+        # runtimes would compute different binding digests for the same
+        # payload (CodeRabbit on PR #35). Fail closed rather than coerce.
+        if abs(node) > 9007199254740991:
+            raise TypeError(
+                "Integer exceeds the JavaScript safe-integer range "
+                "(+/- 2^53 - 1) and cannot be canonicalized"
+            )
+        return repr(node)
+    if isinstance(node, str):
+        return json.dumps(node)
+    raise TypeError(f"Object of type {type(node).__name__} is not JSON serializable")
+
+
+def _emit_object(node: dict) -> str:
+    """Emit a dict with keys sorted by UTF-16 code units.
+
+    JavaScript's Object.keys(...).sort() orders by UTF-16 code units, so
+    astral-plane keys (surrogate pairs, lead unit 0xD800-0xDBFF) sort
+    BEFORE BMP keys above U+D7FF — plain code-point sorting in Python
+    would diverge and break cross-runtime binding digests (CodeRabbit on
+    PR #35). Lone surrogates survive via surrogatepass; json.dumps keeps
+    its default ensure_ascii=True, matching the npm escapeNonAscii escapes.
+    """
+    entries = sorted(
+        ((str(key), value) for key, value in node.items()),
+        key=lambda entry: entry[0].encode("utf-16-be", "surrogatepass"),
+    )
+    return (
+        "{"
+        + ",".join(f"{json.dumps(key)}:{_emit(value)}" for key, value in entries)
+        + "}"
+    )
+
+
+def _emit_array(node: Any) -> str:
+    """Emit a list/tuple as a JSON array."""
+    return "[" + ",".join(_emit(item) for item in node) + "]"
+
+
+def _emit(node: Any) -> str:
+    """Dispatch to the container/scalar emitter; unsupported values fail
+    closed with TypeError."""
+    if isinstance(node, dict):
+        return _emit_object(node)
+    if isinstance(node, (list, tuple)):
+        return _emit_array(node)
+    return _emit_scalar(node)
+
+
+def _canonical_json(obj: Any) -> str:
+    """Canonical JSON serialization for digest computation (#31).
+
+    Emitted directly (rather than via ``json.dumps``) so that:
+
+    - floats render with JavaScript ``Number::toString`` semantics —
+      Python repr diverges (``1e-05`` vs ``0.00001``, ``1e-07`` vs
+      ``1e-7``) and binding digests must match across runtimes;
+    - keys sort by UTF-16 code units, matching the npm canonicalizer's
+      Object.keys(...).sort() even for astral-plane keys;
+    - non-finite numbers and non-JSON-serializable values fail closed
+      with TypeError (-> ``_safe_binding`` returns None) instead of
+      masking mutations behind a lossy string conversion.
+
+    No random hex markers or substitutions are involved.
+    """
+    return _emit(obj)
+
+
+def _binding_digest(response: Any, guard_names: List[str]) -> str:
+    """SHA-256 digest over the response AND the guard list (#31 review).
+
+    Covering the guard names too means neither the verified payload nor the
+    verification metadata can be altered without invalidating the binding.
+    """
+    payload = _canonical_json({"guards": guard_names, "response": response})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -37,13 +182,33 @@ class VerificationResult:
     Result of verifying an AI response.
 
     Attributes:
-        verified: True if all guards passed
+        verified: True if all guards passed (warnings are not failures
+            unless the verifier was created with ``allow_warnings=False``;
+            see ``warnings``)
         response: The original response (potentially modified)
         guards_passed: Number of guards that passed
         guards_failed: Number of guards that failed
         guard_results: Individual results from each guard
         blocked: True if response was blocked (critical failure)
+        block_reason: Why the response was blocked
         timestamp: When verification occurred
+        binding: Tamper-evidence set by ``ResponseVerifier.verify`` —
+            SHA-256 digest covering the verified response AND the guard
+            names. ``None`` on hand-constructed results.
+
+    .. warning::
+        ``VerificationResult`` is a plain, publicly constructible dataclass
+        (#31) and carries **no cryptographic attestation**: anyone can mint
+        ``VerificationResult(verified=True, ...)``. Only trust results
+        produced in-process by your own verifier; treat results received
+        from external parties as untrusted. The ``binding`` hash ties a
+        result to the exact response payload and guard list, so replaying
+        or reattaching it is detected via :meth:`verify_binding` — but a
+        binding is public, recomputable data and authenticates nothing: an
+        external caller can mint a result with a matching binding. Require
+        trusted in-process provenance or cryptographic attestation (tracked
+        in qwed-verification #319) before acting on results you did not
+        produce yourself.
     """
 
     verified: bool
@@ -54,16 +219,58 @@ class VerificationResult:
     blocked: bool = False
     block_reason: Optional[str] = None
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    binding: Optional[Dict[str, Any]] = None
+
+    @property
+    def warnings(self) -> List[GuardResult]:
+        """Guard results that passed with a warning (#31).
+
+        Warnings are a separate visible state — they neither fail
+        ``verified`` nor block, unless the verifier was created with
+        ``allow_warnings=False``.
+        """
+        # Sentry on PR #35: the filter must match the documented contract —
+        # fail_result(severity="warning") exists, so severity alone would
+        # misclassify FAILING guards as warnings
+        return [g for g in self.guard_results if g.passed and g.severity == "warning"]
+
+    def verify_binding(self, response: Any = None) -> bool:
+        """Recompute the digest and compare it to ``binding`` (#31).
+
+        Returns True only when this result carries a binding set by
+        ``ResponseVerifier.verify`` AND the digest matches. The digest
+        covers the response payload and the guard list, so a result cannot
+        be replayed against a different response, or have its verification
+        metadata (guards) altered, without detection. A hand-forged result
+        with no binding fails immediately.
+
+        Note: this detects mismatches only — it does not authenticate the
+        result itself (a binding is public, recomputable data). See the
+        class docstring for the trust model.
+        """
+        if not self.binding:
+            return False
+        try:
+            expected = _binding_digest(
+                self.response if response is None else response,
+                self.binding.get("guards", []),
+            )
+        except (ValueError, TypeError, RecursionError):
+            # Cyclic / non-serializable payload — cannot match any binding.
+            return False
+        return expected == self.binding.get("digest")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "verified": self.verified,
             "guards_passed": self.guards_passed,
             "guards_failed": self.guards_failed,
+            "warning_count": len(self.warnings),
             "guard_results": [g.to_dict() for g in self.guard_results],
             "blocked": self.blocked,
             "block_reason": self.block_reason,
             "timestamp": self.timestamp,
+            "binding": self.binding,
         }
 
     def __str__(self) -> str:
@@ -141,6 +348,21 @@ class ResponseVerifier:
         # Parse response if needed
         parsed_response = self._parse_response(response)
 
+        def _safe_binding(resp: Any, names: List[str]) -> Optional[Dict[str, Any]]:
+            """Binding digest, or ``None`` when the response cannot be bound.
+
+            Cyclic / non-serializable response graphs raise inside the JSON
+            canonicalizer (#31 review, Greptile P1) — callers must fail
+            closed with a failed VerificationResult instead of crashing.
+            """
+            try:
+                return {
+                    "guards": names,
+                    "digest": _binding_digest(resp, names),
+                }
+            except (ValueError, TypeError, RecursionError):
+                return None
+
         # Fail-closed: zero guards must never produce verified=True (#27).
         # Absence of verification is not success — it is the opposite.
         if not guards_to_use:
@@ -160,6 +382,7 @@ class ResponseVerifier:
                 ],
                 blocked=self.strict_mode,
                 block_reason="No guards configured — fail-closed (zero-guard verify).",
+                binding=_safe_binding(parsed_response, []),
             )
 
         # Run all guards
@@ -174,18 +397,28 @@ class ResponseVerifier:
                 result = guard.check(parsed_response, context)
                 guard_results.append(result)
 
-                if result.passed:
-                    guards_passed += 1
-                else:
+                # #31 semantics: a warning PASSES the guard (see
+                # BaseGuard.warn_result) but remains visible as a warning
+                # via VerificationResult.warnings. It only fails/blocks
+                # verification when warnings are not allowed.
+                failed = not result.passed
+                if result.severity == "warning" and not self.allow_warnings:
+                    failed = True
+
+                if failed:
                     guards_failed += 1
 
-                    # Check if this blocks
-                    if result.severity == "error" or (
-                        result.severity == "warning" and not self.allow_warnings
-                    ):
-                        if self.strict_mode:
-                            blocked = True
-                            block_reason = result.message
+                    # Strict mode blocks ANY guard failure — severity only
+                    # shapes failure in non-strict mode. A custom guard can
+                    # return GuardResult(passed=False, severity="info");
+                    # letting that through unblocked would break the strict
+                    # promise of verified=False AND blocked=True (CodeRabbit
+                    # on PR #35).
+                    if self.strict_mode:
+                        blocked = True
+                        block_reason = result.message
+                else:
+                    guards_passed += 1
 
             except Exception as e:
                 # Guard threw exception - treat as failure
@@ -198,9 +431,47 @@ class ResponseVerifier:
                     )
                 )
                 guards_failed += 1
+                if self.strict_mode:
+                    # same strict promise as the normal failure path — the
+                    # error-severity result would have blocked had it
+                    # returned instead of raised
+                    blocked = True
+                    block_reason = f"Guard error: {str(e)}"
 
         # Determine overall verification status
         verified = guards_failed == 0
+
+        guard_names = [getattr(g, "name", type(g).__name__) for g in guards_to_use]
+
+        binding = _safe_binding(parsed_response, guard_names)
+        if binding is None:
+            # #31 review (Greptile P1): a cyclic / non-serializable response
+            # must yield a failed VerificationResult, never an exception.
+            guard_results.append(
+                GuardResult(
+                    guard_name="ResponseVerifier",
+                    passed=False,
+                    message=(
+                        "Response could not be bound — cyclic or "
+                        "non-serializable structure. Failing closed."
+                    ),
+                    severity="error",
+                )
+            )
+            return VerificationResult(
+                verified=False,
+                response=parsed_response,
+                guards_passed=guards_passed,
+                guards_failed=guards_failed + 1,
+                guard_results=guard_results,
+                blocked=self.strict_mode,
+                block_reason=(
+                    "Response could not be bound — cyclic or "
+                    "non-serializable structure."
+                    if self.strict_mode
+                    else None
+                ),
+            )
 
         return VerificationResult(
             verified=verified,
@@ -210,6 +481,11 @@ class ResponseVerifier:
             guard_results=guard_results,
             blocked=blocked,
             block_reason=block_reason,
+            # #31: tamper-evidence binding — the digest covers the response
+            # AND the guard list, so neither can be altered or replayed
+            # elsewhere without detection. Not a signature; see the class
+            # docstring.
+            binding=binding,
         )
 
     def verify_tool_call(
@@ -247,17 +523,31 @@ class ResponseVerifier:
 
         Args:
             output: The structured output from the AI
-            schema: JSON Schema to validate against
+            schema: JSON Schema to validate against. Required unless
+                ``guards`` are supplied (#31) — with neither, nothing
+                would be verified.
             guards: Additional guards to apply
 
         Returns:
             VerificationResult with verification status
+
+        Raises:
+            ValueError: If both ``schema`` and ``guards`` are empty —
+                the call would otherwise verify nothing (#31).
         """
         from .guards import SchemaGuard
 
+        if schema is None and not guards:
+            raise ValueError(
+                "verify_structured_output requires a JSON schema or at least "
+                "one guard — with neither, nothing would be verified (#31)."
+            )
+
         guards_list = list(guards) if guards else []
 
-        if schema:
+        # {} is a valid JSON Schema (matches anything) — distinguish a
+        # supplied schema from an omitted one (#31 review).
+        if schema is not None:
             guards_list.insert(0, SchemaGuard(schema=schema))
 
         structured = {
