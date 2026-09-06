@@ -7,7 +7,7 @@ It orchestrates multiple guards to ensure responses are safe and correct.
 
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -218,7 +218,15 @@ class VerificationResult:
     guard_results: List[GuardResult] = field(default_factory=list)
     blocked: bool = False
     block_reason: Optional[str] = None
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    # issue #32: datetime.utcnow() is deprecated (removed in Python 3.12+)
+    # — timezone-aware now(), matching the UTC semantics
+    timestamp: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    # issue #32: operator correlation — no request/trace IDs previously
+    # existed, so verdicts could not be tied back to the response that
+    # produced them. Populated from context["request_id"] by verify().
+    request_id: Optional[str] = None
     binding: Optional[Dict[str, Any]] = None
 
     @property
@@ -369,6 +377,7 @@ class ResponseVerifier:
             return VerificationResult(
                 verified=False,
                 response=parsed_response,
+                request_id=(context or {}).get("request_id"),
                 guards_passed=0,
                 guards_failed=0,
                 guard_results=[
@@ -476,6 +485,7 @@ class ResponseVerifier:
         return VerificationResult(
             verified=verified,
             response=parsed_response,
+            request_id=(context or {}).get("request_id"),
             guards_passed=guards_passed,
             guards_failed=guards_failed,
             guard_results=guard_results,

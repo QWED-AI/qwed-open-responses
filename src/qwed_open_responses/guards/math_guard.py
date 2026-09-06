@@ -64,28 +64,42 @@ class MathGuard(BaseGuard):
 
         data = response.get("output", response)
         errors: List[str] = []
+        verifiable = False
 
-        # Check for common math patterns
+        # Check for common math patterns — only shapes the guard can
+        # actually verify count as verifiable math (issue #32: a vacuous
+        # pass on arbitrary shapes hid unverifiable responses)
         if isinstance(data, dict):
-            # Check totals
-            if self.verify_totals:
-                total_errors = self._verify_totals(data)
-                errors.extend(total_errors)
+            if self.verify_totals and self._totals_applicable(data):
+                verifiable = True
+                # the TOTAL_PATTERNS are alternative formulas: the response
+                # verifies if ANY applicable pattern checks out (a receipt
+                # with shipping legitimately mismatches the discount-less
+                # formula)
+                total_errors, totals_ok = self._verify_totals(data)
+                if not totals_ok:
+                    errors.extend(total_errors)
 
-            # Check percentages
-            if self.verify_percentages:
-                pct_errors = self._verify_percentages(data)
-                errors.extend(pct_errors)
+            if self.verify_percentages and self._percentages_applicable(data):
+                verifiable = True
+                pct_errors, pct_ok = self._verify_percentages(data)
+                if not pct_ok:
+                    errors.extend(pct_errors)
+
+            if self.custom_rules:
+                verifiable = True
 
         # Check text content for inline calculations
-        if isinstance(data, str):
-            calc_errors = self._verify_inline_calculations(data)
-            errors.extend(calc_errors)
+        elif isinstance(data, str):
+            if self._CALC_PATTERN.search(data):
+                verifiable = True
+                errors.extend(self._verify_inline_calculations(data))
 
         # Run custom rules
-        for rule in self.custom_rules:
-            rule_errors = self._run_custom_rule(rule, data)
-            errors.extend(rule_errors)
+        if self.custom_rules:
+            for rule in self.custom_rules:
+                rule_errors = self._run_custom_rule(rule, data)
+                errors.extend(rule_errors)
 
         if errors:
             return self.fail_result(
@@ -93,52 +107,78 @@ class MathGuard(BaseGuard):
                 details={"errors": errors},
             )
 
+        if not verifiable:
+            # issue #32: a response with no verifiable math shape must not
+            # pass vacuously — visible warning-severity failure (blocking
+            # in strict mode)
+            return self.fail_result(
+                message="No verifiable math found in response",
+                severity="warning",
+            )
+
         return self.pass_result(message="Math verification passed")
 
-    def _verify_totals(self, data: Dict) -> List[str]:
-        """Verify that totals add up correctly."""
+    # Common total patterns (issue #32: hoisted so applicability detection
+    # and verification share one source of truth)
+    TOTAL_PATTERNS = [
+        # (total_field, component_fields, operation)
+        ("total", ["subtotal", "tax", "shipping"], "add"),
+        ("total", ["subtotal", "-discount", "tax"], "add"),
+        ("net", ["gross", "-deductions"], "add"),
+        ("balance", ["credits", "-debits"], "add"),
+    ]
+
+    _CALC_PATTERN = re.compile(
+        r"(\d+(?:\.\d+)?)\s*([\+\-\*\/])\s*(\d+(?:\.\d+)?)\s*=\s*(\d+(?:\.\d+)?)"
+    )
+
+    def _totals_applicable(self, data: Dict) -> bool:
+        """True when a totals pattern's total field is present — missing
+        components are treated as zero, mirroring the npm guard."""
+        return any(total_field in data for total_field, _c, _op in self.TOTAL_PATTERNS)
+
+    def _percentages_applicable(self, data: Dict) -> bool:
+        """True when a percentage shape is fully present (rate key + base +
+        amount), mirroring what _verify_percentages can actually check."""
+        for key in data:
+            if key.endswith("_percent") or key.endswith("_rate"):
+                base_key = key.replace("_percent", "").replace("_rate", "")
+                if base_key in data and base_key + "_amount" in data:
+                    return True
+        return False
+
+    def _verify_totals(self, data: Dict) -> tuple:
+        """Verify totals against their components (missing components count
+        as zero, mirroring the npm guard). Returns (errors, verified_any):
+        verified_any is True when ANY applicable formula checks out — the
+        patterns are alternative formulas, not conjunctive checks."""
         errors = []
+        verified_any = False
 
-        # Common total patterns
-        patterns = [
-            # (total_field, component_fields, operation)
-            ("total", ["subtotal", "tax", "shipping"], "add"),
-            ("total", ["subtotal", "-discount", "tax"], "add"),
-            ("net", ["gross", "-deductions"], "add"),
-            ("balance", ["credits", "-debits"], "add"),
-        ]
+        for total_field, components, op in self.TOTAL_PATTERNS:
+            if total_field not in data:
+                continue
+            expected_total = float(data[total_field])
+            calculated = 0.0
+            for comp in components:
+                field = comp[1:] if comp.startswith("-") else comp
+                value = float(data[field]) if field in data else 0.0
+                calculated += -value if comp.startswith("-") else value
 
-        for total_field, components, op in patterns:
-            if total_field in data:
-                expected_total = data[total_field]
-                calculated = 0.0
+            if abs(calculated - expected_total) <= self.tolerance:
+                verified_any = True
+            else:
+                errors.append(
+                    f"{total_field} mismatch: expected {expected_total}, "
+                    f"calculated {calculated}"
+                )
 
-                all_components_present = True
-                for comp in components:
-                    if comp.startswith("-"):
-                        field = comp[1:]
-                        if field in data:
-                            calculated -= float(data[field])
-                        else:
-                            all_components_present = False
-                    else:
-                        if comp in data:
-                            calculated += float(data[comp])
-                        else:
-                            all_components_present = False
+        return errors, verified_any
 
-                if all_components_present:
-                    if abs(calculated - expected_total) > self.tolerance:
-                        errors.append(
-                            f"{total_field} mismatch: expected {expected_total}, "
-                            f"calculated {calculated}"
-                        )
-
-        return errors
-
-    def _verify_percentages(self, data: Dict) -> List[str]:
-        """Verify percentage calculations."""
+    def _verify_percentages(self, data: Dict) -> tuple:
+        """Verify percentage calculations. Returns (errors, verified_any)."""
         errors = []
+        found_any = False
 
         # Look for percentage patterns
         for key, value in data.items():
@@ -148,6 +188,7 @@ class MathGuard(BaseGuard):
                 amount_key = base_key + "_amount"
 
                 if base_key in data and amount_key in data:
+                    found_any = True
                     base = float(data[base_key])
                     rate = float(value) / 100.0
                     expected_amount = base * rate
@@ -159,18 +200,13 @@ class MathGuard(BaseGuard):
                             f"should be {expected_amount}, got {actual}"
                         )
 
-        return errors
+        return errors, found_any
 
     def _verify_inline_calculations(self, text: str) -> List[str]:
         """Verify calculations written in text."""
         errors = []
 
-        # Pattern: "X + Y = Z" or "X * Y = Z"
-        calc_pattern = (
-            r"(\d+(?:\.\d+)?)\s*([\+\-\*\/])\s*(\d+(?:\.\d+)?)\s*=\s*(\d+(?:\.\d+)?)"
-        )
-
-        for match in re.finditer(calc_pattern, text):
+        for match in re.finditer(self._CALC_PATTERN, text):
             a, op, b, result = match.groups()
             a, b, result = float(a), float(b), float(result)
 
