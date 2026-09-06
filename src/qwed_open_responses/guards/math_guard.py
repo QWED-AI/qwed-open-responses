@@ -6,6 +6,7 @@ Uses deterministic verification (when possible) to catch calculation errors.
 
 from typing import Any, Dict, Optional, List
 from .base import BaseGuard, GuardResult
+import math
 import re
 
 
@@ -63,11 +64,7 @@ class MathGuard(BaseGuard):
         """Verify math in response."""
         data = response.get("output", response)
         errors: List[str] = []
-        # Configured custom rules are an explicit operator assertion that
-        # the response contains verifiable content — the operator owns each
-        # rule's applicability logic, so their presence marks the response
-        # verifiable for every shape (CodeAnt on PR #36, refuted).
-        verifiable = bool(self.custom_rules)
+        verifiable = False
 
         if isinstance(data, dict):
             try:
@@ -85,6 +82,17 @@ class MathGuard(BaseGuard):
             # the inline-calculation verifier
             verifiable = True
             errors.extend(self._verify_inline_calculations(data))
+
+        # Custom rules execute for every response shape (Sentry/Greptile
+        # on PR #36: the refactor dropped this loop and silently skipped
+        # configured validation). A rule APPLIES when its field is present
+        # — an applied rule marks the response verifiable.
+        rule_applied = False
+        for rule in self.custom_rules:
+            if isinstance(data, dict) and rule.get("field") in data:
+                rule_applied = True
+            errors.extend(self._run_custom_rule(rule, data))
+        verifiable = verifiable or rule_applied
 
         if errors:
             return self.fail_result(
@@ -230,6 +238,17 @@ class MathGuard(BaseGuard):
                     rate = float(value) / 100.0
                     expected_amount = base * rate
                     actual = float(data[base_key + "_amount"])
+                    # Greptile P1 on PR #36: float("nan")/"inf" convert
+                    # cleanly and NaN tolerance comparisons are always
+                    # false — non-finite inputs fail closed as errors
+                    if not all(
+                        math.isfinite(v) for v in (base, rate, expected_amount, actual)
+                    ):
+                        errors.append(
+                            f"Percentage fields for {base_key} contain "
+                            "non-finite values"
+                        )
+                        continue
 
                     if abs(expected_amount - actual) > self.tolerance:
                         errors.append(

@@ -1074,6 +1074,21 @@ export class MathGuard extends BaseGuard {
         return this.passResult('Math verification passed');
     }
 
+    // CodeRabbit on PR #36: Number(null) === 0 and Number('') === 0, so
+    // null and blank-string fields would silently zero-default. Reject
+    // them explicitly (booleans coerce identically on both runtimes —
+    // float(True) === 1.0 in Python — so they stay numeric).
+    private static toFiniteNumber(value: unknown): number | null {
+        if (value === null || value === undefined || typeof value === 'boolean') {
+            return null;
+        }
+        if (typeof value === 'string' && value.trim() === '') {
+            return null;
+        }
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+    }
+
     private totalsApplicable(data: Record<string, any>): boolean {
         // total field AND at least one component present — a lone total
         // with no components verifies nothing (CodeAnt on PR #36)
@@ -1095,8 +1110,8 @@ export class MathGuard extends BaseGuard {
             if (!(field in data)) {
                 continue;
             }
-            const value = Number(data[field]);
-            if (!Number.isFinite(value)) {
+            const value = MathGuard.toFiniteNumber(data[field]);
+            if (value === null) {
                 return null;
             }
             calculated += comp.startsWith('-') ? -value : value;
@@ -1105,6 +1120,11 @@ export class MathGuard extends BaseGuard {
     }
 
     private verifyTotals(data: Record<string, any>): string | null {
+        // Sentry MEDIUM on PR #36: the patterns are ALTERNATIVE formulas —
+        // mirror the Python guard and verify when ANY applicable formula
+        // checks out; report errors only when none does.
+        const errors: string[] = [];
+        let verifiedAny = false;
         for (const [totalField, components] of MathGuard.TOTAL_PATTERNS) {
             if (!(totalField in data)) {
                 continue;
@@ -1113,22 +1133,23 @@ export class MathGuard extends BaseGuard {
                 // a lone total with no components verifies nothing
                 continue;
             }
-            const expected = Number(data[totalField]);
+            const expected = MathGuard.toFiniteNumber(data[totalField]);
+            if (expected === null) {
+                errors.push(`${totalField} is not a finite number`);
+                continue;
+            }
             const calculated = this.patternCalculated(data, components);
             if (calculated === null) {
-                return `${totalField} components contain non-finite values`;
-            }
-            if (!Number.isFinite(expected)) {
-                // CodeRabbit on PR #36: Number('invalid') is NaN, and NaN
-                // comparisons are always false — a non-numeric total would
-                // silently pass
-                return `${totalField} is not a finite number`;
+                errors.push(`${totalField} components contain non-numeric values`);
+                continue;
             }
             if (Math.abs(calculated - expected) > this.tolerance) {
-                return `${totalField} mismatch: expected ${expected}, calculated ${calculated}`;
+                errors.push(`${totalField} mismatch: expected ${expected}, calculated ${calculated}`);
+            } else {
+                verifiedAny = true;
             }
         }
-        return null;
+        return verifiedAny ? null : (errors[0] ?? null);
     }
 
     private percentagesApplicable(data: Record<string, any>): boolean {
@@ -1150,11 +1171,15 @@ export class MathGuard extends BaseGuard {
             }
             const baseKey = key.replace('_percent', '').replace('_rate', '');
             if (baseKey in data && baseKey + '_amount' in data) {
-                const base = Number(data[baseKey]);
-                const rate = Number(data[key]) / 100.0;
+                const base = MathGuard.toFiniteNumber(data[baseKey]);
+                const rateNum = MathGuard.toFiniteNumber(data[key]);
+                const actual = MathGuard.toFiniteNumber(data[baseKey + '_amount']);
+                if (base === null || rateNum === null || actual === null) {
+                    return 'Percentage fields contain non-numeric values';
+                }
+                const rate = rateNum / 100.0;
                 const expected = base * rate;
-                const actual = Number(data[baseKey + '_amount']);
-                if (![expected, actual].every(Number.isFinite)) {
+                if (!Number.isFinite(expected)) {
                     return 'Percentage fields contain non-finite values';
                 }
                 if (Math.abs(expected - actual) > this.tolerance) {
@@ -1166,24 +1191,27 @@ export class MathGuard extends BaseGuard {
     }
 
     private verifyInlineCalculations(text: string): string | null {
-        const match = MathGuard.CALC_PATTERN.exec(text);
-        if (!match) {
-            return null;
-        }
-        const a = Number(match[1]);
-        const op = match[2];
-        const b = Number(match[3]);
-        const result = Number(match[4]);
-        if (![a, b, result].every(Number.isFinite)) {
-            return 'Calculation fields contain non-finite values';
-        }
-        let expected: number;
-        if (op === '+') expected = a + b;
-        else if (op === '-') expected = a - b;
-        else if (op === '*') expected = a * b;
-        else expected = b !== 0 ? a / b : Infinity;
-        if (Math.abs(expected - result) > this.tolerance) {
-            return `Calculation error: ${a} ${op} ${b} = ${result} (should be ${expected})`;
+        // Greptile P1 on PR #36: exec() reads only the FIRST equation —
+        // '2 + 2 = 4; 3 * 3 = 8' passed. matchAll over a global CLONE so
+        // the shared pattern's lastIndex is never mutated (the ToolGuard
+        // regex-state lesson applies to read helpers too).
+        const scanner = new RegExp(MathGuard.CALC_PATTERN.source, 'g');
+        for (const match of text.matchAll(scanner)) {
+            const a = Number(match[1]);
+            const op = match[2];
+            const b = Number(match[3]);
+            const result = Number(match[4]);
+            if (![a, b, result].every(Number.isFinite)) {
+                return 'Calculation fields contain non-finite values';
+            }
+            let expected: number;
+            if (op === '+') expected = a + b;
+            else if (op === '-') expected = a - b;
+            else if (op === '*') expected = a * b;
+            else expected = b !== 0 ? a / b : Infinity;
+            if (Math.abs(expected - result) > this.tolerance) {
+                return `Calculation error: ${a} ${op} ${b} = ${result} (should be ${expected})`;
+            }
         }
         return null;
     }

@@ -153,3 +153,61 @@ class TestAwareUtcTimestamp:
             {"output": {"subtotal": 100, "tax": 8, "shipping": 0, "total": 108}}
         )
         assert result.timestamp.endswith("+00:00")
+
+
+class TestCustomRulesExecute:
+    """PR #36 review (Sentry LOW + Greptile P1 + CodeRabbit, all
+    T-Rex/agent-verified): the refactor dropped the custom-rule execution
+    loop — configured equals/range rules were silently skipped."""
+
+    def test_equals_rule_violation_fails(self):
+        guard = MathGuard(
+            custom_rules=[{"type": "equals", "field": "score", "expected": 10}]
+        )
+        result = guard.check({"output": {"score": 0}})
+        assert result.passed is False
+        assert any("should equal 10" in e for e in result.details["errors"])
+
+    def test_equals_rule_satisfaction_passes(self):
+        guard = MathGuard(
+            custom_rules=[{"type": "equals", "field": "score", "expected": 10}]
+        )
+        result = guard.check({"output": {"score": 10}})
+        assert result.passed is True
+
+    def test_range_rule_violation_fails(self):
+        guard = MathGuard(
+            custom_rules=[{"type": "range", "field": "score", "min": 1, "max": 5}]
+        )
+        result = guard.check({"output": {"score": 0}})
+        assert result.passed is False
+
+    def test_rule_field_absent_is_not_verifiable(self):
+        # a configured rule whose field is absent applies to nothing —
+        # the response is not verifiable via that rule
+        guard = MathGuard(
+            custom_rules=[{"type": "equals", "field": "score", "expected": 10}]
+        )
+        result = guard.check({"output": {"other": 1}})
+        assert result.passed is False
+        assert "No verifiable math" in result.message
+
+
+class TestNonFinitePercentageFailClosed:
+    """Greptile P1: float('nan') converts cleanly and NaN tolerance
+    comparisons are always false — a NaN rate/base/amount passed."""
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"tax_percent": "nan", "tax": 100, "tax_amount": 0},
+            {"tax_percent": 10, "tax": "nan", "tax_amount": 0},
+            {"tax_percent": 10, "tax": 100, "tax_amount": "nan"},
+            {"tax_percent": "inf", "tax": 100, "tax_amount": 10},
+        ],
+    )
+    def test_nan_percentage_fields_fail(self, payload):
+        guard = MathGuard()
+        result = guard.check({"output": payload})
+        assert result.passed is False
+        assert any("non-finite" in e for e in result.details["errors"])
