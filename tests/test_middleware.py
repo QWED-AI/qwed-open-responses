@@ -303,14 +303,17 @@ class TestLangChainCallback:
 class TestMathGuardEdgeCases:
     """Test edge cases for MathGuard."""
 
-    def test_missing_fields_does_not_fail(self):
-        """Missing total fields don't cause false positives."""
+    def test_missing_fields_yields_no_verifiable_math(self):
+        """issue #32: a response with no verifiable math shape must not
+        pass vacuously — it fails with a visible warning-severity result."""
         from qwed_open_responses import MathGuard
 
         guard = MathGuard()
         result = guard.check({"output": {"name": "John", "status": "active"}})
 
-        assert result.passed is True
+        assert result.passed is False
+        assert result.severity == "warning"
+        assert "No verifiable math" in result.message
 
     def test_float_tolerance(self):
         """Tolerance is respected for float comparisons."""
@@ -377,11 +380,14 @@ class TestVerifiedResponses:
 
             mock_openai.return_value = MagicMock()
             from qwed_open_responses.guards.base import BaseGuard, GuardResult
+
             class _PassAll(BaseGuard):
-                name = 'TestPass'
-                description = 'test'
+                name = "TestPass"
+                description = "test"
+
                 def check(self, response, context=None):
                     return self.pass_result()
+
             verified = VerifiedOpenAI(guards=[_PassAll()])
             with pytest.raises(ValueError, match="Cannot parse OpenAI response"):
                 verified.verify(42)
@@ -396,11 +402,14 @@ class TestVerifiedResponses:
 
             mock_openai.return_value = self._make_fallback_client()
             from qwed_open_responses.guards.base import BaseGuard, GuardResult
+
             class _PassAll(BaseGuard):
-                name = 'TestPass'
-                description = 'test'
+                name = "TestPass"
+                description = "test"
+
                 def check(self, response, context=None):
                     return self.pass_result()
+
             verified = VerifiedOpenAI(guards=[_PassAll()])
             with pytest.warns(UserWarning, match="Falling back to Chat Completions"):
                 verified.responses.create(input="test")
@@ -415,11 +424,14 @@ class TestVerifiedResponses:
 
             mock_openai.return_value = self._make_responses_client()
             from qwed_open_responses.guards.base import BaseGuard, GuardResult
+
             class _PassAll(BaseGuard):
-                name = 'TestPass'
-                description = 'test'
+                name = "TestPass"
+                description = "test"
+
                 def check(self, response, context=None):
                     return self.pass_result()
+
             verified = VerifiedOpenAI(guards=[_PassAll()])
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
@@ -437,11 +449,14 @@ class TestVerifiedResponses:
 
             mock_openai.return_value = self._make_fallback_client()
             from qwed_open_responses.guards.base import BaseGuard, GuardResult
+
             class _PassAll(BaseGuard):
-                name = 'TestPass'
-                description = 'test'
+                name = "TestPass"
+                description = "test"
+
                 def check(self, response, context=None):
                     return self.pass_result()
+
             verified = VerifiedOpenAI(guards=[_PassAll()])
             with pytest.warns(UserWarning, match="Falling back to Chat Completions"):
                 result = verified.responses.create(input="test")
