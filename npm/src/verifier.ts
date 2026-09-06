@@ -163,11 +163,13 @@ export class ResponseVerifier {
 
                 if (failed) {
                     guardsFailed++;
-                    if (
-                        this.strictMode
-                        && (result.severity === 'error'
-                            || (result.severity === 'warning' && !this.allowWarnings))
-                    ) {
+                    // Strict mode blocks ANY guard failure — severity only
+                    // shapes failure in non-strict mode. A custom guard can
+                    // return { passed: false, severity: 'info' }; letting
+                    // that through unblocked would break the strict promise
+                    // of verified=false AND blocked=true (Greptile P1 on
+                    // PR #35 — mirrors the Python fix).
+                    if (this.strictMode) {
                         blocked = true;
                         blockReason = result.message;
                     }
@@ -175,13 +177,21 @@ export class ResponseVerifier {
                     guardsPassed++;
                 }
             } catch (error) {
+                const message = `Guard error: ${error instanceof Error ? error.message : String(error)}`;
                 guardResults.push({
                     guardName: guard.name,
                     passed: false,
-                    message: `Guard error: ${error instanceof Error ? error.message : String(error)}`,
+                    message,
                     severity: 'error',
                 });
                 guardsFailed++;
+                if (this.strictMode) {
+                    // same strict promise as the normal failure path — the
+                    // error-severity result would have blocked had it
+                    // returned instead of thrown
+                    blocked = true;
+                    blockReason = message;
+                }
             }
         }
 
