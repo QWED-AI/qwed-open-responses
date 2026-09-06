@@ -13,15 +13,6 @@ import json
 import math
 
 
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
-from datetime import datetime
-from uuid import uuid4
-import hashlib
-import json
-import math
-
-
 def _format_number_js(value: float) -> str:
     """Format a float with JavaScript ``Number::toString`` semantics.
 
@@ -60,35 +51,56 @@ def _format_number_js(value: float) -> str:
 def _canonical_json(obj: Any) -> str:
     """Canonical JSON serialization for digest computation (#31).
 
-    Floats are rendered with JavaScript ``Number::toString`` semantics via
-    placeholder substitution (Python repr diverges: ``1e-05`` vs
-    ``0.00001``, ``1e-07`` vs ``1e-7`` — binding digests must match across
-    runtimes). No ``default=str``: values JSON cannot represent fail
-    closed (TypeError -> ``_safe_binding`` returns None) instead of
-    masking mutations behind a lossy string conversion.
-    """
-    marker = f"__qwedf{uuid4().hex[:12]}_"
-    substitutions: Dict[str, str] = {}
+    Emitted directly (rather than via ``json.dumps``) so that:
 
-    def _walk(node: Any) -> Any:
+    - floats render with JavaScript ``Number::toString`` semantics —
+      Python repr diverges (``1e-05`` vs ``0.00001``, ``1e-07`` vs
+      ``1e-7``) and binding digests must match across runtimes;
+    - non-finite numbers and non-JSON-serializable values fail closed
+      with TypeError (-> ``_safe_binding`` returns None) instead of
+      masking mutations behind a lossy string conversion.
+
+    No random hex markers or substitutions are involved.
+    """
+
+    def _emit(node: Any) -> str:
+        if node is True:
+            return "true"
+        if node is False:
+            return "false"
+        if node is None:
+            return "null"
         if isinstance(node, float):
             if not math.isfinite(node):
                 raise TypeError("Non-finite numbers cannot be canonicalized")
             if node.is_integer() and abs(node) < 1e21:
-                return int(node)
-            key = f"{marker}{len(substitutions)}"
-            substitutions[key] = _format_number_js(node)
-            return key
+                return repr(int(node))
+            return _format_number_js(node)
+        if isinstance(node, int):
+            return repr(node)
+        if isinstance(node, str):
+            return json.dumps(node)
         if isinstance(node, dict):
-            return {key: _walk(value) for key, value in node.items()}
+            # Sort by the raw (stringified) key — matches the npm
+            # canonicalizer, which sorts Object.keys before escaping.
+            entries = sorted(
+                ((str(key), value) for key, value in node.items()),
+                key=lambda entry: entry[0],
+            )
+            return (
+                "{"
+                + ",".join(
+                    f"{json.dumps(key)}:{_emit(value)}" for key, value in entries
+                )
+                + "}"
+            )
         if isinstance(node, (list, tuple)):
-            return [_walk(item) for item in node]
-        return node
+            return "[" + ",".join(_emit(item) for item in node) + "]"
+        raise TypeError(
+            f"Object of type {type(node).__name__} is not JSON serializable"
+        )
 
-    serialized = json.dumps(_walk(obj), sort_keys=True, separators=(",", ":"))
-    for key, number_text in substitutions.items():
-        serialized = serialized.replace(f'"{key}"', number_text)
-    return serialized
+    return _emit(obj)
 
 
 def _binding_digest(response: Any, guard_names: List[str]) -> str:
