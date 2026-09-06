@@ -215,7 +215,7 @@ export class ResponseVerifier {
                 guardsPassed,
                 guardsFailed: guardsFailed + 1,
                 guardResults,
-                warnings: guardResults.filter((r) => r.severity === 'warning'),
+                warnings: guardResults.filter((r) => r.passed && r.severity === 'warning'),
                 blocked: this.strictMode,
                 blockReason: this.strictMode
                     ? 'Response could not be bound — cyclic or non-serializable structure.'
@@ -230,7 +230,7 @@ export class ResponseVerifier {
             guardsPassed,
             guardsFailed,
             guardResults,
-            warnings: guardResults.filter((r) => r.severity === 'warning'),
+            warnings: guardResults.filter((r) => r.passed && r.severity === 'warning'),
             blocked,
             blockReason,
             timestamp: new Date().toISOString(),

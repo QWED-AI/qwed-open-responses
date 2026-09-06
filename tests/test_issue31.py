@@ -762,3 +762,40 @@ class TestSafeIntegerRange:
             _canonical_json({"n": 9007199254740993})
         with pytest.raises(TypeError, match="safe-integer"):
             _canonical_json({"n": -(2**53)})
+
+
+class TestWarningsFilterContract:
+    """#35 review (Sentry): `warnings` must match its documented contract —
+    only guards that PASSED with a warning. fail_result(severity="warning")
+    is a failing guard, not a warning."""
+
+    def test_failing_warning_severity_guard_excluded_from_warnings(self):
+        class FailWarnGuard(BaseGuard):
+            name = "fail_warn"
+
+            def check(self, response, context):
+                return GuardResult(
+                    guard_name=self.name,
+                    passed=False,
+                    message="failing loudly",
+                    severity="warning",
+                )
+
+        verifier = ResponseVerifier(default_guards=[FailWarnGuard()])
+        result = verifier.verify({"data": "x"})
+        assert result.verified is False
+        assert result.warnings == []
+        assert result.guard_results[0].severity == "warning"
+        assert result.guard_results[0].passed is False
+
+    def test_passing_warning_guard_included(self):
+        class WarnGuard(BaseGuard):
+            name = "warn"
+
+            def check(self, response, context):
+                return self.warn_result("heads up")
+
+        verifier = ResponseVerifier(default_guards=[WarnGuard()])
+        result = verifier.verify({"data": "x"})
+        assert result.verified is True
+        assert [w.message for w in result.warnings] == ["heads up"]

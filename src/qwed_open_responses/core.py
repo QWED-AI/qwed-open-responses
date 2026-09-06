@@ -229,7 +229,10 @@ class VerificationResult:
         ``verified`` nor block, unless the verifier was created with
         ``allow_warnings=False``.
         """
-        return [g for g in self.guard_results if g.severity == "warning"]
+        # Sentry on PR #35: the filter must match the documented contract —
+        # fail_result(severity="warning") exists, so severity alone would
+        # misclassify FAILING guards as warnings
+        return [g for g in self.guard_results if g.passed and g.severity == "warning"]
 
     def verify_binding(self, response: Any = None) -> bool:
         """Recompute the digest and compare it to ``binding`` (#31).

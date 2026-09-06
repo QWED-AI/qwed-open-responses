@@ -32,7 +32,7 @@ export interface VerificationResult {
      * neither fail `verified` nor block, unless the verifier was created
      * with allowWarnings=false.
      */
-    warnings: GuardResult[];
+    warnings?: GuardResult[];
     blocked: boolean;
     blockReason?: string;
     timestamp: string;
