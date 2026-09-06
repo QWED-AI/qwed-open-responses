@@ -240,7 +240,7 @@ export class ToolGuard extends BaseGuard {
     // misses full-folding pairs (ß→ss, ligatures), which would give
     // STRASSE and Straße different decisions across runtimes. ASCII-only
     // names are unaffected by these entries.
-    private static FULL_FOLD_RE = /[ßﬀﬁﬂﬃﬄﬅﬆ]/g;
+    private static FULL_FOLD_RE = /[ßﬀﬁﬂﬃﬄﬅﬆς]/g;
     private static FULL_FOLD_MAP: Record<string, string> = {
         'ß': 'ss', 'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl',
         'ﬃ': 'ffi', 'ﬄ': 'ffl', 'ﬅ': 'st', 'ﬆ': 'st',

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 import json
+import math
 
 
 def _canonical_json(obj: Any) -> str:
@@ -23,14 +24,21 @@ def _canonical_json(obj: Any) -> str:
 
 
 def _canonicalize_numbers(obj: Any) -> Any:
-    """Collapse integral floats to ints so digests are runtime-portable.
+    """Normalize numbers so binding digests are runtime-portable (#31 review).
 
-    Python serializes ``1.0`` as ``1.0`` while JavaScript emits ``1`` for
-    the same value — binding digests must match across runtimes (#31
-    review). Non-integral floats keep their repr in both runtimes.
+    - Integral floats become ints: Python prints ``1e16`` as ``1e+16``
+      while JavaScript prints ``10000000000000000`` — integer form matches
+      below JavaScript's 1e21 exponential switch (at/above it both emit
+      ``1e+21``, so larger integral floats stay floats).
+    - Non-finite floats raise: Python would emit ``NaN``/``Infinity`` while
+      JavaScript emits ``null`` — parity is impossible, so fail closed
+      (TypeError -> ``_safe_binding`` -> ``binding=None``).
     """
-    if isinstance(obj, float) and obj.is_integer() and abs(obj) < 1e15:
-        return int(obj)
+    if isinstance(obj, float):
+        if not math.isfinite(obj):
+            raise TypeError("Non-finite numbers cannot be canonicalized")
+        if obj.is_integer() and abs(obj) < 1e21:
+            return int(obj)
     if isinstance(obj, dict):
         return {k: _canonicalize_numbers(v) for k, v in obj.items()}
     if isinstance(obj, list):

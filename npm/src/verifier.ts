@@ -33,6 +33,11 @@ function escapeNonAscii(s: string): string {
 
 function canonicalJson(value: any): string {
     if (value === null || typeof value !== 'object') {
+        if (typeof value === 'number' && !Number.isFinite(value)) {
+            // Python emits NaN/Infinity, JavaScript emits null — no parity
+            // is possible, so fail closed (Greptile P1).
+            throw new TypeError('Non-finite numbers cannot be canonicalized');
+        }
         return escapeNonAscii(JSON.stringify(value) ?? 'null');
     }
     if (Array.isArray(value)) {

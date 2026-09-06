@@ -530,7 +530,7 @@ class SafetyGuard(BaseGuard):
             # malformed model output — reject it once, regardless of how
             # many caps are configured (Sentry: no duplicate messages).
             issues.append(
-                "Response usage is not an object — failing closed " "(untrusted input)."
+                "Response usage is not an object — failing closed (untrusted input)."
             )
             return issues
 

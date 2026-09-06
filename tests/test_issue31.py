@@ -437,6 +437,27 @@ def test_binding_digest_integral_float_parity():
     assert _binding_digest({"cost": 1.0}, ["G"]) == _binding_digest({"cost": 1}, ["G"])
 
 
+def test_binding_digest_large_integral_float_parity():
+    """(#31 review / Greptile P1) 1e16 must digest identically to its
+    integer form — Python float repr ('1e+16') diverges from JavaScript's
+    integer notation below the 1e21 exponential switch."""
+    from qwed_open_responses.core import _binding_digest
+
+    assert _binding_digest({"a": 1e16}, ["G"]) == _binding_digest(
+        {"a": 10_000_000_000_000_000}, ["G"]
+    )
+
+
+def test_binding_non_finite_value_fails_closed():
+    """(#31 review / Greptile P1) NaN/Infinity cannot be represented
+    compatibly across runtimes (Python 'NaN' vs JS 'null') — they fail
+    closed instead of hashing divergently."""
+    verifier = ResponseVerifier(default_guards=[ToolGuard()])
+    result = verifier.verify({"cost": float("nan")})
+    assert result.verified is False
+    assert result.binding is None
+
+
 def test_greek_final_sigma_casefold_parity():
     """(#31 review) Final sigma folds to standard sigma — allowed-list
     lookups must treat ος / ΟΣ / οΣ identically (all casefold to ος→ος)."""
