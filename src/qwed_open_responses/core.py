@@ -76,12 +76,19 @@ def _emit_scalar(node: Any) -> str:
         # "999999999999999900000", exact int "999999999999999868928")
         return _format_number_js(node)
     if isinstance(node, int):
+        # JS safe-integer range: JSON.parse in the TS runtime rounds
+        # integers beyond +/- (2^53 - 1) to the nearest double, so the two
+        # runtimes would compute different binding digests for the same
+        # payload (CodeRabbit on PR #35). Fail closed rather than coerce.
+        if abs(node) > 9007199254740991:
+            raise TypeError(
+                "Integer exceeds the JavaScript safe-integer range "
+                "(+/- 2^53 - 1) and cannot be canonicalized"
+            )
         return repr(node)
     if isinstance(node, str):
         return json.dumps(node)
-    raise TypeError(
-        f"Object of type {type(node).__name__} is not JSON serializable"
-    )
+    raise TypeError(f"Object of type {type(node).__name__} is not JSON serializable")
 
 
 def _emit_object(node: dict) -> str:
@@ -398,11 +405,13 @@ class ResponseVerifier:
                 if failed:
                     guards_failed += 1
 
-                    # Check if this blocks
-                    if self.strict_mode and (
-                        result.severity == "error"
-                        or (result.severity == "warning" and not self.allow_warnings)
-                    ):
+                    # Strict mode blocks ANY guard failure — severity only
+                    # shapes failure in non-strict mode. A custom guard can
+                    # return GuardResult(passed=False, severity="info");
+                    # letting that through unblocked would break the strict
+                    # promise of verified=False AND blocked=True (CodeRabbit
+                    # on PR #35).
+                    if self.strict_mode:
                         blocked = True
                         block_reason = result.message
                 else:
@@ -419,6 +428,12 @@ class ResponseVerifier:
                     )
                 )
                 guards_failed += 1
+                if self.strict_mode:
+                    # same strict promise as the normal failure path — the
+                    # error-severity result would have blocked had it
+                    # returned instead of raised
+                    blocked = True
+                    block_reason = f"Guard error: {str(e)}"
 
         # Determine overall verification status
         verified = guards_failed == 0

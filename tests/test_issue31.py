@@ -17,7 +17,7 @@ import subprocess
 import pytest
 
 from qwed_open_responses import ResponseVerifier, SafetyGuard, ToolGuard
-from qwed_open_responses.core import VerificationResult, _canonical_json
+from qwed_open_responses.core import GuardResult, VerificationResult, _canonical_json
 from qwed_open_responses.guards.base import BaseGuard
 from qwed_open_responses.middleware.streaming_interceptor import (
     OpenResponsesMiddleware,
@@ -62,9 +62,7 @@ def test_blocklist_custom_entry_case_insensitive():
 
 def test_allowed_list_case_insensitive():
     guard = ToolGuard(allowed_tools=["Search"], use_default_blocklist=False)
-    result = guard.check(
-        {"type": "tool_call", "tool_name": "SEARCH", "arguments": {}}
-    )
+    result = guard.check({"type": "tool_call", "tool_name": "SEARCH", "arguments": {}})
     assert result.passed is True
 
 
@@ -133,9 +131,7 @@ def test_base64_encoded_drop_table_blocked():
 def test_pii_only_warning_does_not_fail_verified():
     """(#31) PII-only: verified=True, blocked=False, warning still visible."""
     verifier = ResponseVerifier(default_guards=[SafetyGuard(check_pii=True)])
-    result = verifier.verify(
-        {"type": "text", "content": "Email: test@example.com"}
-    )
+    result = verifier.verify({"type": "text", "content": "Email: test@example.com"})
 
     assert result.verified is True
     assert result.blocked is False
@@ -149,9 +145,7 @@ def test_warning_escalates_when_warnings_disallowed():
         default_guards=[SafetyGuard(check_pii=True)],
         allow_warnings=False,
     )
-    result = verifier.verify(
-        {"type": "text", "content": "Email: test@example.com"}
-    )
+    result = verifier.verify({"type": "text", "content": "Email: test@example.com"})
 
     assert result.verified is False
     assert result.blocked is True
@@ -260,7 +254,6 @@ def test_binding_cyclic_payload_returns_false():
     assert result.verify_binding() is False
 
 
-
 def test_forged_result_without_binding_fails_binding_check():
     """(#31) A hand-minted 'verified' result carries no binding."""
     forged = VerificationResult(verified=True, response={"ok": True})
@@ -283,9 +276,7 @@ def test_binding_invalidated_by_guard_list_tampering():
 
 def test_to_dict_includes_binding_and_warning_count():
     verifier = ResponseVerifier(default_guards=[SafetyGuard(check_pii=True)])
-    result = verifier.verify(
-        {"type": "text", "content": "Email: test@example.com"}
-    )
+    result = verifier.verify({"type": "text", "content": "Email: test@example.com"})
     d = result.to_dict()
     assert d["binding"] is not None
     assert d["binding"]["guards"] == ["SafetyGuard"]
@@ -391,9 +382,7 @@ def test_budget_malformed_usage_reported_once():
     guard = SafetyGuard(max_cost=10.0, max_tokens=100)
     result = guard.check({"usage": "unknown"}, context={})
     assert result.passed is False
-    budget_issues = [
-        i for i in result.details["issues"] if i.get("type") == "budget"
-    ]
+    budget_issues = [i for i in result.details["issues"] if i.get("type") == "budget"]
     assert len(budget_issues) == 1
     assert len(budget_issues[0]["details"]) == 1
 
@@ -422,6 +411,7 @@ def test_binding_non_serializable_response_fails_closed():
     """(#31 review) default=str removed: values JSON cannot represent fail
     closed (binding=None) instead of digesting a lossy str() that could
     mask later mutations."""
+
     class _Opaque:
         def __str__(self):
             return "constant"
@@ -441,13 +431,18 @@ def test_binding_digest_integral_float_parity():
 
 
 def test_binding_digest_large_integral_float_parity():
-    """(#31 review / Greptile P1) 1e16 must digest identically to its
-    integer form — Python float repr ('1e+16') diverges from JavaScript's
-    integer notation below the 1e21 exponential switch."""
+    """(#31 review / Greptile P1) 1e15 must digest identically to its
+    integer form — Python float repr ('1000000000000000.0') diverges from
+    JavaScript's integer notation below the 1e21 exponential switch.
+
+    (Originally 1e16 vs 10**16; the safe-integer gate from the #35 review
+    now correctly refuses integer forms beyond +/- (2^53 - 1), because
+    JSON.parse in the TS runtime rounds them — float forms stay valid,
+    since the emitter reproduces JS Number::toString digits.)"""
     from qwed_open_responses.core import _binding_digest
 
-    assert _binding_digest({"a": 1e16}, ["G"]) == _binding_digest(
-        {"a": 10_000_000_000_000_000}, ["G"]
+    assert _binding_digest({"a": 1e15}, ["G"]) == _binding_digest(
+        {"a": 1_000_000_000_000_000}, ["G"]
     )
 
 
@@ -506,7 +501,6 @@ def test_budget_missing_usage_with_trusted_context_passes():
     assert "Cost exceeds limit" in str(over.details)
 
 
-
 # ------------------------------------------------------------------ #
 # 6. VerifiedOpenAI guards=None default
 # ------------------------------------------------------------------ #
@@ -561,8 +555,7 @@ def test_streaming_warn_only_logs_trust_boundary_warning(caplog):
     # Documented warn-only behavior: failed item passes through unmodified.
     assert out == items
     assert any(
-        "disables the trust boundary" in record.message
-        for record in caplog.records
+        "disables the trust boundary" in record.message for record in caplog.records
     )
 
 
@@ -575,8 +568,7 @@ def test_streaming_blocking_mode_does_not_warn(caplog):
 
     assert out[0]["type"] == "system_intervention"
     assert not any(
-        "disables the trust boundary" in record.message
-        for record in caplog.records
+        "disables the trust boundary" in record.message for record in caplog.records
     )
 
 
@@ -606,18 +598,28 @@ class TestCanonicalJsonUtf16KeyOrder:
 
     def test_astral_keys_sort_by_utf16_units(self):
         payload = {
-            "\uffff": 1,          # BMP, 0xFFFF
-            "\U00010000": 2,      # astral, lead surrogate 0xD800
-            "\U0001F600": 3,      # astral, lead surrogate 0xD83D
-            "a": 4,               # BMP, 0x0061
+            "\uffff": 1,  # BMP, 0xFFFF
+            "\U00010000": 2,  # astral, lead surrogate 0xD800
+            "\U0001f600": 3,  # astral, lead surrogate 0xD83D
+            "a": 4,  # BMP, 0x0061
         }
         # JS UTF-16 order: "a" < U+10000 (D800) < U+1F600 (D83D) < U+FFFF
         bs = chr(92)
         expected = (
             '{"a":4,'
-            + '"' + bs + 'ud800' + bs + 'udc00":2,'
-            + '"' + bs + 'ud83d' + bs + 'ude00":3,'
-            + '"' + bs + 'uffff":1}'
+            + '"'
+            + bs
+            + "ud800"
+            + bs
+            + 'udc00":2,'
+            + '"'
+            + bs
+            + "ud83d"
+            + bs
+            + 'ude00":3,'
+            + '"'
+            + bs
+            + 'uffff":1}'
         )
         assert _canonical_json(payload) == expected
 
@@ -634,13 +636,28 @@ class TestFloatParityCrossRuntime:
     @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
     def test_number_tokens_match_node_across_edge_cases(self):
         floats = [
-            0.0, -0.0, 2.5, -2.5, 0.1,
-            1e-6, 1e-7, 1.5e-6, 1e-5, 1e-4, 0.00000125,
-            1e20, 1e21, 9.999999999999999e20, 1.2345678901234568e20,
-            5e-324, 2.2250738585072014e-308,          # min subnormal / min normal
-            1.7976931348623157e308,                    # max double
-            9007199254740994.0, -9007199254740994.0,   # 2^53 + 2
-            1e-323, -1e-323,
+            0.0,
+            -0.0,
+            2.5,
+            -2.5,
+            0.1,
+            1e-6,
+            1e-7,
+            1.5e-6,
+            1e-5,
+            1e-4,
+            0.00000125,
+            1e20,
+            1e21,
+            9.999999999999999e20,
+            1.2345678901234568e20,
+            5e-324,
+            2.2250738585072014e-308,  # min subnormal / min normal
+            1.7976931348623157e308,  # max double
+            9007199254740994.0,
+            -9007199254740994.0,  # 2^53 + 2
+            1e-323,
+            -1e-323,
         ]
 
         def python_token(value: float) -> str:
@@ -653,7 +670,10 @@ class TestFloatParityCrossRuntime:
             "process.stdout.write(JSON.stringify(out));\n"
         )
         result = subprocess.run(
-            ["node", "-e", js_code], capture_output=True, text=True, timeout=30,
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         assert result.returncode == 0, result.stderr
         js_tokens = json.loads(result.stdout)
@@ -670,3 +690,75 @@ class TestFloatParityCrossRuntime:
         assert _canonical_json([1e21]) == "[1e+21]"
         assert _canonical_json([5e-324]) == "[5e-324]"
         assert _canonical_json([-0.0]) == "[0]"
+
+
+class TestStrictModeBlocksAnyFailure:
+    """#35 review (CodeRabbit): strict mode promises to block ANY guard
+    failure — severity must not let a custom GuardResult(passed=False,
+    severity="info") through unblocked, and a raising guard must block the
+    same way a returning error would."""
+
+    def test_info_severity_failure_blocks_in_strict_mode(self):
+        class InfoFailureGuard(BaseGuard):
+            name = "info_failure"
+
+            def check(self, response, context):
+                return GuardResult(
+                    guard_name=self.name,
+                    passed=False,
+                    message="informational failure",
+                    severity="info",
+                )
+
+        verifier = ResponseVerifier(default_guards=[InfoFailureGuard()])
+        result = verifier.verify({"data": "x"})
+        assert result.verified is False
+        assert result.blocked is True
+        assert result.block_reason == "informational failure"
+
+    def test_raising_guard_blocks_in_strict_mode(self):
+        class ExplodingGuard(BaseGuard):
+            name = "exploding"
+
+            def check(self, response, context):
+                raise RuntimeError("guard exploded")
+
+        verifier = ResponseVerifier(default_guards=[ExplodingGuard()])
+        result = verifier.verify({"data": "x"})
+        assert result.verified is False
+        assert result.blocked is True
+        assert "guard exploded" in result.block_reason
+
+    def test_info_severity_failure_still_unblocked_in_non_strict(self):
+        class InfoFailureGuard(BaseGuard):
+            name = "info_failure"
+
+            def check(self, response, context):
+                return GuardResult(
+                    guard_name=self.name,
+                    passed=False,
+                    message="informational failure",
+                    severity="info",
+                )
+
+        verifier = ResponseVerifier(default_guards=[InfoFailureGuard()])
+        verifier.strict_mode = False
+        result = verifier.verify({"data": "x"})
+        assert result.verified is False
+        assert result.blocked is False
+
+
+class TestSafeIntegerRange:
+    """#35 review (CodeRabbit): integers beyond +/- (2^53 - 1) are rounded
+    by JSON.parse in the TS runtime — the runtimes would compute different
+    binding digests. Fail closed instead of serializing exactly."""
+
+    def test_safe_integers_serialize_exactly(self):
+        assert _canonical_json({"n": 9007199254740991}) == '{"n":9007199254740991}'
+        assert _canonical_json({"n": -9007199254740991}) == '{"n":-9007199254740991}'
+
+    def test_unsafe_integer_fails_closed(self):
+        with pytest.raises(TypeError, match="safe-integer"):
+            _canonical_json({"n": 9007199254740993})
+        with pytest.raises(TypeError, match="safe-integer"):
+            _canonical_json({"n": -(2**53)})
