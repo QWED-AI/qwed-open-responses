@@ -9,12 +9,15 @@ streaming warn-only mode labeling.
 
 import asyncio
 import base64
+import json
 import logging
+import shutil
+import subprocess
 
 import pytest
 
 from qwed_open_responses import ResponseVerifier, SafetyGuard, ToolGuard
-from qwed_open_responses.core import VerificationResult
+from qwed_open_responses.core import VerificationResult, _canonical_json
 from qwed_open_responses.guards.base import BaseGuard
 from qwed_open_responses.middleware.streaming_interceptor import (
     OpenResponsesMiddleware,
@@ -405,8 +408,8 @@ def test_verify_structured_output_empty_schema_still_verifies():
 
 
 def test_base64_short_padded_payload_blocked():
-    """(#31 review) 'ZXhlYyg=' (7 alphabet chars + padding) decodes to
-    'exec(' and must be blocked."""
+    """(#31 review) 'ZXhlYyg=' (7 alphabet chars + padding) decodes to the
+    5-character dynamic-execution call token and must be blocked."""
     guard = ToolGuard()
     result = guard.check(
         {"type": "tool_call", "tool_name": "run", "arguments": {"cmd": "ZXhlYyg="}}
@@ -593,3 +596,77 @@ def test_benign_base64_looking_text_passes():
         }
     )
     assert result.passed is True
+
+
+class TestCanonicalJsonUtf16KeyOrder:
+    """#35 review (CodeRabbit): JS Object.keys().sort() orders by UTF-16
+    code units — astral keys (surrogate lead units 0xD800-0xDBFF) sort
+    BEFORE BMP keys above U+D7FF. Python's code-point sort diverges, which
+    would break cross-runtime binding digests for non-BMP keys."""
+
+    def test_astral_keys_sort_by_utf16_units(self):
+        payload = {
+            "\uffff": 1,          # BMP, 0xFFFF
+            "\U00010000": 2,      # astral, lead surrogate 0xD800
+            "\U0001F600": 3,      # astral, lead surrogate 0xD83D
+            "a": 4,               # BMP, 0x0061
+        }
+        # JS UTF-16 order: "a" < U+10000 (D800) < U+1F600 (D83D) < U+FFFF
+        bs = chr(92)
+        expected = (
+            '{"a":4,'
+            + '"' + bs + 'ud800' + bs + 'udc00":2,'
+            + '"' + bs + 'ud83d' + bs + 'ude00":3,'
+            + '"' + bs + 'uffff":1}'
+        )
+        assert _canonical_json(payload) == expected
+
+    def test_bmp_only_keys_unchanged(self):
+        assert _canonical_json({"b": 1, "a": 2}) == '{"a":2,"b":1}'
+
+
+class TestFloatParityCrossRuntime:
+    """#35 review (Sentry HIGH): the Python Number::toString port must
+    agree with the JavaScript runtime for the canonical NUMBER tokens —
+    verified against real node across the IEEE 754 edge cases (fixed/
+    exponential boundaries, subnormals, max double, integral floats)."""
+
+    @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+    def test_number_tokens_match_node_across_edge_cases(self):
+        floats = [
+            0.0, -0.0, 2.5, -2.5, 0.1,
+            1e-6, 1e-7, 1.5e-6, 1e-5, 1e-4, 0.00000125,
+            1e20, 1e21, 9.999999999999999e20, 1.2345678901234568e20,
+            5e-324, 2.2250738585072014e-308,          # min subnormal / min normal
+            1.7976931348623157e308,                    # max double
+            9007199254740994.0, -9007199254740994.0,   # 2^53 + 2
+            1e-323, -1e-323,
+        ]
+
+        def python_token(value: float) -> str:
+            # the token the canonical emitter produces for this float
+            return _canonical_json([value])[1:-1]
+
+        js_code = (
+            "const vals = " + json.dumps([repr(f) for f in floats]) + ";\n"
+            "const out = vals.map(v => String(Number(v)));\n"
+            "process.stdout.write(JSON.stringify(out));\n"
+        )
+        result = subprocess.run(
+            ["node", "-e", js_code], capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        js_tokens = json.loads(result.stdout)
+
+        for value, js_token in zip(floats, js_tokens):
+            assert python_token(value) == js_token, f"mismatch for {value!r}"
+
+    def test_fixed_exponential_boundaries_deterministic(self):
+        # deterministic pins for the JS toString thresholds: fixed for
+        # 1e-6 <= |x| < 1e21, exponential outside, unpadded exponent
+        assert _canonical_json([1e-6]) == "[0.000001]"
+        assert _canonical_json([1e-7]) == "[1e-7]"
+        assert _canonical_json([1e20]) == "[100000000000000000000]"
+        assert _canonical_json([1e21]) == "[1e+21]"
+        assert _canonical_json([5e-324]) == "[5e-324]"
+        assert _canonical_json([-0.0]) == "[0]"

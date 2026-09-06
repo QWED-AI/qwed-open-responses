@@ -24,6 +24,16 @@ def _format_number_js(value: float) -> str:
     an unpadded exponent.
     """
     rep = repr(value)
+    # JS has no ".0" — integral floats print as bare integers, but the
+    # shortest repr DIGITS must still come from repr: for |x| >= 2^53 the
+    # exact int can be LONGER than the shortest round-trip digits (JS
+    # String(9.999999999999999e20) is "999999999999999900000", while
+    # repr(int(x)) is the 21-digit exact binary value — Sentry on PR #35).
+    if rep.endswith(".0"):
+        rep = rep[:-2]
+    if rep in ("0", "-0"):
+        # JS String(-0) === "0"
+        return "0"
     sign = ""
     if rep.startswith("-"):
         sign, rep = "-", rep[1:]
@@ -48,6 +58,68 @@ def _format_number_js(value: float) -> str:
     return sign + mantissa_out + "e" + ("+" if exp1 >= 0 else "-") + str(abs(exp1))
 
 
+def _emit_scalar(node: Any) -> str:
+    """Emit a JSON scalar; unsupported types fail closed with TypeError."""
+    if node is True:
+        return "true"
+    if node is False:
+        return "false"
+    if node is None:
+        return "null"
+    if isinstance(node, float):
+        if not math.isfinite(node):
+            raise TypeError("Non-finite numbers cannot be canonicalized")
+        # ALL finite floats go through the JS toString port — the previous
+        # repr(int(node)) shortcut emitted the EXACT binary integer for
+        # integral floats >= 2^53, whose shortest round-trip digits are
+        # shorter (Sentry on PR #35: 9.999999999999999e20 -> JS
+        # "999999999999999900000", exact int "999999999999999868928")
+        return _format_number_js(node)
+    if isinstance(node, int):
+        return repr(node)
+    if isinstance(node, str):
+        return json.dumps(node)
+    raise TypeError(
+        f"Object of type {type(node).__name__} is not JSON serializable"
+    )
+
+
+def _emit_object(node: dict) -> str:
+    """Emit a dict with keys sorted by UTF-16 code units.
+
+    JavaScript's Object.keys(...).sort() orders by UTF-16 code units, so
+    astral-plane keys (surrogate pairs, lead unit 0xD800-0xDBFF) sort
+    BEFORE BMP keys above U+D7FF — plain code-point sorting in Python
+    would diverge and break cross-runtime binding digests (CodeRabbit on
+    PR #35). Lone surrogates survive via surrogatepass; json.dumps keeps
+    its default ensure_ascii=True, matching the npm escapeNonAscii escapes.
+    """
+    entries = sorted(
+        ((str(key), value) for key, value in node.items()),
+        key=lambda entry: entry[0].encode("utf-16-be", "surrogatepass"),
+    )
+    return (
+        "{"
+        + ",".join(f"{json.dumps(key)}:{_emit(value)}" for key, value in entries)
+        + "}"
+    )
+
+
+def _emit_array(node: Any) -> str:
+    """Emit a list/tuple as a JSON array."""
+    return "[" + ",".join(_emit(item) for item in node) + "]"
+
+
+def _emit(node: Any) -> str:
+    """Dispatch to the container/scalar emitter; unsupported values fail
+    closed with TypeError."""
+    if isinstance(node, dict):
+        return _emit_object(node)
+    if isinstance(node, (list, tuple)):
+        return _emit_array(node)
+    return _emit_scalar(node)
+
+
 def _canonical_json(obj: Any) -> str:
     """Canonical JSON serialization for digest computation (#31).
 
@@ -56,50 +128,14 @@ def _canonical_json(obj: Any) -> str:
     - floats render with JavaScript ``Number::toString`` semantics —
       Python repr diverges (``1e-05`` vs ``0.00001``, ``1e-07`` vs
       ``1e-7``) and binding digests must match across runtimes;
+    - keys sort by UTF-16 code units, matching the npm canonicalizer's
+      Object.keys(...).sort() even for astral-plane keys;
     - non-finite numbers and non-JSON-serializable values fail closed
       with TypeError (-> ``_safe_binding`` returns None) instead of
       masking mutations behind a lossy string conversion.
 
     No random hex markers or substitutions are involved.
     """
-
-    def _emit(node: Any) -> str:
-        if node is True:
-            return "true"
-        if node is False:
-            return "false"
-        if node is None:
-            return "null"
-        if isinstance(node, float):
-            if not math.isfinite(node):
-                raise TypeError("Non-finite numbers cannot be canonicalized")
-            if node.is_integer() and abs(node) < 1e21:
-                return repr(int(node))
-            return _format_number_js(node)
-        if isinstance(node, int):
-            return repr(node)
-        if isinstance(node, str):
-            return json.dumps(node)
-        if isinstance(node, dict):
-            # Sort by the raw (stringified) key — matches the npm
-            # canonicalizer, which sorts Object.keys before escaping.
-            entries = sorted(
-                ((str(key), value) for key, value in node.items()),
-                key=lambda entry: entry[0],
-            )
-            return (
-                "{"
-                + ",".join(
-                    f"{json.dumps(key)}:{_emit(value)}" for key, value in entries
-                )
-                + "}"
-            )
-        if isinstance(node, (list, tuple)):
-            return "[" + ",".join(_emit(item) for item in node) + "]"
-        raise TypeError(
-            f"Object of type {type(node).__name__} is not JSON serializable"
-        )
-
     return _emit(obj)
 
 
