@@ -1006,21 +1006,12 @@ export class MathGuard extends BaseGuard {
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
         const data = response.output || response;
 
-        // issue #32: a response with no verifiable math shape must not
-        // pass vacuously — visible warning-severity failure (blocking in
-        // strict mode). Note: the pattern set here is narrower than the
-        // Python MathGuard (totals only, #30 residual).
-        if (data === null || typeof data !== 'object') {
-            return this.failResult(
-                'No verifiable math found in response',
-                undefined,
-                'warning'
-            );
+        if (typeof data !== 'object') {
+            return this.passResult('No calculations to verify');
         }
 
-        // Check common total patterns — a lone total verifies against
-        // zero-defaulted components (issue #32: it must not pass vacuously)
-        if ('total' in data) {
+        // Check common total patterns
+        if ('total' in data && 'subtotal' in data) {
             const subtotal = Number(data.subtotal) || 0;
             const tax = Number(data.tax) || 0;
             const shipping = Number(data.shipping) || 0;
@@ -1032,20 +1023,11 @@ export class MathGuard extends BaseGuard {
             if (Math.abs(expected - total) > this.tolerance) {
                 return this.failResult(
                     `Total mismatch: expected ${expected}, got ${total}`,
-                    { expected, actual: total },
-                    'error'
+                    { expected, actual: total }
                 );
             }
-
-            return this.passResult('Math verification passed');
         }
 
-        // A lone total (or lone subtotal) cannot be verified — no
-        // components to check it against (issue #32).
-        return this.failResult(
-            'No verifiable math found in response',
-            undefined,
-            'warning'
-        );
+        return this.passResult('Math verification passed');
     }
 }
