@@ -1028,12 +1028,12 @@ export class MathGuard extends BaseGuard {
             const obj = data as Record<string, any>;
             if (this.totalsApplicable(obj)) {
                 verifiable = true;
-                // TOTAL_PATTERNS are alternative formulas: any applicable
-                // formula checking out verifies the response
-                const mismatch = this.verifyTotals(obj);
-                if (mismatch !== null) {
-                    errors.push(mismatch);
-                }
+                // Greptile P1 on PR #36: each distinct vocabulary (total, net, balance)
+                // is an independent financial assertion. If a payload has both a valid
+                // total and an invalid net, the net mismatch must NOT be suppressed.
+                // Sentry on PR #36: report all errors instead of only the first.
+                const totalErrors = this.verifyTotals(obj);
+                errors.push(...totalErrors);
             }
             if (this.percentagesApplicable(obj)) {
                 verifiable = true;
@@ -1077,9 +1077,9 @@ export class MathGuard extends BaseGuard {
     // CodeRabbit on PR #36: Number(null) === 0 and Number('') === 0, so
     // null and blank-string fields would silently zero-default. Reject
     // them explicitly (booleans coerce identically on both runtimes —
-    // float(True) === 1.0 in Python — so they stay numeric).
+    // float(True) === 1.0 in Python — so they stay numeric per Sentry/Greptile).
     private static toFiniteNumber(value: unknown): number | null {
-        if (value === null || value === undefined || typeof value === 'boolean') {
+        if (value === null || value === undefined) {
             return null;
         }
         if (typeof value === 'string' && value.trim() === '') {
@@ -1119,12 +1119,12 @@ export class MathGuard extends BaseGuard {
         return calculated;
     }
 
-    private verifyTotals(data: Record<string, any>): string | null {
-        // Sentry MEDIUM on PR #36: the patterns are ALTERNATIVE formulas —
-        // mirror the Python guard and verify when ANY applicable formula
-        // checks out; report errors only when none does.
+    private verifyTotals(data: Record<string, any>): string[] {
+        // Greptile P1 on PR #36: each distinct vocabulary (total, net, balance)
+        // is an independent financial assertion. If a payload has both a valid
+        // total and an invalid net, the net mismatch must NOT be suppressed.
+        // Sentry on PR #36: return all accumulated errors.
         const errors: string[] = [];
-        let verifiedAny = false;
         for (const [totalField, components] of MathGuard.TOTAL_PATTERNS) {
             if (!(totalField in data)) {
                 continue;
@@ -1145,11 +1145,9 @@ export class MathGuard extends BaseGuard {
             }
             if (Math.abs(calculated - expected) > this.tolerance) {
                 errors.push(`${totalField} mismatch: expected ${expected}, calculated ${calculated}`);
-            } else {
-                verifiedAny = true;
             }
         }
-        return verifiedAny ? null : (errors[0] ?? null);
+        return errors;
     }
 
     private percentagesApplicable(data: Record<string, any>): boolean {

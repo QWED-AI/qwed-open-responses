@@ -83,15 +83,16 @@ class MathGuard(BaseGuard):
             verifiable = True
             errors.extend(self._verify_inline_calculations(data))
 
-        # Custom rules execute for every response shape (Sentry/Greptile
-        # on PR #36: the refactor dropped this loop and silently skipped
-        # configured validation). A rule APPLIES when its field is present
-        # — an applied rule marks the response verifiable.
+        # Custom rules execute when response data is an object (Greptile P1
+        # on PR #36: scalar outputs like {"output": 42} must not crash
+        # field-lookup with TypeError). A rule APPLIES when its field is
+        # present in dict data — an applied rule marks the response verifiable.
         rule_applied = False
-        for rule in self.custom_rules:
-            if isinstance(data, dict) and rule.get("field") in data:
-                rule_applied = True
-            errors.extend(self._run_custom_rule(rule, data))
+        if isinstance(data, dict):
+            for rule in self.custom_rules:
+                if rule.get("field") in data:
+                    rule_applied = True
+                    errors.extend(self._run_custom_rule(rule, data))
         verifiable = verifiable or rule_applied
 
         if errors:
@@ -140,14 +141,13 @@ class MathGuard(BaseGuard):
         verifiable = False
 
         if self.verify_totals and self._totals_applicable(data):
-            verifiable = True
-            # the TOTAL_PATTERNS are alternative formulas: the response
-            # verifies if ANY applicable pattern checks out (a receipt
-            # with shipping legitimately mismatches the discount-less
-            # formula)
+            # Greptile P1 on PR #36: each distinct vocabulary (total, net, balance)
+            # is an independent financial assertion. If a payload has both a valid
+            # total and an invalid net, the net mismatch must NOT be suppressed.
             total_errors, totals_ok = self._verify_totals(data)
-            if not totals_ok:
-                errors.extend(total_errors)
+            errors.extend(total_errors)
+            if totals_ok:
+                verifiable = True
 
         if self.verify_percentages and self._percentages_applicable(data):
             verifiable = True
@@ -222,39 +222,41 @@ class MathGuard(BaseGuard):
 
         return errors, verified_any
 
+    def _check_single_percentage(
+        self, base_key: str, rate_val: Any, data: Dict
+    ) -> Optional[str]:
+        """Check one percentage calculation. Returns error message or None."""
+        base = float(data[base_key])
+        rate = float(rate_val) / 100.0
+        expected_amount = base * rate
+        actual = float(data[base_key + "_amount"])
+        # Greptile P1 on PR #36: float("nan")/"inf" convert cleanly and NaN
+        # tolerance comparisons are always false — non-finite inputs fail
+        # closed as errors
+        if not all(math.isfinite(v) for v in (base, rate, expected_amount, actual)):
+            return f"Percentage fields for {base_key} contain non-finite values"
+
+        if abs(expected_amount - actual) > self.tolerance:
+            return (
+                f"Percentage calculation error: {rate*100}% of {base} "
+                f"should be {expected_amount}, got {actual}"
+            )
+        return None
+
     def _verify_percentages(self, data: Dict) -> tuple:
         """Verify percentage calculations. Returns (errors, verified_any)."""
         errors = []
         found_any = False
 
-        # Look for percentage patterns
         for key, value in data.items():
-            # Find fields that might be percentages
-            if key.endswith(self._PERCENT_SUFFIXES):
-                base_key = key.replace("_percent", "").replace("_rate", "")
-                if base_key in data and base_key + "_amount" in data:
-                    found_any = True
-                    base = float(data[base_key])
-                    rate = float(value) / 100.0
-                    expected_amount = base * rate
-                    actual = float(data[base_key + "_amount"])
-                    # Greptile P1 on PR #36: float("nan")/"inf" convert
-                    # cleanly and NaN tolerance comparisons are always
-                    # false — non-finite inputs fail closed as errors
-                    if not all(
-                        math.isfinite(v) for v in (base, rate, expected_amount, actual)
-                    ):
-                        errors.append(
-                            f"Percentage fields for {base_key} contain "
-                            "non-finite values"
-                        )
-                        continue
-
-                    if abs(expected_amount - actual) > self.tolerance:
-                        errors.append(
-                            f"Percentage calculation error: {rate*100}% of {base} "
-                            f"should be {expected_amount}, got {actual}"
-                        )
+            if not key.endswith(self._PERCENT_SUFFIXES):
+                continue
+            base_key = key.replace("_percent", "").replace("_rate", "")
+            if base_key in data and (base_key + "_amount") in data:
+                found_any = True
+                err = self._check_single_percentage(base_key, value, data)
+                if err:
+                    errors.append(err)
 
         # found_any is APPLICABILITY, not success (Greptile P1 on PR #36:
         # treating it as ok silently ignored percentage mismatches —
@@ -289,24 +291,35 @@ class MathGuard(BaseGuard):
         return errors
 
     def _run_custom_rule(self, rule: Dict, data: Any) -> List[str]:
-        """Run a custom verification rule."""
+        """Run a custom verification rule safely without uncaught exceptions."""
+        if not isinstance(data, dict):
+            return []
+
         errors = []
+        field = rule.get("field")
+        if not field or field not in data:
+            return []
+
+        try:
+            val = float(data[field])
+        except (ValueError, TypeError):
+            return [f"{field} is not a valid number"]
 
         rule_type = rule.get("type")
-
         if rule_type == "equals":
-            field = rule.get("field")
             expected = rule.get("expected")
-            if field in data and abs(float(data[field]) - expected) > self.tolerance:
-                errors.append(f"{field} should equal {expected}")
+            if expected is not None:
+                try:
+                    exp_val = float(expected)
+                    if abs(val - exp_val) > self.tolerance:
+                        errors.append(f"{field} should equal {expected}")
+                except (ValueError, TypeError):
+                    errors.append(f"Invalid expected value for {field}: {expected}")
 
         elif rule_type == "range":
-            field = rule.get("field")
             min_val = rule.get("min", float("-inf"))
             max_val = rule.get("max", float("inf"))
-            if field in data:
-                val = float(data[field])
-                if val < min_val or val > max_val:
-                    errors.append(f"{field}={val} outside range [{min_val}, {max_val}]")
+            if val < min_val or val > max_val:
+                errors.append(f"{field}={val} outside range [{min_val}, {max_val}]")
 
         return errors

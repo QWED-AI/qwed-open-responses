@@ -211,3 +211,45 @@ class TestNonFinitePercentageFailClosed:
         result = guard.check({"output": payload})
         assert result.passed is False
         assert any("non-finite" in e for e in result.details["errors"])
+
+
+class TestReviewWaveFixes:
+    """Tests for SonarQube, Sentry, and Greptile review findings on PR #36."""
+
+    def test_invalid_net_not_suppressed_by_valid_total(self):
+        # Greptile P1: valid total must not hide invalid net mismatch
+        guard = MathGuard()
+        payload = {
+            "subtotal": 100,
+            "tax": 8,
+            "total": 108,
+            "gross": 100,
+            "deductions": 10,
+            "net": 95,  # expected 90
+        }
+        result = guard.check({"output": payload})
+        assert result.passed is False
+        assert any("net mismatch" in e for e in result.details["errors"])
+
+    def test_boolean_math_coercion(self):
+        # Greptile / Sentry: True coerced to 1.0, False to 0.0
+        guard = MathGuard()
+        res_pass = guard.check({"output": {"subtotal": 100, "tax": True, "total": 101}})
+        assert res_pass.passed is True
+
+        res_fail = guard.check({"output": {"subtotal": 100, "tax": True, "total": 105}})
+        assert res_fail.passed is False
+
+    def test_custom_rules_safe_on_scalar_output(self):
+        # Greptile P1: scalar outputs must not raise TypeError
+        guard = MathGuard(custom_rules=[{"type": "equals", "field": "output", "expected": 42}])
+        result = guard.check({"output": 42})
+        assert result.passed is False
+        assert "No verifiable math" in result.message
+
+    def test_custom_rules_safe_on_non_numeric_field(self):
+        # Greptile P1: non-numeric rule fields fail gracefully instead of ValueError
+        guard = MathGuard(custom_rules=[{"type": "equals", "field": "val", "expected": 10}])
+        result = guard.check({"output": {"val": "invalid_num"}})
+        assert result.passed is False
+        assert any("not a valid number" in e for e in result.details["errors"])
