@@ -471,6 +471,7 @@ class ResponseVerifier:
             return VerificationResult(
                 verified=False,
                 response=parsed_response,
+                request_id=(context or {}).get("request_id"),
                 guards_passed=guards_passed,
                 guards_failed=guards_failed + 1,
                 guard_results=guard_results,

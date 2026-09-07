@@ -142,6 +142,15 @@ class TestRequestIdCorrelation:
         )
         assert result.request_id is None
 
+    def test_request_id_preserved_on_binding_failure(self):
+        # Sentry: cyclic/un-bindable response preserves request_id from context
+        verifier = ResponseVerifier(default_guards=[MathGuard()])
+        cyclic_payload: dict = {"output": {"subtotal": 100, "tax": 8, "total": 108}}
+        cyclic_payload["self"] = cyclic_payload
+        result = verifier.verify(cyclic_payload, context={"request_id": "req-cyclic"})
+        assert result.verified is False
+        assert result.request_id == "req-cyclic"
+
 
 class TestAwareUtcTimestamp:
     """issue #32 item 4: datetime.utcnow() is deprecated — the timestamp is
