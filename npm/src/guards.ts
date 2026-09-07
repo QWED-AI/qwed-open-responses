@@ -1003,31 +1003,222 @@ export class MathGuard extends BaseGuard {
         this.tolerance = options.tolerance ?? 0.01;
     }
 
-    check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
-        const data = response.output || response;
+    private static readonly CALC_PATTERN = /(\d{1,30}(?:\.\d{1,30})?)\s{0,10}([\+\-\*\/])\s{0,10}(\d{1,30}(?:\.\d{1,30})?)\s{0,10}=\s{0,10}(\d{1,30}(?:\.\d{1,30})?)/;
+    private static readonly PERCENT_SUFFIXES = ['_percent', '_rate'];
 
-        if (typeof data !== 'object') {
-            return this.passResult('No calculations to verify');
+    // ONE canonical total formula (Greptile P1 on PR #36: the two
+    // overlapping "total" formulas let a receipt with supplied shipping
+    // pass via the discount-less variant). net/balance are distinct
+    // vocabularies, so any-verifies remains sound across them.
+    private static readonly TOTAL_PATTERNS: Array<[string, string[]]> = [
+        ['total', ['subtotal', 'tax', 'shipping', '-discount']],
+        ['net', ['gross', '-deductions']],
+        ['balance', ['credits', '-debits']],
+    ];
+
+    check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
+        // CodeRabbit on PR #36: select output by presence rather than truthiness
+        // so falsy outputs like '' or 0 do not fall back to the outer response
+        const data = response !== null && typeof response === 'object' && 'output' in response ? response.output : response;
+        const errors: string[] = [];
+        // Configured custom rules would be an explicit operator assertion
+        // that the response contains verifiable content; the TS guard does
+        // not support custom_rules (Python-only feature, #30 residual).
+        let verifiable = false;
+
+        if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
+            const obj = data as Record<string, any>;
+            if (this.totalsApplicable(obj)) {
+                verifiable = true;
+                // Greptile P1 on PR #36: each distinct vocabulary (total, net, balance)
+                // is an independent financial assertion. If a payload has both a valid
+                // total and an invalid net, the net mismatch must NOT be suppressed.
+                // Sentry on PR #36: report all errors instead of only the first.
+                const totalErrors = this.verifyTotals(obj);
+                errors.push(...totalErrors);
+            }
+            if (this.percentagesApplicable(obj)) {
+                verifiable = true;
+                const pctErrors = this.verifyPercentages(obj);
+                errors.push(...pctErrors);
+            }
+        } else if (typeof data === 'string' && MathGuard.CALC_PATTERN.test(data)) {
+            // merged condition (Sonar): the bounded-pattern test gates the
+            // inline-calculation verifier
+            verifiable = true;
+            const inlineErrors = this.verifyInlineCalculations(data);
+            errors.push(...inlineErrors);
         }
 
-        // Check common total patterns
-        if ('total' in data && 'subtotal' in data) {
-            const subtotal = Number(data.subtotal) || 0;
-            const tax = Number(data.tax) || 0;
-            const shipping = Number(data.shipping) || 0;
-            const discount = Number(data.discount) || 0;
-            const total = Number(data.total);
+        if (errors.length > 0) {
+            return this.failResult(
+                `Math verification failed: ${errors.length} error(s)`,
+                { errors },
+                'error'
+            );
+        }
 
-            const expected = subtotal + tax + shipping - discount;
-
-            if (Math.abs(expected - total) > this.tolerance) {
-                return this.failResult(
-                    `Total mismatch: expected ${expected}, got ${total}`,
-                    { expected, actual: total }
-                );
-            }
+        if (!verifiable) {
+            // issue #32: a response with no verifiable math shape must not
+            // pass vacuously — visible warning-severity failure (blocking
+            // in strict mode)
+            return this.failResult(
+                'No verifiable math found in response',
+                undefined,
+                'warning'
+            );
         }
 
         return this.passResult('Math verification passed');
+    }
+
+    // CodeRabbit on PR #36: Number(null) === 0 and Number('') === 0, so
+    // null and blank-string fields would silently zero-default. Reject
+    // them explicitly (booleans coerce identically on both runtimes —
+    // float(True) === 1.0 in Python — so they stay numeric per Sentry/Greptile).
+    // Reject arrays/objects before Number(value) (Number([]) === 0, Number([8]) === 8).
+    private static toFiniteNumber(value: unknown): number | null {
+        if (value === null || value === undefined || typeof value === 'object') {
+            return null;
+        }
+        if (typeof value === 'string' && value.trim() === '') {
+            return null;
+        }
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+    }
+
+    private totalsApplicable(data: Record<string, any>): boolean {
+        // total field AND at least one component present — a lone total
+        // with no components verifies nothing (CodeAnt on PR #36)
+        for (const [totalField, components] of MathGuard.TOTAL_PATTERNS) {
+            if (totalField in data && components.some((c) => (c.startsWith('-') ? c.slice(1) : c) in data)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private patternCalculated(data: Record<string, any>, components: string[]): number | null {
+        // missing components count as zero, mirroring the Python guard;
+        // SUPPLIED non-finite values return null (CodeRabbit on PR #36:
+        // Number('invalid') is NaN and NaN tolerance checks always pass)
+        let calculated = 0;
+        for (const comp of components) {
+            const field = comp.startsWith('-') ? comp.slice(1) : comp;
+            if (!(field in data)) {
+                continue;
+            }
+            const value = MathGuard.toFiniteNumber(data[field]);
+            if (value === null) {
+                return null;
+            }
+            calculated += comp.startsWith('-') ? -value : value;
+        }
+        return calculated;
+    }
+
+    private verifyTotals(data: Record<string, any>): string[] {
+        // Greptile P1 on PR #36: each distinct vocabulary (total, net, balance)
+        // is an independent financial assertion. If a payload has both a valid
+        // total and an invalid net, the net mismatch must NOT be suppressed.
+        // Sentry on PR #36: return all accumulated errors.
+        const errors: string[] = [];
+        for (const [totalField, components] of MathGuard.TOTAL_PATTERNS) {
+            if (!(totalField in data)) {
+                continue;
+            }
+            if (!components.some((c) => (c.startsWith('-') ? c.slice(1) : c) in data)) {
+                // a lone total with no components verifies nothing
+                continue;
+            }
+            const expected = MathGuard.toFiniteNumber(data[totalField]);
+            if (expected === null) {
+                errors.push(`${totalField} is not a finite number`);
+                continue;
+            }
+            const calculated = this.patternCalculated(data, components);
+            if (calculated === null) {
+                errors.push(`${totalField} components contain non-numeric values`);
+                continue;
+            }
+            if (Math.abs(calculated - expected) > this.tolerance) {
+                errors.push(`${totalField} mismatch: expected ${expected}, calculated ${calculated}`);
+            }
+        }
+        return errors;
+    }
+
+    private percentagesApplicable(data: Record<string, any>): boolean {
+        for (const key of Object.keys(data)) {
+            if (MathGuard.PERCENT_SUFFIXES.some((s) => key.endsWith(s))) {
+                const baseKey = key.replace('_percent', '').replace('_rate', '');
+                if (baseKey in data && baseKey + '_amount' in data) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private verifyPercentages(data: Record<string, any>): string[] {
+        // Sentry on PR #36: collect and return all percentage errors rather
+        // than returning on the first error, matching the Python guard.
+        const errors: string[] = [];
+        for (const key of Object.keys(data)) {
+            if (!MathGuard.PERCENT_SUFFIXES.some((s) => key.endsWith(s))) {
+                continue;
+            }
+            const baseKey = key.replace('_percent', '').replace('_rate', '');
+            if (baseKey in data && baseKey + '_amount' in data) {
+                const base = MathGuard.toFiniteNumber(data[baseKey]);
+                const rateNum = MathGuard.toFiniteNumber(data[key]);
+                const actual = MathGuard.toFiniteNumber(data[baseKey + '_amount']);
+                if (base === null || rateNum === null || actual === null) {
+                    errors.push('Percentage fields contain non-numeric values');
+                    continue;
+                }
+                const rate = rateNum / 100.0;
+                const expected = base * rate;
+                if (!Number.isFinite(expected)) {
+                    errors.push('Percentage fields contain non-finite values');
+                    continue;
+                }
+                if (Math.abs(expected - actual) > this.tolerance) {
+                    errors.push(
+                        `Percentage calculation error: ${rate * 100}% of ${base} should be ${expected}, got ${actual}`
+                    );
+                }
+            }
+        }
+        return errors;
+    }
+
+    private verifyInlineCalculations(text: string): string[] {
+        // Sentry on PR #36: collect and return all inline calculation errors
+        // rather than returning on the first error, matching the Python guard.
+        const errors: string[] = [];
+        const scanner = new RegExp(MathGuard.CALC_PATTERN.source, 'g');
+        for (const match of text.matchAll(scanner)) {
+            const a = Number(match[1]);
+            const op = match[2];
+            const b = Number(match[3]);
+            const result = Number(match[4]);
+            if (![a, b, result].every(Number.isFinite)) {
+                errors.push('Calculation fields contain non-finite values');
+                continue;
+            }
+            let expected: number;
+            if (op === '+') expected = a + b;
+            else if (op === '-') expected = a - b;
+            else if (op === '*') expected = a * b;
+            else expected = b !== 0 ? a / b : Infinity;
+            if (Math.abs(expected - result) > this.tolerance) {
+                errors.push(
+                    `Calculation error: ${a} ${op} ${b} = ${result} (should be ${expected})`
+                );
+            }
+        }
+        return errors;
     }
 }

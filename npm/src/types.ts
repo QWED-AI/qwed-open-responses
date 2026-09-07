@@ -33,6 +33,8 @@ export interface VerificationResult {
      * with allowWarnings=false.
      */
     warnings?: GuardResult[];
+    /** issue #32: operator correlation ID, taken from context.request_id (requestId also accepted) */
+    requestId?: string;
     blocked: boolean;
     blockReason?: string;
     timestamp: string;
