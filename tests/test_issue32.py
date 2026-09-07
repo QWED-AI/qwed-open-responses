@@ -242,38 +242,52 @@ class TestReviewWaveFixes:
 
     def test_custom_rules_safe_on_scalar_output(self):
         # Greptile P1: scalar outputs must not raise TypeError
-        guard = MathGuard(custom_rules=[{"type": "equals", "field": "output", "expected": 42}])
+        guard = MathGuard(
+            custom_rules=[{"type": "equals", "field": "output", "expected": 42}]
+        )
         result = guard.check({"output": 42})
         assert result.passed is False
         assert "No verifiable math" in result.message
 
     def test_custom_rules_safe_on_non_numeric_field(self):
         # Greptile P1: non-numeric rule fields fail gracefully instead of ValueError
-        guard = MathGuard(custom_rules=[{"type": "equals", "field": "val", "expected": 10}])
+        guard = MathGuard(
+            custom_rules=[{"type": "equals", "field": "val", "expected": 10}]
+        )
         result = guard.check({"output": {"val": "invalid_num"}})
         assert result.passed is False
         assert any("not a valid number" in e for e in result.details["errors"])
 
     def test_custom_rule_finite_operands(self):
         # Greptile / CodeRabbit: NaN / inf operands in equals / range rules fail closed
-        guard_nan_val = MathGuard(custom_rules=[{"type": "equals", "field": "val", "expected": 10}])
+        guard_nan_val = MathGuard(
+            custom_rules=[{"type": "equals", "field": "val", "expected": 10}]
+        )
         res1 = guard_nan_val.check({"output": {"val": float("nan")}})
         assert res1.passed is False
         assert any("not a valid number" in e for e in res1.details["errors"])
 
-        guard_nan_exp = MathGuard(custom_rules=[{"type": "equals", "field": "val", "expected": float("nan")}])
+        guard_nan_exp = MathGuard(
+            custom_rules=[{"type": "equals", "field": "val", "expected": float("nan")}]
+        )
         res2 = guard_nan_exp.check({"output": {"val": 10}})
         assert res2.passed is False
         assert any("Invalid expected value" in e for e in res2.details["errors"])
 
-        guard_nan_min = MathGuard(custom_rules=[{"type": "range", "field": "val", "min": float("nan"), "max": 10}])
+        guard_nan_min = MathGuard(
+            custom_rules=[
+                {"type": "range", "field": "val", "min": float("nan"), "max": 10}
+            ]
+        )
         res3 = guard_nan_min.check({"output": {"val": 5}})
         assert res3.passed is False
         assert any("Invalid min bound" in e for e in res3.details["errors"])
 
     def test_custom_rule_string_range_bounds(self):
         # Greptile / CodeRabbit: string range bounds like "1" and "5" are parsed without TypeError
-        guard = MathGuard(custom_rules=[{"type": "range", "field": "score", "min": "1", "max": "5"}])
+        guard = MathGuard(
+            custom_rules=[{"type": "range", "field": "score", "min": "1", "max": "5"}]
+        )
         assert guard.check({"output": {"score": 3}}).passed is True
         assert guard.check({"output": {"score": 0}}).passed is False
         assert guard.check({"output": {"score": 6}}).passed is False
@@ -302,3 +316,10 @@ class TestReviewWaveFixes:
         res = guard.check({"output": "", "subtotal": 100, "total": 100})
         assert res.passed is False
         assert "No verifiable math" in res.message
+
+    def test_non_numeric_total_reports_total_not_components(self):
+        # Sentry: non-numeric total blames the total field, not components
+        guard = MathGuard()
+        res = guard.check({"output": {"subtotal": 100, "tax": 8, "total": "invalid"}})
+        assert res.passed is False
+        assert any("total is not a finite number" in e for e in res.details["errors"])

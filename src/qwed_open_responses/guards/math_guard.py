@@ -56,6 +56,48 @@ class MathGuard(BaseGuard):
         self.verify_percentages = verify_percentages
         self.custom_rules = custom_rules or []
 
+    def _check_content(self, data: Any, errors: List[str]) -> bool:
+        """Verify built-in dict math or inline calculations."""
+        if isinstance(data, dict):
+            try:
+                return self._verify_dict_math(data, errors)
+            except (ValueError, TypeError) as exc:
+                # Sentry on PR #36: append to errors so prior errors are not lost
+                errors.append(f"Math fields contain non-numeric values: {exc}")
+                return False
+        if isinstance(data, str) and self._CALC_PATTERN.search(data):
+            errors.extend(self._verify_inline_calculations(data))
+            return True
+        return False
+
+    def _check_custom_rules(self, data: Any, errors: List[str]) -> bool:
+        """Run configured custom verification rules on dict data."""
+        if not isinstance(data, dict) or not self.custom_rules:
+            return False
+        rule_applied = False
+        for rule in self.custom_rules:
+            field = rule.get("field")
+            if field and field in data:
+                rule_applied = True
+                errors.extend(self._run_custom_rule(rule, data))
+        return rule_applied
+
+    def _build_error_result(self, errors: List[str]) -> GuardResult:
+        """Format failing result preserving non-numeric context."""
+        has_non_numeric = any(
+            "non-numeric" in e or "not a finite number" in e for e in errors
+        )
+        msg = (
+            f"Math fields contain non-numeric values: {len(errors)} error(s)"
+            if has_non_numeric
+            else f"Math verification failed: {len(errors)} error(s)"
+        )
+        return self.fail_result(
+            message=msg,
+            details={"errors": errors},
+            severity="error",
+        )
+
     def check(
         self,
         response: Dict[str, Any],
@@ -64,45 +106,13 @@ class MathGuard(BaseGuard):
         """Verify math in response."""
         data = response.get("output", response)
         errors: List[str] = []
-        verifiable = False
 
-        if isinstance(data, dict):
-            try:
-                verifiable = self._verify_dict_math(data, errors) or verifiable
-            except (ValueError, TypeError) as exc:
-                # Sentry on PR #36: append to errors so previously found
-                # mismatch errors are not discarded
-                errors.append(f"Math fields contain non-numeric values: {exc}")
-        elif isinstance(data, str) and self._CALC_PATTERN.search(data):
-            # merged condition (Sonar): the bounded-pattern search gates
-            # the inline-calculation verifier
-            verifiable = True
-            errors.extend(self._verify_inline_calculations(data))
-
-        # Custom rules execute when response data is an object (Greptile P1
-        # on PR #36: scalar outputs like {"output": 42} must not crash
-        # field-lookup with TypeError). A rule APPLIES when its field is
-        # present in dict data — an applied rule marks the response verifiable.
-        rule_applied = False
-        if isinstance(data, dict):
-            for rule in self.custom_rules:
-                if rule.get("field") in data:
-                    rule_applied = True
-                    errors.extend(self._run_custom_rule(rule, data))
-        verifiable = verifiable or rule_applied
+        content_verifiable = self._check_content(data, errors)
+        rules_applied = self._check_custom_rules(data, errors)
+        verifiable = content_verifiable or rules_applied
 
         if errors:
-            has_non_numeric = any("non-numeric" in e for e in errors)
-            msg = (
-                f"Math fields contain non-numeric values: {len(errors)} error(s)"
-                if has_non_numeric
-                else f"Math verification failed: {len(errors)} error(s)"
-            )
-            return self.fail_result(
-                message=msg,
-                details={"errors": errors},
-                severity="error",
-            )
+            return self._build_error_result(errors)
 
         if not verifiable:
             # issue #32: a response with no verifiable math shape must not
@@ -226,7 +236,7 @@ class MathGuard(BaseGuard):
                 continue
             expected_total = self._to_finite_float(data[total_field])
             if expected_total is None:
-                errors.append(f"{total_field} components contain non-numeric values")
+                errors.append(f"{total_field} is not a finite number")
                 continue
 
             calculated = self._pattern_calculated(data, components)
@@ -314,9 +324,7 @@ class MathGuard(BaseGuard):
 
         return errors
 
-    def _run_custom_equals_rule(
-        self, rule: Dict, val: float, field: str
-    ) -> List[str]:
+    def _run_custom_equals_rule(self, rule: Dict, val: float, field: str) -> List[str]:
         """Run equals custom rule validating finite expected value."""
         expected_raw = rule.get("expected")
         if expected_raw is None:
@@ -328,9 +336,7 @@ class MathGuard(BaseGuard):
             return [f"{field} should equal {expected_raw}"]
         return []
 
-    def _run_custom_range_rule(
-        self, rule: Dict, val: float, field: str
-    ) -> List[str]:
+    def _run_custom_range_rule(self, rule: Dict, val: float, field: str) -> List[str]:
         """Run range custom rule validating finite min/max bounds."""
         min_raw = rule.get("min")
         max_raw = rule.get("max")
