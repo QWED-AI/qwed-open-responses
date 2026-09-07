@@ -1039,19 +1039,15 @@ export class MathGuard extends BaseGuard {
             }
             if (this.percentagesApplicable(obj)) {
                 verifiable = true;
-                const mismatch = this.verifyPercentages(obj);
-                if (mismatch !== null) {
-                    errors.push(mismatch);
-                }
+                const pctErrors = this.verifyPercentages(obj);
+                errors.push(...pctErrors);
             }
         } else if (typeof data === 'string' && MathGuard.CALC_PATTERN.test(data)) {
             // merged condition (Sonar): the bounded-pattern test gates the
             // inline-calculation verifier
             verifiable = true;
-            const mismatch = this.verifyInlineCalculations(data);
-            if (mismatch !== null) {
-                errors.push(mismatch);
-            }
+            const inlineErrors = this.verifyInlineCalculations(data);
+            errors.push(...inlineErrors);
         }
 
         if (errors.length > 0) {
@@ -1164,7 +1160,10 @@ export class MathGuard extends BaseGuard {
         return false;
     }
 
-    private verifyPercentages(data: Record<string, any>): string | null {
+    private verifyPercentages(data: Record<string, any>): string[] {
+        // Sentry on PR #36: collect and return all percentage errors rather
+        // than returning on the first error, matching the Python guard.
+        const errors: string[] = [];
         for (const key of Object.keys(data)) {
             if (!MathGuard.PERCENT_SUFFIXES.some((s) => key.endsWith(s))) {
                 continue;
@@ -1175,26 +1174,29 @@ export class MathGuard extends BaseGuard {
                 const rateNum = MathGuard.toFiniteNumber(data[key]);
                 const actual = MathGuard.toFiniteNumber(data[baseKey + '_amount']);
                 if (base === null || rateNum === null || actual === null) {
-                    return 'Percentage fields contain non-numeric values';
+                    errors.push('Percentage fields contain non-numeric values');
+                    continue;
                 }
                 const rate = rateNum / 100.0;
                 const expected = base * rate;
                 if (!Number.isFinite(expected)) {
-                    return 'Percentage fields contain non-finite values';
+                    errors.push('Percentage fields contain non-finite values');
+                    continue;
                 }
                 if (Math.abs(expected - actual) > this.tolerance) {
-                    return `Percentage calculation error: ${rate * 100}% of ${base} should be ${expected}, got ${actual}`;
+                    errors.push(
+                        `Percentage calculation error: ${rate * 100}% of ${base} should be ${expected}, got ${actual}`
+                    );
                 }
             }
         }
-        return null;
+        return errors;
     }
 
-    private verifyInlineCalculations(text: string): string | null {
-        // Greptile P1 on PR #36: exec() reads only the FIRST equation —
-        // '2 + 2 = 4; 3 * 3 = 8' passed. matchAll over a global CLONE so
-        // the shared pattern's lastIndex is never mutated (the ToolGuard
-        // regex-state lesson applies to read helpers too).
+    private verifyInlineCalculations(text: string): string[] {
+        // Sentry on PR #36: collect and return all inline calculation errors
+        // rather than returning on the first error, matching the Python guard.
+        const errors: string[] = [];
         const scanner = new RegExp(MathGuard.CALC_PATTERN.source, 'g');
         for (const match of text.matchAll(scanner)) {
             const a = Number(match[1]);
@@ -1202,7 +1204,8 @@ export class MathGuard extends BaseGuard {
             const b = Number(match[3]);
             const result = Number(match[4]);
             if (![a, b, result].every(Number.isFinite)) {
-                return 'Calculation fields contain non-finite values';
+                errors.push('Calculation fields contain non-finite values');
+                continue;
             }
             let expected: number;
             if (op === '+') expected = a + b;
@@ -1210,9 +1213,11 @@ export class MathGuard extends BaseGuard {
             else if (op === '*') expected = a * b;
             else expected = b !== 0 ? a / b : Infinity;
             if (Math.abs(expected - result) > this.tolerance) {
-                return `Calculation error: ${a} ${op} ${b} = ${result} (should be ${expected})`;
+                errors.push(
+                    `Calculation error: ${a} ${op} ${b} = ${result} (should be ${expected})`
+                );
             }
         }
-        return null;
+        return errors;
     }
 }
