@@ -6,7 +6,7 @@ import asyncio
 import pytest
 
 from qwed_open_responses import MathGuard, ResponseVerifier
-from qwed_open_responses.core import GuardResult, _canonical_json
+from qwed_open_responses.core import GuardResult, VerificationResult, _canonical_json
 
 
 class TestMathGuardNoVerifiableMath:
@@ -332,3 +332,37 @@ class TestReviewWaveFixes:
         res = guard.check({"output": {"subtotal": 100, "tax": 8, "total": "invalid"}})
         assert res.passed is False
         assert any("total is not a finite number" in e for e in res.details["errors"])
+
+    def test_incomplete_custom_rules_fail(self):
+        # Incomplete or invalid custom rules must return errors and fail
+        guard_no_exp = MathGuard(custom_rules=[{"type": "equals", "field": "total"}])
+        res1 = guard_no_exp.check({"output": {"total": 0}})
+        assert res1.passed is False
+        assert any("missing 'expected' value" in e for e in res1.details["errors"])
+
+        guard_no_bounds = MathGuard(custom_rules=[{"type": "range", "field": "total"}])
+        res2 = guard_no_bounds.check({"output": {"total": 0}})
+        assert res2.passed is False
+        assert any("must specify 'min' or 'max'" in e for e in res2.details["errors"])
+
+        guard_bad_type = MathGuard(custom_rules=[{"type": "unknown", "field": "total"}])
+        res3 = guard_bad_type.check({"output": {"total": 0}})
+        assert res3.passed is False
+        assert any("Unsupported custom rule type" in e for e in res3.details["errors"])
+
+    def test_verification_result_positional_args_backward_compatibility(self):
+        # VerificationResult positional constructor must preserve binding at index 9
+        res = VerificationResult(
+            True,
+            {"val": 1},
+            ["g1"],
+            [],
+            [],
+            0.05,
+            True,
+            "2026-09-07T00:00:00Z",
+            {"signature": "sig123"},
+            "req-456",
+        )
+        assert res.binding == {"signature": "sig123"}
+        assert res.request_id == "req-456"

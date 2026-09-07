@@ -223,11 +223,11 @@ class VerificationResult:
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    binding: Optional[Dict[str, Any]] = None
     # issue #32: operator correlation — no request/trace IDs previously
     # existed, so verdicts could not be tied back to the response that
     # produced them. Populated from context["request_id"] by verify().
     request_id: Optional[str] = None
-    binding: Optional[Dict[str, Any]] = None
 
     @property
     def warnings(self) -> List[GuardResult]:

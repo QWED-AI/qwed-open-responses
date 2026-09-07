@@ -78,8 +78,10 @@ class MathGuard(BaseGuard):
         for rule in self.custom_rules:
             field = rule.get("field")
             if field and field in data:
-                rule_applied = True
-                errors.extend(self._run_custom_rule(rule, data))
+                rule_errors = self._run_custom_rule(rule, data)
+                errors.extend(rule_errors)
+                if not rule_errors:
+                    rule_applied = True
         return rule_applied
 
     def _build_error_result(self, errors: List[str]) -> GuardResult:
@@ -326,9 +328,9 @@ class MathGuard(BaseGuard):
 
     def _run_custom_equals_rule(self, rule: Dict, val: float, field: str) -> List[str]:
         """Run equals custom rule validating finite expected value."""
+        if "expected" not in rule or rule.get("expected") is None:
+            return [f"Custom equals rule for '{field}' missing 'expected' value"]
         expected_raw = rule.get("expected")
-        if expected_raw is None:
-            return []
         expected = self._to_finite_float(expected_raw)
         if expected is None:
             return [f"Invalid expected value for {field}: {expected_raw}"]
@@ -340,6 +342,9 @@ class MathGuard(BaseGuard):
         """Run range custom rule validating finite min/max bounds."""
         min_raw = rule.get("min")
         max_raw = rule.get("max")
+        if min_raw is None and max_raw is None:
+            return [f"Custom range rule for '{field}' must specify 'min' or 'max'"]
+
         min_val = float("-inf") if min_raw is None else self._to_finite_float(min_raw)
         max_val = float("inf") if max_raw is None else self._to_finite_float(max_raw)
 
@@ -368,7 +373,7 @@ class MathGuard(BaseGuard):
         rule_type = rule.get("type")
         if rule_type == "equals":
             return self._run_custom_equals_rule(rule, val, field)
-        elif rule_type == "range":
+        if rule_type == "range":
             return self._run_custom_range_rule(rule, val, field)
 
-        return []
+        return [f"Unsupported custom rule type: {rule_type}"]

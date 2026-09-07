@@ -1076,8 +1076,9 @@ export class MathGuard extends BaseGuard {
     // null and blank-string fields would silently zero-default. Reject
     // them explicitly (booleans coerce identically on both runtimes —
     // float(True) === 1.0 in Python — so they stay numeric per Sentry/Greptile).
+    // Reject arrays/objects before Number(value) (Number([]) === 0, Number([8]) === 8).
     private static toFiniteNumber(value: unknown): number | null {
-        if (value === null || value === undefined) {
+        if (value === null || value === undefined || typeof value === 'object') {
             return null;
         }
         if (typeof value === 'string' && value.trim() === '') {
