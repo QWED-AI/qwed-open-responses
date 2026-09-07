@@ -253,3 +253,52 @@ class TestReviewWaveFixes:
         result = guard.check({"output": {"val": "invalid_num"}})
         assert result.passed is False
         assert any("not a valid number" in e for e in result.details["errors"])
+
+    def test_custom_rule_finite_operands(self):
+        # Greptile / CodeRabbit: NaN / inf operands in equals / range rules fail closed
+        guard_nan_val = MathGuard(custom_rules=[{"type": "equals", "field": "val", "expected": 10}])
+        res1 = guard_nan_val.check({"output": {"val": float("nan")}})
+        assert res1.passed is False
+        assert any("not a valid number" in e for e in res1.details["errors"])
+
+        guard_nan_exp = MathGuard(custom_rules=[{"type": "equals", "field": "val", "expected": float("nan")}])
+        res2 = guard_nan_exp.check({"output": {"val": 10}})
+        assert res2.passed is False
+        assert any("Invalid expected value" in e for e in res2.details["errors"])
+
+        guard_nan_min = MathGuard(custom_rules=[{"type": "range", "field": "val", "min": float("nan"), "max": 10}])
+        res3 = guard_nan_min.check({"output": {"val": 5}})
+        assert res3.passed is False
+        assert any("Invalid min bound" in e for e in res3.details["errors"])
+
+    def test_custom_rule_string_range_bounds(self):
+        # Greptile / CodeRabbit: string range bounds like "1" and "5" are parsed without TypeError
+        guard = MathGuard(custom_rules=[{"type": "range", "field": "score", "min": "1", "max": "5"}])
+        assert guard.check({"output": {"score": 3}}).passed is True
+        assert guard.check({"output": {"score": 0}}).passed is False
+        assert guard.check({"output": {"score": 6}}).passed is False
+
+    def test_all_errors_preserved_with_non_numeric_fields(self):
+        # Sentry: non-numeric field does not discard preceding mismatch errors
+        guard = MathGuard()
+        # net has a mismatch (100 - 10 = 90 != 95), and total has a non-numeric subtotal
+        payload = {
+            "gross": 100,
+            "deductions": 10,
+            "net": 95,
+            "subtotal": "invalid",
+            "tax": 8,
+            "total": 108,
+        }
+        res = guard.check({"output": payload})
+        assert res.passed is False
+        errors = res.details["errors"]
+        assert any("net mismatch" in e for e in errors)
+        assert any("non-numeric" in e for e in errors)
+
+    def test_falsy_output_presence_does_not_fall_back_to_response(self):
+        # CodeRabbit: {"output": "", "subtotal": 100, "total": 100} validates output ("")
+        guard = MathGuard()
+        res = guard.check({"output": "", "subtotal": 100, "total": 100})
+        assert res.passed is False
+        assert "No verifiable math" in res.message

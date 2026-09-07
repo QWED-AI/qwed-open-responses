@@ -1017,7 +1017,9 @@ export class MathGuard extends BaseGuard {
     ];
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
-        const data = response.output || response;
+        // CodeRabbit on PR #36: select output by presence rather than truthiness
+        // so falsy outputs like '' or 0 do not fall back to the outer response
+        const data = response !== null && typeof response === 'object' && 'output' in response ? response.output : response;
         const errors: string[] = [];
         // Configured custom rules would be an explicit operator assertion
         // that the response contains verifiable content; the TS guard does

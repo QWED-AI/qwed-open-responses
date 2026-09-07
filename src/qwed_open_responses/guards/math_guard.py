@@ -69,14 +69,10 @@ class MathGuard(BaseGuard):
         if isinstance(data, dict):
             try:
                 verifiable = self._verify_dict_math(data, errors) or verifiable
-            except (ValueError, TypeError):
-                # float("invalid") on a supplied math field: fail the guard
-                # with a GuardResult instead of escaping to the verifier's
-                # generic exception handler (CodeRabbit on PR #36)
-                return self.fail_result(
-                    message="Math fields contain non-numeric values",
-                    severity="error",
-                )
+            except (ValueError, TypeError) as exc:
+                # Sentry on PR #36: append to errors so previously found
+                # mismatch errors are not discarded
+                errors.append(f"Math fields contain non-numeric values: {exc}")
         elif isinstance(data, str) and self._CALC_PATTERN.search(data):
             # merged condition (Sonar): the bounded-pattern search gates
             # the inline-calculation verifier
@@ -96,9 +92,16 @@ class MathGuard(BaseGuard):
         verifiable = verifiable or rule_applied
 
         if errors:
+            has_non_numeric = any("non-numeric" in e for e in errors)
+            msg = (
+                f"Math fields contain non-numeric values: {len(errors)} error(s)"
+                if has_non_numeric
+                else f"Math verification failed: {len(errors)} error(s)"
+            )
             return self.fail_result(
-                message=f"Math verification failed: {len(errors)} error(s)",
+                message=msg,
                 details={"errors": errors},
+                severity="error",
             )
 
         if not verifiable:
@@ -182,21 +185,33 @@ class MathGuard(BaseGuard):
                     return True
         return False
 
-    def _pattern_calculated(self, data: Dict, components: List[str]) -> float:
+    @staticmethod
+    def _to_finite_float(val: Any) -> Optional[float]:
+        """Convert val to finite float or return None if non-numeric/non-finite."""
+        if val is None or isinstance(val, (dict, list)):
+            return None
+        try:
+            num = float(val)
+            return num if math.isfinite(num) else None
+        except (ValueError, TypeError):
+            return None
+
+    def _pattern_calculated(self, data: Dict, components: List[str]) -> Optional[float]:
         """Sum a totals pattern's components — missing components count as
-        zero, mirroring the npm guard."""
+        zero; non-numeric or non-finite values return None."""
         calculated = 0.0
         for comp in components:
             field = comp[1:] if comp.startswith("-") else comp
-            value = float(data[field]) if field in data else 0.0
-            calculated += -value if comp.startswith("-") else value
+            if field in data:
+                val = self._to_finite_float(data[field])
+                if val is None:
+                    return None
+                calculated += -val if comp.startswith("-") else val
         return calculated
 
     def _verify_totals(self, data: Dict) -> tuple:
         """Verify totals against their components (missing components count
-        as zero, mirroring the npm guard). Returns (errors, verified_any):
-        verified_any is True when ANY applicable formula checks out — the
-        patterns are alternative formulas, not conjunctive checks."""
+        as zero, mirroring the npm guard). Returns (errors, verified_any)."""
         errors = []
         verified_any = False
 
@@ -209,8 +224,15 @@ class MathGuard(BaseGuard):
             ):
                 # a lone total with no components verifies nothing
                 continue
-            expected_total = float(data[total_field])
+            expected_total = self._to_finite_float(data[total_field])
+            if expected_total is None:
+                errors.append(f"{total_field} components contain non-numeric values")
+                continue
+
             calculated = self._pattern_calculated(data, components)
+            if calculated is None:
+                errors.append(f"{total_field} components contain non-numeric values")
+                continue
 
             if abs(calculated - expected_total) <= self.tolerance:
                 verified_any = True
@@ -226,14 +248,16 @@ class MathGuard(BaseGuard):
         self, base_key: str, rate_val: Any, data: Dict
     ) -> Optional[str]:
         """Check one percentage calculation. Returns error message or None."""
-        base = float(data[base_key])
-        rate = float(rate_val) / 100.0
+        base = self._to_finite_float(data[base_key])
+        rate_num = self._to_finite_float(rate_val)
+        actual = self._to_finite_float(data[base_key + "_amount"])
+
+        if base is None or rate_num is None or actual is None:
+            return f"Percentage fields for {base_key} contain non-finite values"
+
+        rate = rate_num / 100.0
         expected_amount = base * rate
-        actual = float(data[base_key + "_amount"])
-        # Greptile P1 on PR #36: float("nan")/"inf" convert cleanly and NaN
-        # tolerance comparisons are always false — non-finite inputs fail
-        # closed as errors
-        if not all(math.isfinite(v) for v in (base, rate, expected_amount, actual)):
+        if not math.isfinite(expected_amount):
             return f"Percentage fields for {base_key} contain non-finite values"
 
         if abs(expected_amount - actual) > self.tolerance:
@@ -290,36 +314,55 @@ class MathGuard(BaseGuard):
 
         return errors
 
+    def _run_custom_equals_rule(
+        self, rule: Dict, val: float, field: str
+    ) -> List[str]:
+        """Run equals custom rule validating finite expected value."""
+        expected_raw = rule.get("expected")
+        if expected_raw is None:
+            return []
+        expected = self._to_finite_float(expected_raw)
+        if expected is None:
+            return [f"Invalid expected value for {field}: {expected_raw}"]
+        if abs(val - expected) > self.tolerance:
+            return [f"{field} should equal {expected_raw}"]
+        return []
+
+    def _run_custom_range_rule(
+        self, rule: Dict, val: float, field: str
+    ) -> List[str]:
+        """Run range custom rule validating finite min/max bounds."""
+        min_raw = rule.get("min")
+        max_raw = rule.get("max")
+        min_val = float("-inf") if min_raw is None else self._to_finite_float(min_raw)
+        max_val = float("inf") if max_raw is None else self._to_finite_float(max_raw)
+
+        if min_val is None:
+            return [f"Invalid min bound for {field}: {min_raw}"]
+        if max_val is None:
+            return [f"Invalid max bound for {field}: {max_raw}"]
+
+        if val < min_val or val > max_val:
+            return [f"{field}={val} outside range [{min_raw}, {max_raw}]"]
+        return []
+
     def _run_custom_rule(self, rule: Dict, data: Any) -> List[str]:
         """Run a custom verification rule safely without uncaught exceptions."""
         if not isinstance(data, dict):
             return []
 
-        errors = []
         field = rule.get("field")
         if not field or field not in data:
             return []
 
-        try:
-            val = float(data[field])
-        except (ValueError, TypeError):
+        val = self._to_finite_float(data[field])
+        if val is None:
             return [f"{field} is not a valid number"]
 
         rule_type = rule.get("type")
         if rule_type == "equals":
-            expected = rule.get("expected")
-            if expected is not None:
-                try:
-                    exp_val = float(expected)
-                    if abs(val - exp_val) > self.tolerance:
-                        errors.append(f"{field} should equal {expected}")
-                except (ValueError, TypeError):
-                    errors.append(f"Invalid expected value for {field}: {expected}")
-
+            return self._run_custom_equals_rule(rule, val, field)
         elif rule_type == "range":
-            min_val = rule.get("min", float("-inf"))
-            max_val = rule.get("max", float("inf"))
-            if val < min_val or val > max_val:
-                errors.append(f"{field}={val} outside range [{min_val}, {max_val}]")
+            return self._run_custom_range_rule(rule, val, field)
 
-        return errors
+        return []
