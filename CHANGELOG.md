@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strict parsing on both sides).
 - **MathGuard no longer passes vacuously**, request/trace IDs on results,
   timezone-aware UTC timestamps.
-- Dependency bumps: fast-uri 3.1.4 → 3.1.5 (#25).
+- Dependency bumps: fast-uri 3.1.4 → 3.1.7 (via `overrides` pin, #25).
 
 ### Fixed — issue #31 correctness batch
 
