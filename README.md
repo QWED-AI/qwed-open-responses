@@ -118,7 +118,7 @@ It extracts numbers and operators from the output and uses SymPy to verify if th
 <details>
 <summary><b>Is it compatible with streaming?</b></summary>
 
-Yes, but verification usually happens on the final tool call or complete message chunk. We are working on stream-interception middleware.
+Yes — `OpenResponsesMiddleware` verifies tool-call items as they arrive in the stream (`middleware/streaming_interceptor.py`). With `block_on_failure=True` (the default) failed items are replaced with a `system_intervention` item; with `block_on_failure=False` they pass through unmodified (warn-only monitoring — the trust boundary is disabled in that mode).
 </details>
 
 ---

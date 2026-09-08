@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-08
+
+### Security — dependency CVE fixes (#26)
+
+- **js-yaml CVE-2026-59870 patch + brace-expansion GHSA fix** (`GHSA-rgw5-rvv9-x895`).
+
+### Fixed — fail-closed verification batch (#27, #28, #29, #33)
+
+- **Zero guards fail closed** — `verify()` with no guards configured returns
+  `verified=False` instead of a vacuous pass; all middleware defaults that
+  shipped guardless constructors now deny instead of verifying nothing.
+- **Malformed, hybrid, and unrecognized envelopes fail closed** — non-dict
+  tool-call entries, ambiguous hybrid envelopes (direct call + sibling
+  collection), and tool-shaped content in unknown shapes become explicit
+  rejections instead of silent passes or crashes.
+- **Depth and shape bounds** — argument nesting depth checks, deterministic
+  JSON depth bound, and case-insensitive `tool_use` blocks (both runtimes).
+
+### Changed — cross-language parity (#30, #34) and hygiene (#32)
+
+- **Unified case-insensitive pattern superset** across Python and TypeScript
+  (TS gains sudo/chmod/subprocess patterns and the harmful-content check;
+  strict parsing on both sides).
+- **MathGuard no longer passes vacuously**, request/trace IDs on results,
+  timezone-aware UTC timestamps.
+- Dependency bumps: fast-uri 3.1.4 → 3.1.5 (#25).
+
 ### Fixed — issue #31 correctness batch
 
 - **ToolGuard**: blocklist/allowlist matching is now case-insensitive
