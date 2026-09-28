@@ -4,7 +4,7 @@ Safety Guard - Comprehensive safety checks for AI responses.
 Combines multiple safety checks into a single guard.
 """
 
-from typing import Any, Callable, Dict, Optional, List, Set
+from typing import Any, Callable, Dict, Optional, List, Set, Tuple
 from .base import BaseGuard, GuardResult
 import math
 import re
@@ -33,7 +33,6 @@ class SafetyGuard(BaseGuard):
 
     # PII patterns
     PII_PATTERNS = {
-        "email": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
         "phone": r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b",
         "ssn": r"\b\d{3}-\d{2}-\d{4}\b",
         "credit_card": r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b",
@@ -172,7 +171,13 @@ class SafetyGuard(BaseGuard):
     ) -> GuardResult:
         """Run all safety checks."""
 
-        content = self._extract_content(response)
+        content, leaf_strings, limit_error = self._collect_bounded_content(response)
+        if limit_error is not None:
+            return self.fail_result(
+                "Safety check failed: response exceeds inspection limits",
+                details={"resource_limit": limit_error},
+            )
+
         context = context or {}
 
         issues: List[Dict] = []
@@ -210,7 +215,7 @@ class SafetyGuard(BaseGuard):
         # while a credential hidden after whitespace
         # ("password=required actual-secret") must still block.
         if self.check_harmful:
-            harmful = self._check_harmful_parts(self._collect_leaf_strings(response))
+            harmful = self._check_harmful_parts(leaf_strings)
             if harmful:
                 issues.append(
                     {
@@ -261,88 +266,151 @@ class SafetyGuard(BaseGuard):
         return self.pass_result(message="All safety checks passed")
 
     _MAX_CONTENT_DEPTH = 12
-    _KNOWN_CONTENT_KEYS = ("content", "output", "text", "arguments")
+    _MAX_CONTENT_NODES = 10_000
+    _MAX_CONTENT_CHARS = 100_000
+    _MAX_FIELD_LABEL_CHARS = 10_000
+    _MAX_CREDENTIAL_SCAN_CHARS = 2 * _MAX_CONTENT_CHARS + _MAX_FIELD_LABEL_CHARS
 
-    def _extract_content(self, response: Dict, _depth: int = 0) -> str:
-        """Extract text content from response — recursively (#29).
+    def _collect_bounded_content(
+        self, response: Any
+    ) -> Tuple[str, List[str], Optional[str]]:
+        """Collect scan text and credential leaves within fixed resource caps."""
+        content_parts: List[str] = []
+        leaf_strings: List[str] = []
+        visited: Set[int] = set()
+        active: Set[int] = set()
+        node_count = 0
+        content_chars = 0
+        leaf_chars = 0
+        label_chars = 0
+        limit_error: Optional[str] = None
 
-        Walks all string values at any nesting depth (bounded to prevent
-        DoS on deeply-nested payloads) so the guard can see content inside
-        the canonical OpenAI shape (choices[].message.content), Anthropic
-        envelopes, and arbitrary nested structures.
-        """
-        parts = self._known_content_parts(response)
-
-        if _depth < self._MAX_CONTENT_DEPTH:
-            for key, value in response.items():
-                if not self._should_traverse(key, value):
-                    continue
-                parts.append(self._nested_content(value, _depth + 1))
-
-        return " ".join(parts)
-
-    def _should_traverse(self, key: str, value: Any) -> bool:
-        """Decide whether a response entry still needs recursive scanning.
-
-        - Unknown keys holding strings ARE scanned (nested scalars must be
-          checked for injection/PII — Greptile P1).
-        - Known content keys had their string forms collected verbatim above;
-          their container forms are traversed so nothing hides inside them.
-        - output/arguments dicts were already stringified above — skipping
-          avoids duplicate collection.
-        """
-        if isinstance(value, str):
-            # content/output/text strings were collected verbatim above;
-            # a string under 'arguments' was NOT (only dicts are) and must
-            # still be scanned for injection/PII.
-            if key == "arguments":
-                return True
-            return key not in self._KNOWN_CONTENT_KEYS
-        if isinstance(value, dict):
-            return key not in ("output", "arguments")
-        if isinstance(value, list):
+        def add_content(text: str) -> bool:
+            nonlocal content_chars, limit_error
+            if content_chars + len(text) > self._MAX_CONTENT_CHARS:
+                limit_error = "scanned content exceeds the character limit"
+                return False
+            content_parts.append(text)
+            content_chars += len(text)
             return True
-        return False  # other scalars carry no scannable text
 
-    @staticmethod
-    def _known_content_parts(response: Dict) -> List[str]:
-        """Collect strings from the well-known top-level content keys."""
-        parts = []
+        def collect(
+            value: Any,
+            depth: int,
+            field_name: Optional[str] = None,
+            stringify_content: bool = False,
+        ) -> None:
+            nonlocal node_count, leaf_chars, label_chars, limit_error
+            if limit_error is not None:
+                return
 
-        if isinstance(response.get("content"), str):
-            parts.append(response["content"])
-        if isinstance(response.get("output"), str):
-            parts.append(response["output"])
-        if isinstance(response.get("text"), str):
-            parts.append(response["text"])
+            node_count += 1
+            if node_count > self._MAX_CONTENT_NODES:
+                limit_error = "response node count exceeds the inspection limit"
+                return
+            if depth > self._MAX_CONTENT_DEPTH:
+                limit_error = "response nesting exceeds the inspection depth"
+                return
 
-        # Handle nested structures
-        if isinstance(response.get("output"), dict):
-            parts.append(str(response["output"]))
-        if isinstance(response.get("arguments"), dict):
-            parts.append(str(response["arguments"]))
+            if isinstance(value, str):
+                label_cost = len(field_name) + 1 if field_name is not None else 0
+                scan_cost = len(value) + label_cost
+                if (
+                    leaf_chars + len(value) + scan_cost
+                    > self._MAX_CREDENTIAL_SCAN_CHARS
+                ):
+                    limit_error = "credential scan exceeds the character limit"
+                    return
+                if label_chars + label_cost > self._MAX_FIELD_LABEL_CHARS:
+                    limit_error = "field labels exceed the inspection limit"
+                    return
+                if not add_content(value):
+                    return
 
-        return parts
+                leaf_strings.append(value)
+                if field_name is not None:
+                    leaf_strings.append(f"{field_name}={value}")
+                leaf_chars += len(value) + scan_cost
+                label_chars += label_cost
+                return
 
-    def _nested_content(self, value: Any, depth: int) -> str:
-        """Recursively collect strings from unrecognized nesting levels."""
-        if depth > self._MAX_CONTENT_DEPTH:
-            return ""
-        if isinstance(value, dict):
-            return self._extract_content(value, depth)
-        if isinstance(value, list):
-            # Increment depth for list children too — otherwise list-only
-            # nesting never reaches _MAX_CONTENT_DEPTH and a deeply (or
-            # cyclically) nested list recurses until RecursionError (T-Rex P1).
-            collected = [self._nested_content(item, depth + 1) for item in value]
-            return " ".join(collected)
-        if isinstance(value, str):
-            return value
-        return ""
+            if isinstance(value, dict):
+                identity = id(value)
+                if identity in active:
+                    limit_error = "response contains a cycle"
+                    return
+                if identity in visited:
+                    return
+                visited.add(identity)
+                active.add(identity)
+                for key, child in value.items():
+                    include_content = stringify_content or (
+                        depth == 0 and key in ("output", "arguments")
+                    )
+                    if stringify_content and isinstance(key, str):
+                        node_count += 1
+                        if node_count > self._MAX_CONTENT_NODES:
+                            limit_error = (
+                                "response node count exceeds the inspection limit"
+                            )
+                            break
+                        if not add_content(key):
+                            break
+                    elif stringify_content:
+                        limit_error = "response contains a non-string object key"
+                        break
+                    child_field = (
+                        key if isinstance(key, str) and isinstance(child, str) else None
+                    )
+                    collect(child, depth + 1, child_field, include_content)
+                    if limit_error is not None:
+                        break
+                active.remove(identity)
+                return
+
+            if isinstance(value, list):
+                identity = id(value)
+                if identity in active:
+                    limit_error = "response contains a cycle"
+                    return
+                if identity in visited:
+                    return
+                visited.add(identity)
+                active.add(identity)
+                for child in value:
+                    collect(child, depth + 1, stringify_content=stringify_content)
+                    if limit_error is not None:
+                        break
+                active.remove(identity)
+                return
+
+            if stringify_content:
+                if value is None:
+                    add_content("null")
+                elif value is True:
+                    add_content("true")
+                elif value is False:
+                    add_content("false")
+                elif isinstance(value, int):
+                    if value.bit_length() > self._MAX_CONTENT_CHARS * 4:
+                        limit_error = "scanned content exceeds the character limit"
+                    else:
+                        try:
+                            add_content(str(value))
+                        except (MemoryError, ValueError):
+                            limit_error = "scanned content exceeds the character limit"
+                elif isinstance(value, float):
+                    add_content(str(value))
+
+        collect(response, 0)
+        return " ".join(content_parts), leaf_strings, limit_error
 
     def _check_pii(self, content: str) -> List[str]:
         """Check for PII in content."""
         found = []
+
+        if "email" not in self.pii_allow_list and self._contains_email(content):
+            found.append("email")
 
         for pii_type, pattern in self.PII_PATTERNS.items():
             if pii_type in self.pii_allow_list:
@@ -351,6 +419,50 @@ class SafetyGuard(BaseGuard):
                 found.append(pii_type)
 
         return found
+
+    @staticmethod
+    def _contains_email(content: str) -> bool:
+        """Find email-like text with a single forward/backward pass."""
+        local_chars = (
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._%+-"
+        )
+        cursor = 0
+        while True:
+            at = content.find("@", cursor)
+            if at < 0:
+                return False
+            cursor = at + 1
+
+            local_start = at - 1
+            while local_start >= 0 and content[local_start] in local_chars:
+                local_start -= 1
+            if local_start == at - 1:
+                continue
+
+            domain_chars = 0
+            tld_chars = 0
+            after_dot = False
+            pos = at + 1
+            while pos < len(content):
+                char = content[pos]
+                is_alpha = "a" <= char <= "z" or "A" <= char <= "Z"
+                is_digit = "0" <= char <= "9"
+                if not (is_alpha or is_digit or char in ".-"):
+                    break
+                if char == ".":
+                    after_dot = domain_chars > 0
+                    tld_chars = 0
+                elif after_dot:
+                    if is_alpha:
+                        tld_chars += 1
+                        if tld_chars >= 2:
+                            return True
+                    else:
+                        after_dot = False
+                        tld_chars = 0
+                domain_chars += 1
+                pos += 1
+            cursor = max(cursor, pos)
 
     def _check_injection(self, content: str) -> List[str]:
         """Check for prompt injection patterns."""
@@ -377,25 +489,7 @@ class SafetyGuard(BaseGuard):
         `_MAX_CONTENT_DEPTH` like the recursive extractor, so cyclic
         structures terminate.
         """
-        if _depth > self._MAX_CONTENT_DEPTH:
-            return []
-        if isinstance(response, str):
-            return [response]
-        if isinstance(response, dict):
-            leaves: List[str] = []
-            for key, value in response.items():
-                if isinstance(value, str):
-                    leaves.append(value)
-                    leaves.append(f"{key}={value}")
-                else:
-                    leaves.extend(self._collect_leaf_strings(value, _depth + 1))
-            return leaves
-        if isinstance(response, list):
-            leaves = []
-            for item in response:
-                leaves.extend(self._collect_leaf_strings(item, _depth + 1))
-            return leaves
-        return []
+        return self._collect_bounded_content(response)[1]
 
     def _has_digit_word(self, token: str) -> bool:
         """True when the token holds a 6+ alnum run containing a digit."""

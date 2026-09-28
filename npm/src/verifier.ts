@@ -6,6 +6,47 @@ import { createHash } from 'crypto';
 import { BaseGuard } from './guards';
 import { VerificationResult, GuardResult, ParsedResponse, ResultBinding } from './types';
 
+const MAX_JSON_RESPONSE_CHARS = 100_000;
+const MAX_JSON_NESTING_DEPTH = 100;
+
+class ResponseParseLimitError extends Error {}
+
+function countCodePoints(text: string): number {
+    let count = 0;
+    for (const _character of text) count++;
+    return count;
+}
+
+function jsonNestingExceedsLimit(text: string): boolean {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (const char of text) {
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (char === '\\') {
+                escaped = true;
+            } else if (char === '"') {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (char === '"') {
+            inString = true;
+        } else if (char === '[' || char === '{') {
+            depth++;
+            if (depth > MAX_JSON_NESTING_DEPTH) return true;
+        } else if ((char === ']' || char === '}') && depth > 0) {
+            depth--;
+        }
+    }
+
+    return false;
+}
+
 // Re-export types
 export { VerificationResult, GuardResult };
 
@@ -122,7 +163,31 @@ export class ResponseVerifier {
         context?: Record<string, any>
     ): VerificationResult {
         const guardsToUse = guards ?? this.defaultGuards;
-        const parsedResponse = this.parseResponse(response);
+        let parsedResponse: ParsedResponse;
+        try {
+            parsedResponse = this.parseResponse(response);
+        } catch (error) {
+            if (!(error instanceof ResponseParseLimitError)) throw error;
+            const message = error.message;
+            return {
+                verified: false,
+                response,
+                guardsPassed: 0,
+                guardsFailed: 1,
+                guardResults: [{
+                    guardName: 'ResponseVerifier',
+                    passed: false,
+                    message,
+                    details: { resourceLimit: message },
+                    severity: 'error',
+                }],
+                warnings: [],
+                requestId: context?.request_id ?? context?.requestId,
+                blocked: this.strictMode,
+                blockReason: this.strictMode ? message : undefined,
+                timestamp: new Date().toISOString(),
+            };
+        }
 
         // Fail-closed: zero guards must never produce verified=true (#27).
         if (guardsToUse.length === 0) {
@@ -268,10 +333,26 @@ export class ResponseVerifier {
         }
 
         if (typeof response === 'string') {
+            if (countCodePoints(response) > MAX_JSON_RESPONSE_CHARS) {
+                throw new ResponseParseLimitError(
+                    'JSON response exceeds the character limit'
+                );
+            }
+            if (jsonNestingExceedsLimit(response)) {
+                throw new ResponseParseLimitError(
+                    'JSON response exceeds the nesting depth limit'
+                );
+            }
+
             let parsed: any;
             try {
                 parsed = JSON.parse(response);
-            } catch {
+            } catch (error) {
+                if (error instanceof RangeError) {
+                    throw new ResponseParseLimitError(
+                        'JSON response could not be parsed within safe limits'
+                    );
+                }
                 return { type: 'text', content: response };
             }
             // JSON arrays are rejected like direct array inputs (Sentry HIGH,

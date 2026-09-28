@@ -299,6 +299,11 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
   separate warning state (`VerificationResult.warnings`); they do not fail
   `verified` or block unless you create the verifier with
   `allow_warnings=False`.
+- **Verification resource limits fail closed.** JSON text longer than
+  100,000 characters or nesting deeper than 100 levels receives a failed
+  verdict. SafetyGuard also rejects content deeper than 12 levels, wider than
+  10,000 nodes, or longer than 100,000 characters. SchemaGuard reports only
+  the first validation error and marks the total count as unknown.
 - **Budget checks use model-reported usage.** `response["usage"]` comes
   from the model output under verification: negative or non-numeric
   reports fail closed, but under-reporting cannot be detected from the

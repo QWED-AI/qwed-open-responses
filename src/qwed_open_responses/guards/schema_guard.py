@@ -534,17 +534,15 @@ class SchemaGuard(BaseGuard):
         else:
             data = response
 
-        # Collect all errors
-        errors: List[str] = []
-        for error in self.validator.iter_errors(data):
-            errors.append(f"{error.json_path}: {error.message}")
-
-        if errors:
+        error = next(self.validator.iter_errors(data), None)
+        if error is not None:
+            errors = [f"{error.json_path}: {error.message}"]
             return self.fail_result(
-                message=f"Schema validation failed: {len(errors)} error(s)",
+                message="Schema validation failed (first error shown)",
                 details={
-                    "errors": errors[:10],  # Limit to first 10
-                    "total_errors": len(errors),
+                    "errors": errors,
+                    "total_errors": None,
+                    "errors_truncated": True,
                 },
             )
 

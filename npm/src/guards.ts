@@ -14,6 +14,12 @@ const EMAIL_FORMAT = new RegExp(
     'i',
 );
 
+function countCodePoints(text: string): number {
+    let count = 0;
+    for (const _character of text) count++;
+    return count;
+}
+
 /**
  * Base class for all guards.
  */
@@ -1213,7 +1219,7 @@ export class SchemaGuard extends BaseGuard {
                 }
             }
 
-            const ajv = new Ajv({ allErrors: true });
+            const ajv = new Ajv({ allErrors: false });
             addFormats(ajv as any);
             ajv.addFormat('email', {
                 type: 'string',
@@ -1238,15 +1244,16 @@ export class SchemaGuard extends BaseGuard {
         }
 
         if (!valid) {
-            const errors = this.validate.errors || [];
+            const errors = (this.validate.errors || []).slice(0, 1);
             const messages = errors.map((e: ErrorObject) =>
                 `${e.instancePath || '/'}: ${e.message}`
             );
             return this.failResult(
-                `Schema validation failed: ${errors.length} error(s)`,
+                'Schema validation failed (first error shown)',
                 {
-                    errors: messages.slice(0, 10),
-                    totalErrors: errors.length,
+                    errors: messages,
+                    totalErrors: null,
+                    errorsTruncated: true,
                 }
             );
         }
@@ -1263,7 +1270,6 @@ export class SafetyGuard extends BaseGuard {
     description = 'Comprehensive safety checks';
 
     private static PII_PATTERNS = {
-        email: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
         phone: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,
         ssn: /\b\d{3}-\d{2}-\d{4}\b/,
         creditCard: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,
@@ -1394,9 +1400,9 @@ export class SafetyGuard extends BaseGuard {
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
-        let content: string;
+        let collected: { content: string; leaves: string[]; limitError?: string };
         try {
-            content = this.extractContent(response);
+            collected = this.collectBoundedContent(response);
         } catch (err) {
             // Cyclic / unserializable structures cannot be inspected —
             // fail closed instead of crashing the caller (Greptile P1).
@@ -1406,6 +1412,13 @@ export class SafetyGuard extends BaseGuard {
                 { error: String(err) },
             );
         }
+        if (collected.limitError) {
+            return this.failResult(
+                'Safety check failed: response exceeds inspection limits',
+                { resourceLimit: collected.limitError },
+            );
+        }
+        const { content, leaves } = collected;
         // Python parity: issues is a uniform array of
         // {type, severity, details} objects for BOTH paths — the error path
         // (all issues, errors AND warnings) and the warning-only path
@@ -1422,6 +1435,7 @@ export class SafetyGuard extends BaseGuard {
             // Python parity: one {type:'pii', severity:'warning'} entry whose
             // details carry the matched PII types (email, phone, ...).
             const piiTypes: string[] = [];
+            if (SafetyGuard.containsEmail(content)) piiTypes.push('email');
             for (const [type, pattern] of Object.entries(SafetyGuard.PII_PATTERNS)) {
                 if (pattern.test(content)) {
                     piiTypes.push(type);
@@ -1455,7 +1469,7 @@ export class SafetyGuard extends BaseGuard {
             // defeat the end-of-string anchor. Guidance prose skips only
             // the credential patterns, never PEM (Sentry/Greptile P1).
             const harmful: string[] = [];
-            for (const leaf of this.extractLeafStrings(response)) {
+            for (const leaf of leaves) {
                 if (SafetyGuard.isGuidanceProse(leaf)) continue;
                 if (SafetyGuard.placeholderTailAllows(leaf)) continue;
                 for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
@@ -1494,39 +1508,186 @@ export class SafetyGuard extends BaseGuard {
         return this.passResult('All safety checks passed');
     }
 
-    private extractContent(response: ParsedResponse, depth: number = 0): string {
-        const MAX_DEPTH = 12;
-        const KNOWN: Record<string, boolean> = { content: true, output: true, text: true, arguments: true };
-        const parts: string[] = [];
+    private static containsEmail(content: string): boolean {
+        const localChars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._%+-';
+        let cursor = 0;
+        while (true) {
+            const at = content.indexOf('@', cursor);
+            if (at < 0) return false;
+            cursor = at + 1;
 
-        if (typeof response.content === 'string') parts.push(response.content);
-        if (typeof response.output === 'string') parts.push(response.output);
-        if (typeof response.text === 'string') parts.push(response.text);
-
-        if (typeof response.output === 'object' && response.output !== null) parts.push(JSON.stringify(response.output));
-        if (response.arguments) parts.push(JSON.stringify(response.arguments));
-
-        // Recursive walk for unrecognized shapes (#29). Known keys are
-        // traversed too when they hold CONTAINERS — and string leaves under
-        // unknown keys are COLLECTED so injection/PII text cannot hide in a
-        // familiar or arbitrary nested key.
-        if (depth < MAX_DEPTH) {
-            for (const [key, value] of Object.entries(response)) {
-                if (typeof value === 'string') {
-                    if (!(key in KNOWN)) parts.push(value);
-                    continue; // known-key strings were collected above
-                }
-                if (value === null || typeof value !== 'object') continue;
-                if (key === 'arguments' && !Array.isArray(value)) continue; // already stringified above
-                if (key === 'output' && !Array.isArray(value)) continue; // already stringified above
-                parts.push(this.extractContent(value as ParsedResponse, depth + 1));
+            let localStart = at - 1;
+            while (localStart >= 0 && localChars.includes(content[localStart])) {
+                localStart--;
             }
-        }
+            if (localStart === at - 1) continue;
 
-        return parts.join(' ');
+            let domainChars = 0;
+            let tldChars = 0;
+            let afterDot = false;
+            let pos = at + 1;
+            while (pos < content.length) {
+                const char = content[pos];
+                const code = content.charCodeAt(pos);
+                const isAlpha = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+                const isDigit = code >= 48 && code <= 57;
+                if (!(isAlpha || isDigit || char === '.' || char === '-')) break;
+                if (char === '.') {
+                    afterDot = domainChars > 0;
+                    tldChars = 0;
+                } else if (afterDot) {
+                    if (isAlpha) {
+                        tldChars++;
+                        if (tldChars >= 2) return true;
+                    } else {
+                        afterDot = false;
+                        tldChars = 0;
+                    }
+                }
+                domainChars++;
+                pos++;
+            }
+            cursor = Math.max(cursor, pos);
+        }
     }
 
-    private extractLeafStrings(response: ParsedResponse, depth: number = 0): string[] {
+    private collectBoundedContent(response: unknown): {
+        content: string;
+        leaves: string[];
+        limitError?: string;
+    } {
+        const MAX_DEPTH = 12;
+        const MAX_NODES = 10_000;
+        const MAX_CHARS = 100_000;
+        const MAX_FIELD_LABEL_CHARS = 10_000;
+        const MAX_CREDENTIAL_SCAN_CHARS = 2 * MAX_CHARS + MAX_FIELD_LABEL_CHARS;
+        const parts: string[] = [];
+        const leaves: string[] = [];
+        const visited = new WeakSet<object>();
+        const active = new WeakSet<object>();
+        let nodeCount = 0;
+        let contentChars = 0;
+        let leafChars = 0;
+        let labelChars = 0;
+        let limitError: string | undefined;
+
+        const addContent = (text: string): boolean => {
+            const textLength = countCodePoints(text);
+            if (contentChars + textLength > MAX_CHARS) {
+                limitError = 'scanned content exceeds the character limit';
+                return false;
+            }
+            parts.push(text);
+            contentChars += textLength;
+            return true;
+        };
+
+        const visit = (
+            value: unknown,
+            depth: number,
+            fieldName?: string,
+            stringifyContent: boolean = false
+        ): void => {
+            if (limitError) return;
+            nodeCount++;
+            if (nodeCount > MAX_NODES) {
+                limitError = 'response node count exceeds the inspection limit';
+                return;
+            }
+            if (depth > MAX_DEPTH) {
+                limitError = 'response nesting exceeds the inspection depth';
+                return;
+            }
+
+            if (typeof value === 'string') {
+                const valueLength = countCodePoints(value);
+                const labelCost = fieldName === undefined
+                    ? 0
+                    : countCodePoints(fieldName) + 1;
+                const scanCost = valueLength + labelCost;
+                if (leafChars + valueLength + scanCost > MAX_CREDENTIAL_SCAN_CHARS) {
+                    limitError = 'credential scan exceeds the character limit';
+                    return;
+                }
+                if (labelChars + labelCost > MAX_FIELD_LABEL_CHARS) {
+                    limitError = 'field labels exceed the inspection limit';
+                    return;
+                }
+                if (!addContent(value)) return;
+
+                leaves.push(value);
+                if (fieldName !== undefined) leaves.push(fieldName + '=' + value);
+                leafChars += valueLength + scanCost;
+                labelChars += labelCost;
+                return;
+            }
+
+            if (typeof value === 'number' || typeof value === 'boolean') {
+                if (stringifyContent) {
+                    addContent(
+                        typeof value === 'number' && !Number.isFinite(value)
+                            ? 'null'
+                            : String(value),
+                    );
+                }
+                return;
+            }
+            if (value === null) {
+                if (stringifyContent) addContent('null');
+                return;
+            }
+            if (typeof value === 'bigint') {
+                if (stringifyContent) {
+                    limitError = 'response contains a non-JSON value';
+                }
+                return;
+            }
+            if (value === null || typeof value !== 'object') return;
+            if (active.has(value)) {
+                limitError = 'response contains a cycle';
+                return;
+            }
+            if (visited.has(value)) return;
+            visited.add(value);
+            active.add(value);
+
+            if (Array.isArray(value)) {
+                for (const child of value) {
+                    visit(child, depth + 1, undefined, stringifyContent);
+                    if (limitError) break;
+                }
+            } else {
+                const record = value as Record<string, unknown>;
+                for (const key in record) {
+                    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+                    const child = record[key];
+                    const includeContent = stringifyContent
+                        || (depth === 0 && (key === 'output' || key === 'arguments'));
+                    if (stringifyContent) {
+                        nodeCount++;
+                        if (nodeCount > MAX_NODES) {
+                            limitError = 'response node count exceeds the inspection limit';
+                            break;
+                        }
+                        if (!addContent(key)) break;
+                    }
+                    visit(
+                        child,
+                        depth + 1,
+                        typeof child === 'string' ? key : undefined,
+                        includeContent,
+                    );
+                    if (limitError) break;
+                }
+            }
+            active.delete(value);
+        };
+
+        visit(response, 0);
+        return { content: parts.join(' '), leaves, limitError };
+    }
+
+    private extractLeafStrings(response: ParsedResponse): string[] {
         // Every string leaf for per-field harmful evaluation (mirrors
         // Python _collect_leaf_strings). Dict entries contribute both the
         // bare value and the `key=value` form: the bare value alone drops
@@ -1535,20 +1696,7 @@ export class SafetyGuard extends BaseGuard {
         // (Greptile P1, PR #34). The strict placeholder exemption still
         // judges the `key=value` form. Bounded like extractContent so
         // deeply nested payloads terminate.
-        const MAX_DEPTH = 12;
-        if (depth > MAX_DEPTH) return [];
-        if (typeof response === 'string') return [response];
-        if (response === null || typeof response !== 'object') return [];
-        const leaves: string[] = [];
-        for (const [key, value] of Object.entries(response)) {
-            if (typeof value === 'string') {
-                leaves.push(value);
-                leaves.push(`${key}=${value}`);
-            } else if (value !== null && typeof value === 'object') {
-                leaves.push(...this.extractLeafStrings(value as ParsedResponse, depth + 1));
-            }
-        }
-        return leaves;
+        return this.collectBoundedContent(response).leaves;
     }
 }
 
