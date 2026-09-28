@@ -11,7 +11,7 @@
     ],
     "scripts": {
         "build": "tsc",
-        "test": "jest",
+        "test": "npm run build && jest --runInBand",
         "prepublishOnly": "npm run build"
     },
     "keywords": [

@@ -71,6 +71,10 @@ const guard = new SchemaGuard({
 });
 ```
 
+Object schemas reject undeclared root fields by default. Set
+`additionalProperties: true` in the schema or pass
+`{ allowAdditionalProperties: true }` as the second argument to allow them.
+
 ### MathGuard
 
 Verifies calculations.

@@ -651,12 +651,35 @@ export class SchemaGuard extends BaseGuard {
 
     private validate: ValidateFunction;
 
-    constructor(schema: Record<string, any>) {
+    constructor(
+        schema: Record<string, any>,
+        options: { allowAdditionalProperties?: boolean } = {}
+    ) {
         super();
         try {
+            const validatorSchema = { ...schema };
+            const schemaType = validatorSchema.type;
+            const declaresObject =
+                schemaType === 'object' ||
+                (Array.isArray(schemaType) && schemaType.includes('object')) ||
+                ['properties', 'patternProperties'].some((keyword) =>
+                    Object.prototype.hasOwnProperty.call(validatorSchema, keyword)
+                );
+
+            if (
+                options.allowAdditionalProperties !== true &&
+                declaresObject &&
+                !Object.prototype.hasOwnProperty.call(
+                    validatorSchema,
+                    'additionalProperties'
+                )
+            ) {
+                validatorSchema.additionalProperties = false;
+            }
+
             const ajv = new Ajv({ allErrors: true });
             addFormats(ajv as any);
-            this.validate = ajv.compile(schema);
+            this.validate = ajv.compile(validatorSchema);
         } catch (error) {
             throw new Error(
                 `Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}`

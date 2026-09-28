@@ -5,6 +5,7 @@ Ensures structured outputs match the expected schema.
 """
 
 from typing import Any, Dict, Optional, List
+import uuid
 from .base import BaseGuard, GuardResult
 
 try:
@@ -13,6 +14,23 @@ try:
     HAS_JSONSCHEMA = True
 except ImportError:
     HAS_JSONSCHEMA = False
+
+
+def _is_valid_uuid_format(value: Any) -> bool:
+    if not isinstance(value, str):
+        return True
+
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        return False
+
+    canonical_value = str(parsed)
+    normalized_value = value.lower()
+    return normalized_value in (
+        canonical_value,
+        f"urn:uuid:{canonical_value}",
+    )
 
 
 class SchemaGuard(BaseGuard):
@@ -48,7 +66,9 @@ class SchemaGuard(BaseGuard):
         Args:
             schema: JSON Schema to validate against
             strict: If True, fail on any schema violation
-            allow_additional_properties: If True, allow extra fields
+            allow_additional_properties: If True, do not add a default
+                ``additionalProperties: false`` constraint. Explicit schema
+                keywords always take precedence.
         """
         if not HAS_JSONSCHEMA:
             raise ImportError(
@@ -56,12 +76,40 @@ class SchemaGuard(BaseGuard):
                 "Install with: pip install jsonschema"
             )
 
-        self.schema = schema
+        validator_schema = schema.copy()
+        schema_type = validator_schema.get("type")
+        declares_object = (
+            schema_type == "object"
+            or (isinstance(schema_type, list) and "object" in schema_type)
+            or any(
+                keyword in validator_schema
+                for keyword in (
+                    "properties",
+                    "patternProperties",
+                )
+            )
+        )
+        if (
+            not allow_additional_properties
+            and declares_object
+            and "additionalProperties" not in validator_schema
+        ):
+            validator_schema["additionalProperties"] = False
+
+        self.schema = validator_schema
         self.strict = strict
         self.allow_additional_properties = allow_additional_properties
 
-        # Compile the validator
-        self.validator = jsonschema.Draft7Validator(schema)
+        format_checker = jsonschema.FormatChecker(
+            formats=jsonschema.Draft7Validator.FORMAT_CHECKER.checkers.keys()
+        )
+        format_checker.checks("uuid", raises=(ValueError, TypeError, AttributeError))(
+            _is_valid_uuid_format
+        )
+
+        self.validator = jsonschema.Draft7Validator(
+            validator_schema, format_checker=format_checker
+        )
 
     def check(
         self,

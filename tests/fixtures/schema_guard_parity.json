@@ -1,0 +1,106 @@
+[
+  {
+    "name": "uuid-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uuid"}}},
+    "data": {"value": "550e8400-e29b-41d4-a716-446655440000"},
+    "expected": true
+  },
+  {
+    "name": "uuid-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uuid"}}},
+    "data": {"value": "not-a-uuid"},
+    "expected": false
+  },
+  {
+    "name": "uuid-urn-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uuid"}}},
+    "data": {"value": "urn:uuid:550e8400-e29b-41d4-a716-446655440000"},
+    "expected": true
+  },
+  {
+    "name": "uuid-non-rfc-version-and-variant-bits-valid-for-ajv",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uuid"}}},
+    "data": {"value": "550e8400-e29b-91d4-0716-446655440000"},
+    "expected": true
+  },
+  {
+    "name": "email-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@example.com"},
+    "expected": true
+  },
+  {
+    "name": "email-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "not-an-email"},
+    "expected": false
+  },
+  {
+    "name": "date-time-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2026-09-29T12:00:00Z"},
+    "expected": true
+  },
+  {
+    "name": "date-time-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2026-13-40T99:99:99Z"},
+    "expected": false
+  },
+  {
+    "name": "uri-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uri"}}},
+    "data": {"value": "https://example.com/path"},
+    "expected": true
+  },
+  {
+    "name": "uri-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uri"}}},
+    "data": {"value": "not a uri"},
+    "expected": false
+  },
+  {
+    "name": "ipv4-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "ipv4"}}},
+    "data": {"value": "192.0.2.1"},
+    "expected": true
+  },
+  {
+    "name": "ipv4-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "ipv4"}}},
+    "data": {"value": "999.999.999.999"},
+    "expected": false
+  },
+  {
+    "name": "additional-properties-explicitly-forbidden",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": false},
+    "data": {"name": "John", "unexpected": true},
+    "expected": false
+  },
+  {
+    "name": "additional-properties-rejected-by-default",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}},
+    "data": {"name": "John", "unexpected": true},
+    "expected": false
+  },
+  {
+    "name": "additional-properties-allowed-by-option",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}},
+    "data": {"name": "John", "unexpected": true},
+    "allowAdditionalProperties": true,
+    "expected": true
+  },
+  {
+    "name": "additional-properties-explicitly-allowed",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": true},
+    "data": {"name": "John", "unexpected": true},
+    "expected": true
+  },
+  {
+    "name": "schema-keyword-takes-precedence-over-option",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": false},
+    "data": {"name": "John", "unexpected": true},
+    "allowAdditionalProperties": true,
+    "expected": false
+  }
+]
