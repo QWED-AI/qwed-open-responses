@@ -120,7 +120,12 @@ export class ToolGuard extends BaseGuard {
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
-        const toolCalls = this.extractToolCalls(response);
+        let toolCalls: ReturnType<ToolGuard['extractToolCalls']>;
+        try {
+            toolCalls = this.extractToolCalls(response);
+        } catch {
+            return this.failResult('BLOCKED: Tool calls could not be inspected safely.');
+        }
 
         if (toolCalls.length === 0) {
             return this.passResult('No tool calls to verify');
@@ -190,43 +195,58 @@ export class ToolGuard extends BaseGuard {
                 });
             }
 
-            // Scan parsed string values directly; JSON.stringify escapes
-            // control bytes and can hide whitespace from regexes.
-            for (const stringValue of ToolGuard.stringLeaves(args)) {
-                for (const pattern of this.dangerousPatterns) {
-                    if (ToolGuard.matches(pattern, stringValue)) {
-                        return this.failResult('BLOCKED: Dangerous pattern detected in tool arguments', {
-                            tool: toolName,
-                            pattern: pattern.source,
-                        });
-                    }
+            try {
+                const argsDepth = ToolGuard.argumentsDepth(args);
+                if (argsDepth < 0 || argsDepth > ToolGuard.MAX_ARGS_JSON_DEPTH) {
+                    return this.failResult(
+                        'BLOCKED: Tool arguments exceed safe inspection limits.',
+                        { tool: toolName },
+                    );
                 }
 
-                // #31: Decode bounded, printable-looking tokens in each raw
-                // string value and scan decoded text with the same patterns.
-                for (const token of stringValue.match(ToolGuard.BASE64_TOKEN_RE) || []) {
-                    const decoded = ToolGuard.tryBase64Decode(token);
-                    if (decoded === null) continue;
+                // Scan parsed keys and values directly; serialization escapes
+                // control bytes and can hide whitespace from regexes.
+                for (const stringValue of ToolGuard.stringLeaves(args)) {
                     for (const pattern of this.dangerousPatterns) {
-                        if (ToolGuard.matches(pattern, decoded)) {
-                            return this.failResult(
-                                'BLOCKED: Dangerous pattern detected in base64-encoded tool arguments',
-                                {
-                                    tool: toolName,
-                                    pattern: pattern.source,
-                                    encoding: 'base64',
-                                },
-                            );
+                        if (ToolGuard.matches(pattern, stringValue)) {
+                            return this.failResult('BLOCKED: Dangerous pattern detected in tool arguments', {
+                                tool: toolName,
+                                pattern: pattern.source,
+                            });
+                        }
+                    }
+
+                    // #31: Decode bounded, printable-looking tokens in each raw
+                    // string and scan decoded text with the same patterns.
+                    for (const token of stringValue.match(ToolGuard.BASE64_TOKEN_RE) || []) {
+                        const decoded = ToolGuard.tryBase64Decode(token);
+                        if (decoded === null) continue;
+                        for (const pattern of this.dangerousPatterns) {
+                            if (ToolGuard.matches(pattern, decoded)) {
+                                return this.failResult(
+                                    'BLOCKED: Dangerous pattern detected in base64-encoded tool arguments',
+                                    {
+                                        tool: toolName,
+                                        pattern: pattern.source,
+                                        encoding: 'base64',
+                                    },
+                                );
+                            }
                         }
                     }
                 }
+            } catch {
+                return this.failResult(
+                    'BLOCKED: Tool arguments could not be inspected safely.',
+                    { tool: toolName },
+                );
             }
         }
 
         return this.passResult(`All ${toolCalls.length} tool call(s) verified`);
     }
 
-    private static validToolName(name: any): boolean {
+    private static validToolName(name: unknown): name is string {
         // A tool-call name must be a non-empty string to be verifiable (#33).
         return typeof name === 'string' && name.trim().length > 0;
     }
@@ -472,22 +492,67 @@ export class ToolGuard extends BaseGuard {
     private static MAX_ARGS_JSON_CHARS = 10_000;
 
     private static MAX_ARGS_JSON_DEPTH = 128;
+    private static MAX_ARGS_SCAN_NODES = 10_000;
+    private static MAX_ARGS_SCAN_CHARS = 100_000;
 
     private static *stringLeaves(value: unknown): IterableIterator<string> {
-        const stack: unknown[] = [value];
+        type Frame = [unknown, number, boolean];
+        const stack: Frame[] = [[value, 0, true]];
+        const onPath = new Set<object>();
+        let scannedNodes = 0;
+        let scannedChars = 0;
         while (stack.length > 0) {
-            const node = stack.pop();
+            const [node, depth, entering] = stack.pop()!;
+            if (!entering) {
+                onPath.delete(node as object);
+                continue;
+            }
+            scannedNodes++;
+            if (scannedNodes > ToolGuard.MAX_ARGS_SCAN_NODES) {
+                throw new Error('Tool arguments exceed the node inspection limit');
+            }
             if (typeof node === 'string') {
+                scannedChars += node.length;
+                if (scannedChars > ToolGuard.MAX_ARGS_SCAN_CHARS) {
+                    throw new Error('Tool arguments exceed the character inspection limit');
+                }
                 yield node;
                 continue;
             }
             if (node === null || typeof node !== 'object') continue;
+            if (depth >= ToolGuard.MAX_ARGS_JSON_DEPTH) {
+                throw new Error('Tool arguments exceed the depth inspection limit');
+            }
+            if (onPath.has(node)) {
+                throw new Error('Tool arguments contain a cycle');
+            }
+            onPath.add(node);
+            stack.push([node, depth, false]);
 
-            const children: unknown[] = Array.isArray(node)
-                ? node
-                : Object.values(node as Record<string, unknown>);
-            for (let index = children.length - 1; index >= 0; index--) {
-                stack.push(children[index]);
+            if (Array.isArray(node)) {
+                if (scannedNodes + stack.length + node.length > ToolGuard.MAX_ARGS_SCAN_NODES) {
+                    throw new Error('Tool arguments exceed the node inspection limit');
+                }
+                for (let index = node.length - 1; index >= 0; index--) {
+                    stack.push([node[index], depth + 1, true]);
+                }
+            } else {
+                const entries: Array<[string, unknown]> = [];
+                for (const key in node) {
+                    if (!Object.prototype.hasOwnProperty.call(node, key)) continue;
+                    if (
+                        scannedNodes + stack.length + entries.length * 2 + 2
+                        > ToolGuard.MAX_ARGS_SCAN_NODES
+                    ) {
+                        throw new Error('Tool arguments exceed the node inspection limit');
+                    }
+                    entries.push([key, (node as Record<string, unknown>)[key]]);
+                }
+                for (let index = entries.length - 1; index >= 0; index--) {
+                    const [key, child] = entries[index];
+                    stack.push([child, depth + 1, true]);
+                    stack.push([key, depth + 1, true]);
+                }
             }
         }
     }
@@ -504,6 +569,7 @@ export class ToolGuard extends BaseGuard {
         type Frame = [any, number, boolean];
         const stack: Frame[] = [[obj, 1, true]];
         const onPath = new Set<any>();
+        let scannedNodes = 0;
         while (stack.length > 0) {
             const frame = stack.pop()!;
             const node = frame[0];
@@ -514,15 +580,26 @@ export class ToolGuard extends BaseGuard {
                 continue;
             }
             if (onPath.has(node)) return -1;
+            if (++scannedNodes > ToolGuard.MAX_ARGS_SCAN_NODES) return -1;
             onPath.add(node);
             if (depth > max) max = depth;
             stack.push([node, depth, false]);
-            const children: any[] = Array.isArray(node)
-                ? node
-                : Object.values(node);
-            for (const child of children) {
-                if (child !== null && typeof child === 'object') {
-                    stack.push([child, depth + 1, true]);
+            if (Array.isArray(node)) {
+                if (scannedNodes + node.length > ToolGuard.MAX_ARGS_SCAN_NODES) return -1;
+                scannedNodes += node.length;
+                for (const child of node) {
+                    if (child !== null && typeof child === 'object') {
+                        stack.push([child, depth + 1, true]);
+                    }
+                }
+            } else {
+                for (const key in node) {
+                    if (!Object.prototype.hasOwnProperty.call(node, key)) continue;
+                    if (++scannedNodes > ToolGuard.MAX_ARGS_SCAN_NODES) return -1;
+                    const child = node[key];
+                    if (child !== null && typeof child === 'object') {
+                        stack.push([child, depth + 1, true]);
+                    }
                 }
             }
         }

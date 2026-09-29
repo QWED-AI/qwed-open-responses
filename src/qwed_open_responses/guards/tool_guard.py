@@ -111,6 +111,8 @@ class ToolGuard(BaseGuard):
     # Fail-closed bound on JSON-encoded argument payloads before parsing.
     _MAX_ARGS_JSON_CHARS = 10_000
     _MAX_ARGS_JSON_DEPTH = 128
+    _MAX_ARGS_SCAN_NODES = 10_000
+    _MAX_ARGS_SCAN_CHARS = 100_000
     _MAX_NESTED_SCAN_DEPTH = 12
 
     # #31: candidate encoded tokens (6-bit-group text encoding) inside
@@ -300,7 +302,12 @@ class ToolGuard(BaseGuard):
         """Validate tool call(s) in response."""
 
         # Extract tool calls
-        tool_calls = self._extract_tool_calls(response)
+        try:
+            tool_calls = self._extract_tool_calls(response)
+        except Exception:
+            return self.fail_result(
+                "BLOCKED: Tool calls could not be inspected safely."
+            )
 
         if not tool_calls:
             return self.pass_result(message="No tool calls to verify")
@@ -351,7 +358,7 @@ class ToolGuard(BaseGuard):
             # A tool call must carry a real name — blank/non-string names can
             # never match blocklist/allowed/dangerous checks, so fail closed
             # rather than reporting an anonymous call verified (#33).
-            if not ToolGuard._valid_tool_name(tool_name):
+            if not isinstance(tool_name, str) or not tool_name.strip():
                 return self.fail_result(
                     "BLOCKED: Tool call has no valid (non-blank string) name.",
                     details={"response_keys": list(response.keys())},
@@ -381,42 +388,54 @@ class ToolGuard(BaseGuard):
 
             # Check for dangerous patterns in arguments. A negative depth
             # means a cycle was detected — fail closed on it too.
-            args_depth = ToolGuard._arguments_depth(arguments)
+            try:
+                args_depth = ToolGuard._arguments_depth(arguments)
+            except Exception:
+                return self.fail_result(
+                    "BLOCKED: Tool arguments could not be inspected safely.",
+                    details={"tool": tool_name},
+                )
             if args_depth < 0 or args_depth > ToolGuard._MAX_ARGS_JSON_DEPTH:
                 return self.fail_result(
-                    "BLOCKED: Tool arguments exceed maximum nesting depth.",
+                    "BLOCKED: Tool arguments exceed safe inspection limits.",
                     details={"tool": tool_name},
                 )
             # Scan the parsed values themselves. Re-serializing arguments
             # escapes control bytes and can hide whitespace from regexes.
-            for string_value in ToolGuard._iter_string_leaves(arguments):
-                for pattern in self.dangerous_patterns:
-                    if pattern.search(string_value):
-                        return self.fail_result(
-                            "BLOCKED: Dangerous pattern detected in tool arguments",
-                            details={
-                                "tool": tool_name,
-                                "pattern": pattern.pattern,
-                            },
-                        )
-
-                # #31: Decode bounded, printable-looking tokens in each raw
-                # string value and scan decoded text with the same patterns.
-                for token in ToolGuard._ENCODED_TOKEN_RE.findall(string_value):
-                    decoded = ToolGuard._try_decode_encoded_token(token)
-                    if decoded is None:
-                        continue
+            try:
+                for string_value in ToolGuard._iter_string_leaves(arguments):
                     for pattern in self.dangerous_patterns:
-                        if pattern.search(decoded):
+                        if pattern.search(string_value):
                             return self.fail_result(
-                                "BLOCKED: Dangerous pattern detected in "
-                                "base64-encoded tool arguments",
+                                "BLOCKED: Dangerous pattern detected in tool arguments",
                                 details={
                                     "tool": tool_name,
                                     "pattern": pattern.pattern,
-                                    "encoding": "base64",
                                 },
                             )
+
+                    # #31: Decode bounded, printable-looking tokens in each raw
+                    # string and scan decoded text with the same patterns.
+                    for token in ToolGuard._ENCODED_TOKEN_RE.findall(string_value):
+                        decoded = ToolGuard._try_decode_encoded_token(token)
+                        if decoded is None:
+                            continue
+                        for pattern in self.dangerous_patterns:
+                            if pattern.search(decoded):
+                                return self.fail_result(
+                                    "BLOCKED: Dangerous pattern detected in "
+                                    "base64-encoded tool arguments",
+                                    details={
+                                        "tool": tool_name,
+                                        "pattern": pattern.pattern,
+                                        "encoding": "base64",
+                                    },
+                                )
+            except Exception:
+                return self.fail_result(
+                    "BLOCKED: Tool arguments could not be inspected safely.",
+                    details={"tool": tool_name},
+                )
 
             # Run custom validator if exists
             if folded_name in self.custom_validators:
@@ -489,16 +508,63 @@ class ToolGuard(BaseGuard):
 
     @staticmethod
     def _iter_string_leaves(value: Any) -> Iterator[str]:
-        """Yield parsed string values without serializing their containers."""
-        stack = [value]
+        """Yield bounded parsed string keys and values without serialization."""
+        stack: List[Tuple[Any, int, bool]] = [(value, 0, True)]
+        on_path: Set[int] = set()
+        scanned_nodes = 0
+        scanned_chars = 0
         while stack:
-            node = stack.pop()
+            node, depth, entering = stack.pop()
+            if not entering:
+                on_path.discard(id(node))
+                continue
+            scanned_nodes += 1
+            if scanned_nodes > ToolGuard._MAX_ARGS_SCAN_NODES:
+                raise ValueError("Tool arguments exceed the node inspection limit")
             if isinstance(node, str):
+                scanned_chars += len(node)
+                if scanned_chars > ToolGuard._MAX_ARGS_SCAN_CHARS:
+                    raise ValueError(
+                        "Tool arguments exceed the character inspection limit"
+                    )
                 yield node
             elif isinstance(node, dict):
-                stack.extend(reversed(node.values()))
+                if depth >= ToolGuard._MAX_ARGS_JSON_DEPTH:
+                    raise ValueError("Tool arguments exceed the depth inspection limit")
+                marker = id(node)
+                if marker in on_path:
+                    raise ValueError("Tool arguments contain a cycle")
+                on_path.add(marker)
+                stack.append((node, depth, False))
+                entries: List[Tuple[Any, Any]] = []
+                for key, child in node.items():
+                    key_count = int(isinstance(key, str))
+                    if (
+                        scanned_nodes + len(stack) + len(entries) * 2 + 1 + key_count
+                        > ToolGuard._MAX_ARGS_SCAN_NODES
+                    ):
+                        raise ValueError(
+                            "Tool arguments exceed the node inspection limit"
+                        )
+                    entries.append((key, child))
+                for key, child in reversed(entries):
+                    stack.append((child, depth + 1, True))
+                    if isinstance(key, str):
+                        stack.append((key, depth + 1, True))
             elif isinstance(node, list):
-                stack.extend(reversed(node))
+                if depth >= ToolGuard._MAX_ARGS_JSON_DEPTH:
+                    raise ValueError("Tool arguments exceed the depth inspection limit")
+                marker = id(node)
+                if marker in on_path:
+                    raise ValueError("Tool arguments contain a cycle")
+                if (
+                    scanned_nodes + len(stack) + len(node)
+                    > ToolGuard._MAX_ARGS_SCAN_NODES
+                ):
+                    raise ValueError("Tool arguments exceed the node inspection limit")
+                on_path.add(marker)
+                stack.append((node, depth, False))
+                stack.extend((child, depth + 1, True) for child in reversed(node))
 
     @staticmethod
     def _arguments_depth(obj: Any) -> int:
@@ -519,6 +585,7 @@ class ToolGuard(BaseGuard):
         # node, so `on_path` holds only true ancestors at any moment.
         stack: List[Tuple[Any, int, bool]] = [(obj, 1, True)]
         on_path: Set[int] = set()
+        scanned_nodes = 0
         while stack:
             node, depth, entering = stack.pop()
             if not entering:
@@ -526,13 +593,27 @@ class ToolGuard(BaseGuard):
                 continue
             if id(node) in on_path:
                 return -1
+            scanned_nodes += 1
+            if scanned_nodes > ToolGuard._MAX_ARGS_SCAN_NODES:
+                return -1
             on_path.add(id(node))
             if depth > max_depth:
                 max_depth = depth
             stack.append((node, depth, False))
-            for child in ToolGuard._container_children(node):
-                if ToolGuard._is_container(child):
-                    stack.append((child, depth + 1, True))
+            if isinstance(node, list):
+                if scanned_nodes + len(node) > ToolGuard._MAX_ARGS_SCAN_NODES:
+                    return -1
+                scanned_nodes += len(node)
+                for child in node:
+                    if ToolGuard._is_container(child):
+                        stack.append((child, depth + 1, True))
+            else:
+                if scanned_nodes + len(node) > ToolGuard._MAX_ARGS_SCAN_NODES:
+                    return -1
+                scanned_nodes += len(node)
+                for child in node.values():
+                    if ToolGuard._is_container(child):
+                        stack.append((child, depth + 1, True))
         return max_depth
 
     @staticmethod

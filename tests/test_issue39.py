@@ -92,3 +92,61 @@ def test_base64_detection_scans_nested_raw_string_values():
 
     assert result.passed is False
     assert result.details["encoding"] == "base64"
+
+
+def test_dangerous_argument_keys_are_scanned_recursively():
+    result = ToolGuard().check(
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "arguments": {"nested": {"rm -rf /": "benign"}},
+        }
+    )
+
+    assert result.passed is False
+    assert "dangerous pattern" in result.message.lower()
+
+
+def test_direct_tool_call_cycles_fail_closed():
+    arguments = {"command": "benign"}
+    arguments["self"] = arguments
+
+    result = ToolGuard().check(
+        {"type": "tool_call", "tool_name": "search", "arguments": arguments}
+    )
+
+    assert result.passed is False
+
+
+def test_direct_tool_call_depth_limit_fails_closed():
+    arguments = {}
+    for _ in range(128):
+        arguments = {"nested": arguments}
+
+    result = ToolGuard().check(
+        {"type": "tool_call", "tool_name": "search", "arguments": arguments}
+    )
+
+    assert result.passed is False
+
+
+def test_argument_scanning_fails_closed_after_node_limit():
+    arguments = {f"query{index}": "value" for index in range(10_001)}
+
+    result = ToolGuard().check(
+        {"type": "tool_call", "tool_name": "search", "arguments": arguments}
+    )
+
+    assert result.passed is False
+
+
+def test_argument_scanning_fails_closed_after_character_limit():
+    result = ToolGuard().check(
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "arguments": {"query": "a" * 100_001},
+        }
+    )
+
+    assert result.passed is False

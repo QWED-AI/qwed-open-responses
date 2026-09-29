@@ -101,4 +101,85 @@ describe('ToolGuard issue #39 raw argument scanning', () => {
 
         expect(result.passed).toBe(true);
     });
+
+    test('scans nested argument keys as well as values', () => {
+        const result = new ToolGuard().check({
+            type: 'tool_call',
+            tool_name: 'search',
+            arguments: { nested: { 'rm -rf /': 'benign' } },
+        });
+
+        expect(result.passed).toBe(false);
+        expect(result.message.toLowerCase()).toContain('dangerous pattern');
+    });
+
+    test('fails closed for a cyclic direct tool call', () => {
+        const argumentsValue = { command: 'benign' };
+        argumentsValue.self = argumentsValue;
+
+        const result = new ToolGuard().check({
+            type: 'tool_call',
+            tool_name: 'search',
+            arguments: argumentsValue,
+        });
+
+        expect(result.passed).toBe(false);
+    });
+
+    test('fails closed when a direct tool call exceeds the nesting limit', () => {
+        let argumentsValue = {};
+        for (let depth = 0; depth < 128; depth++) {
+            argumentsValue = { nested: argumentsValue };
+        }
+
+        const result = new ToolGuard().check({
+            type: 'tool_call',
+            tool_name: 'search',
+            arguments: argumentsValue,
+        });
+
+        expect(result.passed).toBe(false);
+    });
+
+    test('fails closed when reading an argument getter throws', () => {
+        const argumentsValue = {};
+        Object.defineProperty(argumentsValue, 'command', {
+            enumerable: true,
+            get() {
+                throw new Error('unavailable');
+            },
+        });
+
+        const result = new ToolGuard().check({
+            type: 'tool_call',
+            tool_name: 'search',
+            arguments: argumentsValue,
+        });
+
+        expect(result.passed).toBe(false);
+        expect(result.message).toContain('could not be inspected safely');
+    });
+
+    test('fails closed when argument scanning exceeds its node limit', () => {
+        const argumentsValue = Object.fromEntries(
+            Array.from({ length: 10_001 }, (_, index) => [`query${index}`, 'value'])
+        );
+        const result = new ToolGuard().check({
+            type: 'tool_call',
+            tool_name: 'search',
+            arguments: argumentsValue,
+        });
+
+        expect(result.passed).toBe(false);
+    });
+
+    test('fails closed when argument scanning exceeds its character limit', () => {
+        const result = new ToolGuard().check({
+            type: 'tool_call',
+            tool_name: 'search',
+            arguments: { query: 'a'.repeat(100_001) },
+        });
+
+        expect(result.passed).toBe(false);
+    });
 });
