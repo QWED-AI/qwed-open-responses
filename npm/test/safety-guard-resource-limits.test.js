@@ -185,6 +185,14 @@ describe("bounded verification resources", () => {
         const result = new ResponseVerifier([new SafetyGuard()]).verify(payload);
 
         expect(result.verified).toBe(false);
+        expect(result.guardResults[0].details.resourceLimit).toContain("safe limits");
+    });
+
+    test("does not treat long digit strings as integer tokens", () => {
+        const payload = '{"value":"' + "9".repeat(5_000) + '"}';
+        const result = new ResponseVerifier([new SafetyGuard()]).verify(payload);
+
+        expect(result.verified).toBe(true);
     });
 
     test("keeps plain text fallback behavior", () => {

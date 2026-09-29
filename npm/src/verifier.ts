@@ -8,6 +8,7 @@ import { VerificationResult, GuardResult, ParsedResponse, ResultBinding } from '
 
 const MAX_JSON_RESPONSE_CHARS = 100_000;
 const MAX_JSON_NESTING_DEPTH = 100;
+const MAX_JSON_INTEGER_DIGITS = 4_300;
 const SAFE_PARSE_LIMIT_MESSAGES = new Set([
     'JSON response exceeds the character limit',
     'JSON response exceeds the nesting depth limit',
@@ -58,6 +59,57 @@ function jsonNestingExceedsLimit(text: string): boolean {
         } else if ((char === ']' || char === '}') && depth > 0) {
             depth--;
         }
+    }
+
+    return false;
+}
+
+function jsonIntegerExceedsLimit(text: string): boolean {
+    let inString = false;
+    let escaped = false;
+
+    for (let index = 0; index < text.length; index++) {
+        const char = text[index];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') inString = false;
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            continue;
+        }
+        if (char !== '-' && (char < '0' || char > '9')) continue;
+
+        let cursor = index;
+        if (text[cursor] === '-') cursor++;
+        const integerStart = cursor;
+        while (cursor < text.length && text[cursor] >= '0' && text[cursor] <= '9') {
+            cursor++;
+        }
+        const integerDigits = cursor - integerStart;
+
+        // Decimal and exponent forms are parsed as floating-point values;
+        // Python's parse_int limit applies only to integer tokens.
+        let isInteger = true;
+        if (text[cursor] === '.') {
+            isInteger = false;
+            cursor++;
+            while (cursor < text.length && text[cursor] >= '0' && text[cursor] <= '9') {
+                cursor++;
+            }
+        }
+        if (text[cursor] === 'e' || text[cursor] === 'E') {
+            isInteger = false;
+            cursor++;
+            if (text[cursor] === '+' || text[cursor] === '-') cursor++;
+            while (cursor < text.length && text[cursor] >= '0' && text[cursor] <= '9') {
+                cursor++;
+            }
+        }
+        if (isInteger && integerDigits > MAX_JSON_INTEGER_DIGITS) return true;
+        index = Math.max(index, cursor - 1);
     }
 
     return false;
@@ -372,6 +424,11 @@ export class ResponseVerifier {
             if (jsonNestingExceedsLimit(response)) {
                 throw new ResponseParseLimitError(
                     'JSON response exceeds the nesting depth limit'
+                );
+            }
+            if (jsonIntegerExceedsLimit(response)) {
+                throw new ResponseParseLimitError(
+                    'JSON response could not be parsed within safe limits'
                 );
             }
             // JSON arrays are rejected like direct array inputs (Sentry HIGH,
