@@ -11,7 +11,7 @@ Source: Open Responses interoperable LLM interface.
 import logging
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
-from ..core import ResponseVerifier, VerificationResult
+from ..core import GuardResult, ResponseVerifier, VerificationResult
 from ..guards.base import BaseGuard
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class OpenResponsesMiddleware:
     """
 
     # Tool types that require verification before yielding
-    VERIFIABLE_ITEM_TYPES: frozenset = frozenset({"tool_call", "function_call"})
+    VERIFIABLE_ITEM_TYPES: frozenset[str] = frozenset({"tool_call", "function_call"})
 
     def __init__(
         self,
@@ -87,8 +87,8 @@ class OpenResponsesMiddleware:
         """
         Monitor the stream for tool-call items, verifying each before yield.
 
-        Items whose ``type`` is not in :pyattr:`VERIFIABLE_ITEM_TYPES` are
-        passed through unchanged.
+        Non-tool items are passed through unchanged. Tool-like items with an
+        unsupported type are blocked rather than treated as verified output.
 
         Yields:
             Verified (or replaced) items from the stream.
@@ -96,10 +96,19 @@ class OpenResponsesMiddleware:
         async for item in response_stream:
             self._stats["total"] += 1
 
-            if item.get("type") in self.VERIFIABLE_ITEM_TYPES:
+            item_type = item.get("type")
+            normalized_type = (
+                item_type.strip().casefold() if isinstance(item_type, str) else ""
+            )
+
+            if normalized_type in self.VERIFIABLE_ITEM_TYPES:
                 verified_item = self._verify_tool_call(item)
                 if verified_item is not None:
                     yield verified_item
+            elif self._is_tool_shaped_item(item):
+                blocked_item = self._block_unrecognized_tool_item(item)
+                if blocked_item is not None:
+                    yield blocked_item
             else:
                 # Non-tool items (text, metadata, etc.) pass through
                 yield item
@@ -116,6 +125,28 @@ class OpenResponsesMiddleware:
     #  Internals                                                           #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _is_tool_shaped_item(item: Dict[str, Any]) -> bool:
+        """Identify tool-call fields on an envelope with an unknown type."""
+        if any(key in item for key in ("tool_name", "tool_call", "function_call")):
+            return True
+        if "name" in item and "arguments" in item:
+            return True
+        function = item.get("function")
+        return isinstance(function, dict) and (
+            "name" in function or "arguments" in function
+        )
+
+    @staticmethod
+    def _tool_name(item: Dict[str, Any]) -> str:
+        name = item.get("tool_name") or item.get("name")
+        tool_call = item.get("tool_call")
+        if tool_call is None:
+            tool_call = item.get("function_call")
+        if not isinstance(name, str) or not name.strip():
+            name = tool_call.get("name") if isinstance(tool_call, dict) else None
+        return name if isinstance(name, str) and name.strip() else "unknown"
+
     def _verify_tool_call(
         self,
         item: Dict[str, Any],
@@ -127,23 +158,39 @@ class OpenResponsesMiddleware:
         item if blocked (when ``block_on_failure`` is True), or the
         original item unmodified (when ``block_on_failure`` is False).
         """
-        # Use explicit None check — empty dicts are valid tool calls
-        tool_call = item.get("tool_call")
-        if tool_call is None:
-            tool_call = item.get("function_call", {})
+        tool_name = self._tool_name(item)
+        result: VerificationResult = self._verifier.verify(item)
+        return self._handle_tool_call_result(item, tool_name, result)
 
-        tool_name = tool_call.get("name", "unknown")
-        tool_args = tool_call.get("arguments", {})
+    def _block_unrecognized_tool_item(
+        self,
+        item: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Fail closed when a tool-shaped item declares an unknown type."""
+        reason = f"Unrecognized tool-call item type: {item.get('type')!r}"
+        result = VerificationResult(
+            verified=False,
+            response=item,
+            guards_failed=1,
+            guard_results=[
+                GuardResult(
+                    guard_name="OpenResponsesMiddleware",
+                    passed=False,
+                    message=reason,
+                )
+            ],
+            blocked=True,
+            block_reason=reason,
+        )
+        return self._handle_tool_call_result(item, self._tool_name(item), result)
 
-        # Build a verification payload — use "arguments" key for guard compat
-        payload: Dict[str, Any] = {
-            "type": "tool_call",
-            "tool_name": tool_name,
-            "arguments": tool_args,
-            "raw_item": item,
-        }
-
-        result: VerificationResult = self._verifier.verify(payload)
+    def _handle_tool_call_result(
+        self,
+        item: Dict[str, Any],
+        tool_name: str,
+        result: VerificationResult,
+    ) -> Optional[Dict[str, Any]]:
+        """Update middleware state and apply its configured block behavior."""
 
         if result.verified:
             self._stats["verified"] += 1

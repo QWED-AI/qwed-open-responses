@@ -454,7 +454,7 @@ class ToolGuard(BaseGuard):
         ``tool_name``/``arguments`` regardless of envelope. Unparseable calls
         become fail-closed sentinels.
         """
-        resp_type = str(response.get("type", "")).lower()
+        resp_type = ToolGuard._normalized_type(response.get("type", ""))
 
         calls: List[Dict] = []
         calls.extend(self._extract_known_shapes(response))
@@ -547,6 +547,11 @@ class ToolGuard(BaseGuard):
         return False, None
 
     @staticmethod
+    def _normalized_type(value: Any) -> str:
+        """Normalize protocol type markers without changing the payload."""
+        return value.strip().casefold() if isinstance(value, str) else ""
+
+    @staticmethod
     def _unrecognized_sentinel(name: Any = None) -> Dict[str, Any]:
         """Fail-closed sentinel for calls whose arguments cannot be parsed."""
         return {
@@ -566,6 +571,22 @@ class ToolGuard(BaseGuard):
         """
         if call.get("type") in ("__unrecognized__", "__malformed__"):
             return call
+
+        tool_call = call.get("tool_call")
+        function_call = call.get("function_call")
+        if tool_call is not None and function_call is not None:
+            return ToolGuard._ambiguous_hybrid_sentinel()
+        nested_call = tool_call if tool_call is not None else function_call
+        if nested_call is not None:
+            if not isinstance(nested_call, dict):
+                return cls._unrecognized_sentinel(None)
+            if nested_call is call or any(
+                key in nested_call for key in ("tool_call", "function_call")
+            ):
+                return cls._unrecognized_sentinel(None)
+            if any(key in call for key in ("tool_name", "name", "arguments")):
+                return ToolGuard._ambiguous_hybrid_sentinel()
+            call = nested_call
 
         # OpenAI function wrapper: {function: {name, arguments-as-JSON-string}}.
         resolved = cls._normalize_function_wrapper(call)
@@ -618,7 +639,7 @@ class ToolGuard(BaseGuard):
 
         Returns None when the call is not such an item.
         """
-        if str(call.get("type", "")).lower() != "function_call":
+        if cls._normalized_type(call.get("type", "")) != "function_call":
             return None
         name = call.get("name")
         if not cls._valid_tool_name(name):
@@ -716,7 +737,7 @@ class ToolGuard(BaseGuard):
                 # direct tool_use block is a tool call; tool shapes nested
                 # inside a dict are an ambiguous laundering vector and become
                 # malformed; benign dicts carry no tools (Sentry HIGH).
-                if str(blocks.get("type", "")).lower() == "tool_use":
+                if ToolGuard._normalized_type(blocks.get("type", "")) == "tool_use":
                     return [
                         {
                             "type": "tool_call",
@@ -735,7 +756,7 @@ class ToolGuard(BaseGuard):
             # unrecognized envelope (Sentry HIGH).
             if (
                 isinstance(block, dict)
-                and str(block.get("type", "")).lower() == "tool_use"
+                and ToolGuard._normalized_type(block.get("type", "")) == "tool_use"
             ):
                 calls.append(
                     {
@@ -772,7 +793,7 @@ class ToolGuard(BaseGuard):
         ambiguous hybrid (direct call + sibling collection) is rejected.
         """
         calls: List[Dict] = []
-        resp_type = str(response.get("type", "")).lower()
+        resp_type = ToolGuard._normalized_type(response.get("type", ""))
 
         # Ambiguous hybrid envelope: a direct tool-call object that ALSO
         # carries a sibling collection. Reject instead of choosing one
@@ -830,7 +851,7 @@ class ToolGuard(BaseGuard):
         if not isinstance(content_blocks, list):
             content_blocks = []
         nested_types = {
-            str(block.get("type", "")).lower()
+            ToolGuard._normalized_type(block.get("type", ""))
             for block in content_blocks
             if isinstance(block, dict)
         }
@@ -856,7 +877,7 @@ class ToolGuard(BaseGuard):
     def _is_tool_shaped_dict(value: Any) -> bool:
         if not isinstance(value, dict):
             return False
-        t = str(value.get("type", "")).lower()
+        t = ToolGuard._normalized_type(value.get("type", ""))
         if t in ("tool_use", "function_call", "tool_call"):
             return True
         return "tool_name" in value or ("name" in value and "arguments" in value)
