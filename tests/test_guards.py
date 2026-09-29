@@ -308,6 +308,42 @@ class TestSchemaGuard:
         result = guard.check({"output": {"age": "thirty"}})  # String not int
         assert result.passed is False
 
+    def test_additional_properties_rejected_by_default_without_mutating_schema(self):
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+        }
+        guard = SchemaGuard(schema)
+
+        result = guard.check({"output": {"name": "John", "admin": True}})
+
+        assert result.passed is False
+        assert "admin" in result.details["errors"][0]
+        assert "additionalProperties" not in schema
+
+    def test_additional_properties_can_be_allowed_by_constructor(self):
+        guard = SchemaGuard(
+            schema={"type": "object", "properties": {"name": {"type": "string"}}},
+            allow_additional_properties=True,
+        )
+
+        result = guard.check({"output": {"name": "John", "admin": True}})
+
+        assert result.passed is True
+
+    def test_explicit_additional_properties_keyword_is_preserved(self):
+        guard = SchemaGuard(
+            schema={
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "additionalProperties": True,
+            }
+        )
+
+        result = guard.check({"output": {"name": "John", "admin": True}})
+
+        assert result.passed is True
+
 
 class TestTaxGuard:
     """Test TaxGuard class."""

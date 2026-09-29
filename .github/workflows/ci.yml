@@ -33,3 +33,24 @@ jobs:
         run: |
           pip install black
           black --check src/
+
+  npm-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: npm/package-lock.json
+
+      - name: Install npm dependencies
+        run: npm ci
+        working-directory: ./npm
+
+      - name: Run npm tests
+        run: npm test
+        working-directory: ./npm

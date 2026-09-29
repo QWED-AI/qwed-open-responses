@@ -6,6 +6,14 @@ import Ajv, { ValidateFunction, ErrorObject } from 'ajv';
 import addFormats from 'ajv-formats';
 import { GuardResult, ParsedResponse } from './types';
 
+const EMAIL_ATOM = "[a-z0-9!#$%&'*+/=?^_`{|}~-]+";
+const EMAIL_LOCAL_PART = `${EMAIL_ATOM}(?:\\.${EMAIL_ATOM})*`;
+const EMAIL_DOMAIN_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const EMAIL_FORMAT = new RegExp(
+    `^${EMAIL_LOCAL_PART}@(?:${EMAIL_DOMAIN_LABEL}\\.)*${EMAIL_DOMAIN_LABEL}(?![\\s\\S])`,
+    'i',
+);
+
 /**
  * Base class for all guards.
  */
@@ -645,18 +653,482 @@ export class ToolGuard extends BaseGuard {
 /**
  * Schema Guard - Validates JSON schema.
  */
+type SchemaObject = Record<string, unknown>;
+
+function isSchemaObject(value: unknown): value is SchemaObject {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function resolveLocalSchemaReference(
+    rootSchema: SchemaObject,
+    reference: string
+): unknown | undefined {
+    if (reference === '#') return rootSchema;
+    if (!reference.startsWith('#/')) return undefined;
+
+    let referencedSchema: unknown = rootSchema;
+    try {
+        for (const rawToken of reference.slice(2).split('/')) {
+            const token = decodeURIComponent(rawToken)
+                .replace(/~1/g, '/')
+                .replace(/~0/g, '~');
+            if (
+                !isSchemaObject(referencedSchema) ||
+                !Object.prototype.hasOwnProperty.call(referencedSchema, token)
+            ) {
+                return undefined;
+            }
+            referencedSchema = referencedSchema[token];
+        }
+    } catch {
+        return undefined;
+    }
+    return referencedSchema;
+}
+
+function collectRootObjectFields(rootSchema: SchemaObject): {
+    propertyNames: Set<string>;
+    patternNames: Set<string>;
+    declaresObject: boolean;
+    referencesResolved: boolean;
+    propertyActivations: Map<string, Map<string, string[]>>;
+    patternActivations: Map<string, Map<string, string[]>>;
+    activationSchemas: Map<string, unknown>;
+} {
+    const propertyNames = new Set<string>();
+    const patternNames = new Set<string>();
+    const propertyActivations = new Map<string, Map<string, string[]>>();
+    const patternActivations = new Map<string, Map<string, string[]>>();
+    const activationSchemas = new Map<string, unknown>();
+    const visitedSchemas = new WeakMap<SchemaObject, Set<string>>();
+    const objectIdentities = new WeakMap<object, number>();
+    let nextObjectIdentity = 1;
+    let declaresObject = false;
+    let referencesResolved = true;
+
+    const objectIdentity = (value: object): number => {
+        const knownIdentity = objectIdentities.get(value);
+        if (knownIdentity !== undefined) return knownIdentity;
+        const identity = nextObjectIdentity++;
+        objectIdentities.set(value, identity);
+        return identity;
+    };
+
+    const extendActivation = (
+        activation: string[],
+        marker: string,
+        predicate: unknown
+    ): string[] => {
+        if (!activationSchemas.has(marker)) activationSchemas.set(marker, predicate);
+        return Array.from(new Set([...activation, marker])).sort();
+    };
+
+    const recordActivation = (
+        fields: Map<string, Map<string, string[]>>,
+        name: string,
+        activation: string[]
+    ): void => {
+        const signature = JSON.stringify(activation);
+        let activations = fields.get(name);
+        if (!activations) {
+            activations = new Map<string, string[]>();
+            fields.set(name, activations);
+        }
+        activations.set(signature, activation);
+    };
+
+    const visit = (schema: unknown, activation: string[] = []): void => {
+        if (!isSchemaObject(schema)) return;
+        const signature = JSON.stringify(activation);
+        let visitedActivations = visitedSchemas.get(schema);
+        if (!visitedActivations) {
+            visitedActivations = new Set<string>();
+            visitedSchemas.set(schema, visitedActivations);
+        }
+        if (visitedActivations.has(signature)) return;
+        visitedActivations.add(signature);
+
+        const reference = schema.$ref;
+        if (typeof reference === 'string') {
+            const referencedSchema = resolveLocalSchemaReference(rootSchema, reference);
+            if (referencedSchema === undefined) {
+                if (activation.length === 0) referencesResolved = false;
+            } else {
+                visit(referencedSchema, activation);
+            }
+            // Draft 7 ignores every sibling of $ref.
+            return;
+        }
+
+        const schemaType = schema.type;
+        const hasProperties = Object.prototype.hasOwnProperty.call(schema, 'properties');
+        const hasPatternProperties = Object.prototype.hasOwnProperty.call(
+            schema,
+            'patternProperties'
+        );
+        if (
+            schemaType === 'object' ||
+            (Array.isArray(schemaType) && schemaType.includes('object')) ||
+            hasProperties ||
+            hasPatternProperties
+        ) {
+            declaresObject = true;
+        }
+
+        const properties = schema.properties;
+        if (isSchemaObject(properties)) {
+            Object.keys(properties).forEach((name) => {
+                propertyNames.add(name);
+                recordActivation(propertyActivations, name, activation);
+            });
+        }
+        const patternProperties = schema.patternProperties;
+        if (isSchemaObject(patternProperties)) {
+            Object.keys(patternProperties).forEach((name) => {
+                patternNames.add(name);
+                recordActivation(patternActivations, name, activation);
+            });
+        }
+
+        const allOf = schema.allOf;
+        if (Array.isArray(allOf)) {
+            allOf.forEach((branch) => visit(branch, activation));
+        }
+
+        for (const keyword of ['anyOf', 'oneOf']) {
+            const branches = schema[keyword];
+            if (Array.isArray(branches)) {
+                branches.forEach((branch, index) => {
+                    const branchActivation = extendActivation(
+                        activation,
+                        `${keyword}:${objectIdentity(schema)}:${index}`,
+                        branch
+                    );
+                    visit(branch, branchActivation);
+                });
+            }
+        }
+        const dependencies = schema.dependencies;
+        if (isSchemaObject(dependencies)) {
+            Object.entries(dependencies).forEach(([dependencyName, dependency]) => {
+                if (isSchemaObject(dependency)) {
+                    const dependencyActivation = extendActivation(
+                        activation,
+                        `dependency:${objectIdentity(schema)}:${dependencyName}`,
+                        { required: [dependencyName] }
+                    );
+                    visit(dependency, dependencyActivation);
+                }
+            });
+        }
+
+        if (Object.prototype.hasOwnProperty.call(schema, 'if')) {
+            const condition = schema.if;
+            if (Object.prototype.hasOwnProperty.call(schema, 'then')) {
+                const thenActivation = extendActivation(
+                    activation,
+                    `if:${objectIdentity(schema)}:then`,
+                    condition
+                );
+                visit(schema.then, thenActivation);
+            }
+            if (Object.prototype.hasOwnProperty.call(schema, 'else')) {
+                const elseActivation = extendActivation(
+                    activation,
+                    `if:${objectIdentity(schema)}:else`,
+                    { not: condition }
+                );
+                visit(schema.else, elseActivation);
+            }
+        }
+    };
+
+    const rootReference = rootSchema.$ref;
+    if (typeof rootReference === 'string') {
+        const referencedSchema = resolveLocalSchemaReference(rootSchema, rootReference);
+        if (referencedSchema === undefined) {
+            referencesResolved = false;
+        } else {
+            visit(referencedSchema);
+        }
+    } else {
+        visit(rootSchema);
+    }
+
+    return {
+        propertyNames,
+        patternNames,
+        declaresObject,
+        referencesResolved,
+        propertyActivations,
+        patternActivations,
+        activationSchemas,
+    };
+}
+
+function activationSchema(
+    activation: string[],
+    activationSchemas: Map<string, unknown>
+): unknown {
+    const schemas = activation.map((marker) => activationSchemas.get(marker));
+    return schemas.length === 1 ? schemas[0] : { allOf: schemas };
+}
+
+function conditionalFieldConstraints(fields: ReturnType<typeof collectRootObjectFields>): SchemaObject[] {
+    const constraints: SchemaObject[] = [];
+    const basePropertyNames = Array.from(fields.propertyActivations.entries())
+        .filter(([, activations]) => activations.has('[]'))
+        .map(([name]) => name)
+        .sort();
+    const basePatternNames = Array.from(fields.patternActivations.entries())
+        .filter(([, activations]) => activations.has('[]'))
+        .map(([name]) => name)
+        .sort();
+
+    for (const [propertyName, activations] of fields.propertyActivations) {
+        if (activations.has('[]')) continue;
+        constraints.push({
+            if: { type: 'object', required: [propertyName] },
+            then: {
+                anyOf: Array.from(activations.values()).map((activation) =>
+                    activationSchema(activation, fields.activationSchemas)
+                ),
+            },
+        });
+    }
+
+    for (const [patternName, activations] of fields.patternActivations) {
+        if (activations.has('[]')) continue;
+        const allowedNameSchemas: unknown[] = [{ not: { pattern: patternName } }];
+        if (basePropertyNames.length > 0) {
+            allowedNameSchemas.unshift({ enum: basePropertyNames });
+        }
+        basePatternNames.forEach((basePatternName) => {
+            allowedNameSchemas.push({ pattern: basePatternName });
+        });
+        const propertyNameSchema =
+            allowedNameSchemas.length === 1
+                ? allowedNameSchemas[0]
+                : { anyOf: allowedNameSchemas };
+        constraints.push({
+            if: {
+                allOf: [
+                    { type: 'object' },
+                    {
+                        not: {
+                            anyOf: Array.from(activations.values()).map((activation) =>
+                                activationSchema(activation, fields.activationSchemas)
+                            ),
+                        },
+                    },
+                ],
+            },
+            then: { type: 'object', propertyNames: propertyNameSchema },
+        });
+    }
+
+    return constraints;
+}
+
+const DRAFT7_VALIDATION_KEYWORDS = new Set([
+    '$ref',
+    'additionalItems',
+    'items',
+    'contains',
+    'additionalProperties',
+    'properties',
+    'patternProperties',
+    'dependencies',
+    'propertyNames',
+    'const',
+    'enum',
+    'type',
+    'format',
+    'multipleOf',
+    'maximum',
+    'exclusiveMaximum',
+    'minimum',
+    'exclusiveMinimum',
+    'maxLength',
+    'minLength',
+    'pattern',
+    'maxItems',
+    'minItems',
+    'uniqueItems',
+    'maxProperties',
+    'minProperties',
+    'required',
+    'allOf',
+    'anyOf',
+    'oneOf',
+    'not',
+    'if',
+    'then',
+    'else',
+]);
+
+function wrapRootReference(
+    rootSchema: SchemaObject,
+    reference: string,
+    closureSchema: SchemaObject,
+    constraints: SchemaObject[]
+): SchemaObject {
+    const wrapper: SchemaObject = {};
+    Object.entries(rootSchema).forEach(([keyword, value]) => {
+        if (!DRAFT7_VALIDATION_KEYWORDS.has(keyword)) wrapper[keyword] = value;
+    });
+    wrapper.allOf = [{ $ref: reference }, closureSchema, ...constraints];
+    return wrapper;
+}
+
 export class SchemaGuard extends BaseGuard {
     name = 'SchemaGuard';
     description = 'Validates response against JSON Schema';
 
     private validate: ValidateFunction;
 
-    constructor(schema: Record<string, any>) {
+    constructor(
+        schema: Record<string, any>,
+        options: { allowAdditionalProperties?: boolean } = {}
+    ) {
         super();
         try {
+            let validatorSchema: SchemaObject = { ...schema };
+            const {
+                propertyNames,
+                patternNames,
+                declaresObject,
+                referencesResolved,
+                propertyActivations,
+                patternActivations,
+                activationSchemas,
+            } = collectRootObjectFields(validatorSchema);
+            const rootAllOf = validatorSchema.allOf;
+
+            if (
+                options.allowAdditionalProperties !== true &&
+                declaresObject &&
+                referencesResolved &&
+                !Object.prototype.hasOwnProperty.call(
+                    validatorSchema,
+                    'additionalProperties'
+                )
+            ) {
+                const conditionalConstraints = conditionalFieldConstraints({
+                    propertyNames,
+                    patternNames,
+                    declaresObject,
+                    referencesResolved,
+                    propertyActivations,
+                    patternActivations,
+                    activationSchemas,
+                });
+                const rootReference = validatorSchema.$ref;
+                if (typeof rootReference === 'string') {
+                    const closureProperties = Object.create(null) as SchemaObject;
+                    propertyNames.forEach((name) => {
+                        closureProperties[name] = {};
+                    });
+                    const closurePatterns = Object.create(null) as SchemaObject;
+                    patternNames.forEach((name) => {
+                        closurePatterns[name] = {};
+                    });
+                    const closureObjectSchema: SchemaObject = {
+                        type: 'object',
+                        additionalProperties: false,
+                    };
+                    if (propertyNames.size > 0) {
+                        closureObjectSchema.properties = closureProperties;
+                    }
+                    if (patternNames.size > 0) {
+                        closureObjectSchema.patternProperties = closurePatterns;
+                    }
+                    const closureSchema: SchemaObject = {
+                        anyOf: [
+                            { not: { type: 'object' } },
+                            closureObjectSchema,
+                        ],
+                    };
+                    validatorSchema = wrapRootReference(
+                        validatorSchema,
+                        rootReference,
+                        closureSchema,
+                        conditionalConstraints
+                    );
+                } else {
+                    const hasRootProperties = Object.prototype.hasOwnProperty.call(
+                        validatorSchema,
+                        'properties'
+                    );
+                    const rootPropertiesValue = validatorSchema.properties;
+                    const canMergeRootProperties =
+                        !hasRootProperties ||
+                        (rootPropertiesValue !== null &&
+                            typeof rootPropertiesValue === 'object' &&
+                            !Array.isArray(rootPropertiesValue));
+                    if (
+                        canMergeRootProperties &&
+                        (hasRootProperties || propertyNames.size > 0)
+                    ) {
+                        const rootProperties = Object.assign(
+                            Object.create(null) as SchemaObject,
+                            isSchemaObject(rootPropertiesValue) ? rootPropertiesValue : {}
+                        );
+                        propertyNames.forEach((name) => {
+                            if (!Object.prototype.hasOwnProperty.call(rootProperties, name)) {
+                                rootProperties[name] = {};
+                            }
+                        });
+                        validatorSchema.properties = rootProperties;
+                    }
+
+                    const hasRootPatterns = Object.prototype.hasOwnProperty.call(
+                        validatorSchema,
+                        'patternProperties'
+                    );
+                    const rootPatternsValue = validatorSchema.patternProperties;
+                    const canMergeRootPatterns =
+                        !hasRootPatterns ||
+                        (rootPatternsValue !== null &&
+                            typeof rootPatternsValue === 'object' &&
+                            !Array.isArray(rootPatternsValue));
+                    if (
+                        canMergeRootPatterns &&
+                        (hasRootPatterns || patternNames.size > 0)
+                    ) {
+                        const rootPatterns = Object.assign(
+                            Object.create(null) as SchemaObject,
+                            isSchemaObject(rootPatternsValue) ? rootPatternsValue : {}
+                        );
+                        patternNames.forEach((name) => {
+                            if (!Object.prototype.hasOwnProperty.call(rootPatterns, name)) {
+                                rootPatterns[name] = {};
+                            }
+                        });
+                        validatorSchema.patternProperties = rootPatterns;
+                    }
+
+                    validatorSchema.additionalProperties = false;
+                    if (
+                        conditionalConstraints.length > 0 &&
+                        (!Object.prototype.hasOwnProperty.call(validatorSchema, 'allOf') ||
+                            Array.isArray(rootAllOf))
+                    ) {
+                        validatorSchema.allOf = [
+                            ...(Array.isArray(rootAllOf) ? rootAllOf : []),
+                            ...conditionalConstraints,
+                        ];
+                    }
+                }
+            }
+
             const ajv = new Ajv({ allErrors: true });
             addFormats(ajv as any);
-            this.validate = ajv.compile(schema);
+            ajv.addFormat('email', {
+                type: 'string',
+                validate: (value: string) => EMAIL_FORMAT.test(value),
+            });
+            this.validate = ajv.compile(validatorSchema);
         } catch (error) {
             throw new Error(
                 `Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}`

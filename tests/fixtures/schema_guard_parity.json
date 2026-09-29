@@ -1,0 +1,398 @@
+[
+  {
+    "name": "uuid-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uuid"}}},
+    "data": {"value": "550e8400-e29b-41d4-a716-446655440000"},
+    "expected": true
+  },
+  {
+    "name": "uuid-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uuid"}}},
+    "data": {"value": "not-a-uuid"},
+    "expected": false
+  },
+  {
+    "name": "uuid-urn-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uuid"}}},
+    "data": {"value": "urn:uuid:550e8400-e29b-41d4-a716-446655440000"},
+    "expected": true
+  },
+  {
+    "name": "uuid-non-rfc-version-and-variant-bits-valid-for-ajv",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uuid"}}},
+    "data": {"value": "550e8400-e29b-91d4-0716-446655440000"},
+    "expected": true
+  },
+  {
+    "name": "email-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@example.com"},
+    "expected": true
+  },
+  {
+    "name": "email-single-label-domain-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@localhost"},
+    "expected": true
+  },
+  {
+    "name": "email-max-domain-label-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "expected": true
+  },
+  {
+    "name": "email-overlong-domain-label-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "expected": false
+  },
+  {
+    "name": "email-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "not-an-email"},
+    "expected": false
+  },
+  {
+    "name": "email-non-ascii-domain-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@exampl\u212a.com"},
+    "expected": false
+  },
+  {
+    "name": "date-time-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2026-09-29T12:00:00Z"},
+    "expected": true
+  },
+  {
+    "name": "date-time-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2026-13-40T99:99:99Z"},
+    "expected": false
+  },
+  {
+    "name": "date-time-lowercase-tz-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2026-09-29t12:00:00z"},
+    "expected": true
+  },
+  {
+    "name": "date-time-leap-second-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2016-12-31T23:59:60Z"},
+    "expected": true
+  },
+  {
+    "name": "date-time-leap-second-offset-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2017-01-01T00:59:60+01:00"},
+    "expected": true
+  },
+  {
+    "name": "date-time-leap-second-offset-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2017-01-01T00:59:60+02:00"},
+    "expected": false
+  },
+  {
+    "name": "date-time-leap-second-invalid-outside-23-59",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2016-12-31T12:00:60Z"},
+    "expected": false
+  },
+  {
+    "name": "date-time-leap-second-boundary-year-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "9999-12-31T23:59:60Z"},
+    "expected": true
+  },
+  {
+    "name": "uri-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uri"}}},
+    "data": {"value": "https://example.com/path"},
+    "expected": true
+  },
+  {
+    "name": "uri-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uri"}}},
+    "data": {"value": "not a uri"},
+    "expected": false
+  },
+  {
+    "name": "ipv4-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "ipv4"}}},
+    "data": {"value": "192.0.2.1"},
+    "expected": true
+  },
+  {
+    "name": "ipv4-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "ipv4"}}},
+    "data": {"value": "999.999.999.999"},
+    "expected": false
+  },
+  {
+    "name": "additional-properties-explicitly-forbidden",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": false},
+    "data": {"name": "John", "unexpected": true},
+    "expected": false
+  },
+  {
+    "name": "all-of-properties-valid",
+    "schema": {
+      "type": "object",
+      "properties": {"name": {"type": "string"}},
+      "allOf": [{"type": "object", "properties": {"age": {"type": "integer"}}}]
+    },
+    "data": {"name": "John", "age": 30},
+    "expected": true
+  },
+  {
+    "name": "all-of-undeclared-property-rejected",
+    "schema": {
+      "type": "object",
+      "properties": {"name": {"type": "string"}},
+      "allOf": [{"type": "object", "properties": {"age": {"type": "integer"}}}]
+    },
+    "data": {"name": "John", "age": 30, "unexpected": true},
+    "expected": false
+  },
+  {
+    "name": "if-predicate-property-does-not-open-root",
+    "schema": {
+      "type": "object",
+      "if": {"properties": {"conditionOnly": {"const": "present"}}},
+      "then": {},
+      "else": {}
+    },
+    "data": {"conditionOnly": "present"},
+    "expected": false
+  },
+  {
+    "name": "conditional-then-property-valid-when-active",
+    "schema": {
+      "type": "object",
+      "properties": {"kind": {"enum": ["basic", "special"]}},
+      "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+      "then": {"properties": {"specialValue": {"type": "string"}}},
+      "else": {"properties": {"basicValue": {"type": "boolean"}}}
+    },
+    "data": {"kind": "special", "specialValue": "ok"},
+    "expected": true
+  },
+  {
+    "name": "conditional-then-property-rejected-when-inactive",
+    "schema": {
+      "type": "object",
+      "properties": {"kind": {"enum": ["basic", "special"]}},
+      "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+      "then": {"properties": {"specialValue": {"type": "string"}}},
+      "else": {"properties": {"basicValue": {"type": "boolean"}}}
+    },
+    "data": {"kind": "basic", "specialValue": "unexpected"},
+    "expected": false
+  },
+  {
+    "name": "conditional-else-property-valid-when-active",
+    "schema": {
+      "type": "object",
+      "properties": {"kind": {"enum": ["basic", "special"]}},
+      "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+      "then": {"properties": {"specialValue": {"type": "string"}}},
+      "else": {"properties": {"basicValue": {"type": "boolean"}}}
+    },
+    "data": {"kind": "basic", "basicValue": true},
+    "expected": true
+  },
+  {
+    "name": "conditional-else-property-rejected-when-inactive",
+    "schema": {
+      "type": "object",
+      "properties": {"kind": {"enum": ["basic", "special"]}},
+      "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+      "then": {"properties": {"specialValue": {"type": "string"}}},
+      "else": {"properties": {"basicValue": {"type": "boolean"}}}
+    },
+    "data": {"kind": "special", "basicValue": true},
+    "expected": false
+  },
+  {
+    "name": "conditional-pattern-property-valid-when-active",
+    "schema": {
+      "type": "object",
+      "properties": {"kind": {"enum": ["basic", "special"]}},
+      "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+      "then": {"patternProperties": {"^extra_": {"type": "string"}}},
+      "else": {}
+    },
+    "data": {"kind": "special", "extra_value": "ok"},
+    "expected": true
+  },
+  {
+    "name": "conditional-pattern-property-rejected-when-inactive",
+    "schema": {
+      "type": "object",
+      "properties": {"kind": {"enum": ["basic", "special"]}},
+      "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+      "then": {"patternProperties": {"^extra_": {"type": "string"}}},
+      "else": {}
+    },
+    "data": {"kind": "basic", "extra_value": "unexpected"},
+    "expected": false
+  },
+  {
+    "name": "conditional-pattern-does-not-reject-declared-property-when-inactive",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["basic", "special"]},
+        "extra_req": {"type": "string"}
+      },
+      "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+      "then": {"patternProperties": {"^extra_": {"type": "string"}}},
+      "else": {}
+    },
+    "data": {"kind": "basic", "extra_req": "declared"},
+    "expected": true
+  },
+  {
+    "name": "conditional-pattern-does-not-reject-base-pattern-when-inactive",
+    "schema": {
+      "type": "object",
+      "properties": {"kind": {"enum": ["basic", "special"]}},
+      "patternProperties": {"^extra_": {"type": "string"}},
+      "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+      "then": {"patternProperties": {"^extra_req": {"type": "string"}}},
+      "else": {}
+    },
+    "data": {"kind": "basic", "extra_req": "base-pattern"},
+    "expected": true
+  },
+  {
+    "name": "conditional-pattern-anyof-string-branch-valid",
+    "schema": {
+      "anyOf": [
+        {"type": "string"},
+        {
+          "type": "object",
+          "properties": {"kind": {"enum": ["basic", "special"]}},
+          "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+          "then": {"patternProperties": {"^extra_": {"type": "string"}}},
+          "else": {}
+        }
+      ]
+    },
+    "data": "plain text",
+    "expected": true
+  },
+  {
+    "name": "simultaneously-active-all-of-conditionals-allow-both-fields",
+    "schema": {
+      "type": "object",
+      "properties": {"kind": {"enum": ["basic", "special"]}, "mode": {"enum": ["off", "on"]}},
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+          "then": {"properties": {"specialValue": {"type": "string"}}}
+        },
+        {
+          "if": {"properties": {"mode": {"const": "on"}}, "required": ["mode"]},
+          "then": {"properties": {"modeValue": {"type": "boolean"}}}
+        }
+      ]
+    },
+    "data": {"kind": "special", "mode": "on", "specialValue": "ok", "modeValue": true},
+    "expected": true
+  },
+  {
+    "name": "inactive-all-of-conditional-property-rejected",
+    "schema": {
+      "type": "object",
+      "properties": {"kind": {"enum": ["basic", "special"]}, "mode": {"enum": ["off", "on"]}},
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "special"}}, "required": ["kind"]},
+          "then": {"properties": {"specialValue": {"type": "string"}}}
+        },
+        {
+          "if": {"properties": {"mode": {"const": "on"}}, "required": ["mode"]},
+          "then": {"properties": {"modeValue": {"type": "boolean"}}}
+        }
+      ]
+    },
+    "data": {"kind": "basic", "mode": "on", "specialValue": "unexpected", "modeValue": true},
+    "expected": false
+  },
+  {
+    "name": "root-ref-composed-properties-valid",
+    "schema": {
+      "type": "object",
+      "$ref": "#/definitions/person",
+      "definitions": {
+        "person": {
+          "type": "object",
+          "properties": {"name": {"type": "string"}},
+          "allOf": [{"$ref": "#/definitions/person-details"}]
+        },
+        "person-details": {"type": "object", "properties": {"age": {"type": "integer"}}}
+      }
+    },
+    "data": {"name": "John", "age": 30},
+    "expected": true
+  },
+  {
+    "name": "root-ref-undeclared-property-rejected",
+    "schema": {
+      "type": "object",
+      "$ref": "#/definitions/person",
+      "definitions": {
+        "person": {
+          "type": "object",
+          "properties": {"name": {"type": "string"}},
+          "allOf": [{"$ref": "#/definitions/person-details"}]
+        },
+        "person-details": {"type": "object", "properties": {"age": {"type": "integer"}}}
+      }
+    },
+    "data": {"name": "John", "age": 30, "unexpected": true},
+    "expected": false
+  },
+  {
+    "name": "root-ref-ignores-draft7-sibling-all-of",
+    "schema": {
+      "$ref": "#/definitions/person",
+      "allOf": [{"required": ["age"]}],
+      "definitions": {
+        "person": {"type": "object", "properties": {"name": {"type": "string"}}}
+      }
+    },
+    "data": {"name": "John"},
+    "expected": true
+  },
+  {
+    "name": "additional-properties-rejected-by-default",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}},
+    "data": {"name": "John", "unexpected": true},
+    "expected": false
+  },
+  {
+    "name": "additional-properties-allowed-by-option",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}},
+    "data": {"name": "John", "unexpected": true},
+    "allowAdditionalProperties": true,
+    "expected": true
+  },
+  {
+    "name": "additional-properties-explicitly-allowed",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": true},
+    "data": {"name": "John", "unexpected": true},
+    "expected": true
+  },
+  {
+    "name": "schema-keyword-takes-precedence-over-option",
+    "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": false},
+    "data": {"name": "John", "unexpected": true},
+    "allowAdditionalProperties": true,
+    "expected": false
+  }
+]

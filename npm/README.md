@@ -67,9 +67,17 @@ Validates JSON structure.
 ```typescript
 const guard = new SchemaGuard({
   type: 'object',
+  properties: {
+    name: { type: 'string' },
+    age: { type: 'integer' },
+  },
   required: ['name', 'age'],
 });
 ```
+
+Object schemas reject undeclared root fields by default. Set
+`additionalProperties: true` in the schema or pass
+`{ allowAdditionalProperties: true }` as the second argument to allow them.
 
 ### MathGuard
 
