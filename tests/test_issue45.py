@@ -98,7 +98,7 @@ def test_safety_guard_charges_field_names_and_join_separators():
 def test_safety_guard_email_detection_handles_valid_and_adversarial_text():
     valid = SafetyGuard().check({"content": "Contact user.name+tag@example.com"})
     trailing_domain_char = SafetyGuard().check(
-        {"content": "Contact a@b.com1 or user@example.com-"}
+        {"content": "Contact a@b.com1, user@example.com-, or user@example.com."}
     )
     adversarial = SafetyGuard().check(
         {"content": ("a." * 1_000) + "@" + ("b." * 1_000) + "!"}

@@ -66,7 +66,7 @@ describe("bounded verification resources", () => {
             content: "Contact user.name+tag@example.com",
         });
         const trailingDomainChar = new SafetyGuard().check({
-            content: "Contact a@b.com1 or user@example.com-",
+            content: "Contact a@b.com1, user@example.com-, or user@example.com.",
         });
         const adversarial = new SafetyGuard().check({
             content: "a.".repeat(1_000) + "@" + "b.".repeat(1_000) + "!",
