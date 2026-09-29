@@ -816,7 +816,6 @@ function collectRootObjectFields(rootSchema: SchemaObject): {
 
         if (Object.prototype.hasOwnProperty.call(schema, 'if')) {
             const condition = schema.if;
-            visit(condition, activation);
             if (Object.prototype.hasOwnProperty.call(schema, 'then')) {
                 const thenActivation = extendActivation(
                     activation,

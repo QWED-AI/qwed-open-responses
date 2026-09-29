@@ -36,6 +36,12 @@
     "expected": false
   },
   {
+    "name": "email-non-ascii-domain-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@exampl\u212a.com"},
+    "expected": false
+  },
+  {
     "name": "date-time-valid",
     "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
     "data": {"value": "2026-09-29T12:00:00Z"},
@@ -52,6 +58,18 @@
     "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
     "data": {"value": "2026-09-29t12:00:00z"},
     "expected": true
+  },
+  {
+    "name": "date-time-leap-second-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2016-12-31T23:59:60Z"},
+    "expected": true
+  },
+  {
+    "name": "date-time-leap-second-invalid-outside-23-59",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2016-12-31T12:00:60Z"},
+    "expected": false
   },
   {
     "name": "uri-valid",
@@ -101,6 +119,17 @@
       "allOf": [{"type": "object", "properties": {"age": {"type": "integer"}}}]
     },
     "data": {"name": "John", "age": 30, "unexpected": true},
+    "expected": false
+  },
+  {
+    "name": "if-predicate-property-does-not-open-root",
+    "schema": {
+      "type": "object",
+      "if": {"properties": {"conditionOnly": {"const": "present"}}},
+      "then": {},
+      "else": {}
+    },
+    "data": {"conditionOnly": "present"},
     "expected": false
   },
   {

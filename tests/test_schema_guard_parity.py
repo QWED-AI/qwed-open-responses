@@ -56,6 +56,24 @@ def test_date_time_and_uri_formats_do_not_depend_on_optional_checkers(
     assert result.passed is expected
 
 
+def test_email_format_does_not_depend_on_optional_checkers(monkeypatch):
+    monkeypatch.setattr(schema_guard_module.jsonschema.FormatChecker, "checkers", {})
+    monkeypatch.setattr(
+        schema_guard_module.jsonschema.Draft7Validator.FORMAT_CHECKER,
+        "checkers",
+        {},
+    )
+    guard = SchemaGuard(
+        schema={
+            "type": "object",
+            "properties": {"email": {"type": "string", "format": "email"}},
+        }
+    )
+
+    assert guard.check({"output": {"email": "user@example.com"}}).passed
+    assert not guard.check({"output": {"email": "not-an-email"}}).passed
+
+
 def test_unresolved_reference_in_inactive_branch_does_not_disable_root_closure():
     guard = SchemaGuard(
         schema={

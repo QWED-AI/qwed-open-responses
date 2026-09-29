@@ -36,9 +36,24 @@ def _is_valid_uuid_format(value: Any) -> bool:
     )
 
 
+_EMAIL_FORMAT = re.compile(
+    r"^[a-z0-9!#$%&'*+/=?^_`{|}~-]+"
+    r"(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@"
+    r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def _is_valid_email_format(value: Any) -> bool:
+    if not isinstance(value, str):
+        return True
+    return bool(_EMAIL_FORMAT.fullmatch(value))
+
+
 _DATE_TIME_FORMAT = re.compile(
     r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt]"
-    r"(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?"
+    r"(?:[01]\d|2[0-3]):[0-5]\d:(?P<second>[0-5]\d|60)(?:\.\d+)?"
     r"(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
 )
 _URI_INVALID_CHARACTERS = re.compile(r"[^\x21-\x7e]|[<>\"{}|\\^`]")
@@ -49,10 +64,15 @@ def _is_valid_date_time_format(value: Any) -> bool:
     if not isinstance(value, str):
         return True
 
-    if not _DATE_TIME_FORMAT.fullmatch(value):
+    match = _DATE_TIME_FORMAT.fullmatch(value)
+    if match is None:
         return False
 
     normalized_value = value[:10] + "T" + value[11:]
+    if match.group("second") == "60":
+        if value[11:16] != "23:59":
+            return False
+        normalized_value = normalized_value[:17] + "59" + normalized_value[19:]
     if value[-1:].lower() == "z":
         normalized_value = normalized_value[:-1] + "+00:00"
     try:
@@ -194,7 +214,6 @@ def _collect_root_object_fields(root_schema: Dict[str, object]) -> _RootObjectFi
 
         if "if" in schema:
             condition = schema.get("if")
-            visit(condition, activation)
             if "then" in schema:
                 then_activation = add_activation(
                     activation, f"if:{id(schema)}:then", condition
@@ -475,6 +494,9 @@ class SchemaGuard(BaseGuard):
         self.allow_additional_properties = allow_additional_properties
 
         format_checker = jsonschema.FormatChecker()
+        format_checker.checks("email", raises=(ValueError, TypeError))(
+            _is_valid_email_format
+        )
         format_checker.checks("uuid", raises=(ValueError, TypeError, AttributeError))(
             _is_valid_uuid_format
         )
