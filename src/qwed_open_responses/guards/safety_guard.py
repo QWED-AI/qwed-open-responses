@@ -315,10 +315,8 @@ class SafetyGuard(BaseGuard):
             if isinstance(value, str):
                 label_cost = len(field_name) + 1 if field_name is not None else 0
                 scan_cost = len(value) + label_cost
-                if (
-                    leaf_chars + len(value) + scan_cost
-                    > self._MAX_CREDENTIAL_SCAN_CHARS
-                ):
+                leaf_cost = len(value) + (scan_cost if field_name is not None else 0)
+                if leaf_chars + leaf_cost > self._MAX_CREDENTIAL_SCAN_CHARS:
                     limit_error = "credential scan exceeds the character limit"
                     return
                 if not add_content(value):
@@ -327,7 +325,7 @@ class SafetyGuard(BaseGuard):
                 leaf_strings.append(value)
                 if field_name is not None:
                     leaf_strings.append(f"{field_name}={value}")
-                leaf_chars += len(value) + scan_cost
+                leaf_chars += leaf_cost
                 return
 
             if isinstance(value, dict):

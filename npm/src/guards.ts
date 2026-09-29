@@ -1610,7 +1610,8 @@ export class SafetyGuard extends BaseGuard {
                     ? 0
                     : countCodePoints(fieldName) + 1;
                 const scanCost = valueLength + labelCost;
-                if (leafChars + valueLength + scanCost > MAX_CREDENTIAL_SCAN_CHARS) {
+                const leafCost = valueLength + (fieldName === undefined ? 0 : scanCost);
+                if (leafChars + leafCost > MAX_CREDENTIAL_SCAN_CHARS) {
                     limitError = 'credential scan exceeds the character limit';
                     return;
                 }
@@ -1618,7 +1619,7 @@ export class SafetyGuard extends BaseGuard {
 
                 leaves.push(value);
                 if (fieldName !== undefined) leaves.push(fieldName + '=' + value);
-                leafChars += valueLength + scanCost;
+                leafChars += leafCost;
                 return;
             }
 
