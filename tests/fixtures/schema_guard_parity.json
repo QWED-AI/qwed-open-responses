@@ -78,6 +78,60 @@
     "expected": false
   },
   {
+    "name": "all-of-properties-valid",
+    "schema": {
+      "type": "object",
+      "properties": {"name": {"type": "string"}},
+      "allOf": [{"type": "object", "properties": {"age": {"type": "integer"}}}]
+    },
+    "data": {"name": "John", "age": 30},
+    "expected": true
+  },
+  {
+    "name": "all-of-undeclared-property-rejected",
+    "schema": {
+      "type": "object",
+      "properties": {"name": {"type": "string"}},
+      "allOf": [{"type": "object", "properties": {"age": {"type": "integer"}}}]
+    },
+    "data": {"name": "John", "age": 30, "unexpected": true},
+    "expected": false
+  },
+  {
+    "name": "root-ref-composed-properties-valid",
+    "schema": {
+      "type": "object",
+      "$ref": "#/definitions/person",
+      "definitions": {
+        "person": {
+          "type": "object",
+          "properties": {"name": {"type": "string"}},
+          "allOf": [{"$ref": "#/definitions/person-details"}]
+        },
+        "person-details": {"type": "object", "properties": {"age": {"type": "integer"}}}
+      }
+    },
+    "data": {"name": "John", "age": 30},
+    "expected": true
+  },
+  {
+    "name": "root-ref-undeclared-property-rejected",
+    "schema": {
+      "type": "object",
+      "$ref": "#/definitions/person",
+      "definitions": {
+        "person": {
+          "type": "object",
+          "properties": {"name": {"type": "string"}},
+          "allOf": [{"$ref": "#/definitions/person-details"}]
+        },
+        "person-details": {"type": "object", "properties": {"age": {"type": "integer"}}}
+      }
+    },
+    "data": {"name": "John", "age": 30, "unexpected": true},
+    "expected": false
+  },
+  {
     "name": "additional-properties-rejected-by-default",
     "schema": {"type": "object", "properties": {"name": {"type": "string"}}},
     "data": {"name": "John", "unexpected": true},

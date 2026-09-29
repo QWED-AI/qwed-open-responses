@@ -67,6 +67,10 @@ Validates JSON structure.
 ```typescript
 const guard = new SchemaGuard({
   type: 'object',
+  properties: {
+    name: { type: 'string' },
+    age: { type: 'integer' },
+  },
   required: ['name', 'age'],
 });
 ```

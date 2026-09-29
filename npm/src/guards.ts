@@ -645,6 +645,108 @@ export class ToolGuard extends BaseGuard {
 /**
  * Schema Guard - Validates JSON schema.
  */
+type SchemaObject = Record<string, unknown>;
+
+function isSchemaObject(value: unknown): value is SchemaObject {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function resolveLocalSchemaReference(
+    rootSchema: SchemaObject,
+    reference: string
+): unknown | undefined {
+    if (reference === '#') return rootSchema;
+    if (!reference.startsWith('#/')) return undefined;
+
+    let referencedSchema: unknown = rootSchema;
+    try {
+        for (const rawToken of reference.slice(2).split('/')) {
+            const token = decodeURIComponent(rawToken)
+                .replace(/~1/g, '/')
+                .replace(/~0/g, '~');
+            if (
+                !isSchemaObject(referencedSchema) ||
+                !Object.prototype.hasOwnProperty.call(referencedSchema, token)
+            ) {
+                return undefined;
+            }
+            referencedSchema = referencedSchema[token];
+        }
+    } catch {
+        return undefined;
+    }
+    return referencedSchema;
+}
+
+function collectRootObjectFields(rootSchema: SchemaObject): {
+    propertyNames: Set<string>;
+    patternNames: Set<string>;
+    declaresObject: boolean;
+    referencesResolved: boolean;
+} {
+    const propertyNames = new Set<string>();
+    const patternNames = new Set<string>();
+    const visitedSchemas = new Set<SchemaObject>();
+    const visitedReferences = new Set<string>();
+    let declaresObject = false;
+    let referencesResolved = true;
+
+    const visit = (schema: unknown): void => {
+        if (!isSchemaObject(schema) || visitedSchemas.has(schema)) return;
+        visitedSchemas.add(schema);
+
+        const schemaType = schema.type;
+        const hasProperties = Object.prototype.hasOwnProperty.call(schema, 'properties');
+        const hasPatternProperties = Object.prototype.hasOwnProperty.call(
+            schema,
+            'patternProperties'
+        );
+        if (
+            schemaType === 'object' ||
+            (Array.isArray(schemaType) && schemaType.includes('object')) ||
+            hasProperties ||
+            hasPatternProperties
+        ) {
+            declaresObject = true;
+        }
+
+        const properties = schema.properties;
+        if (isSchemaObject(properties)) {
+            Object.keys(properties).forEach((name) => propertyNames.add(name));
+        }
+        const patternProperties = schema.patternProperties;
+        if (isSchemaObject(patternProperties)) {
+            Object.keys(patternProperties).forEach((name) => patternNames.add(name));
+        }
+
+        const reference = schema.$ref;
+        if (typeof reference === 'string' && !visitedReferences.has(reference)) {
+            visitedReferences.add(reference);
+            const referencedSchema = resolveLocalSchemaReference(rootSchema, reference);
+            if (referencedSchema === undefined) {
+                referencesResolved = false;
+            } else {
+                visit(referencedSchema);
+            }
+        }
+
+        for (const keyword of ['allOf', 'anyOf', 'oneOf']) {
+            const branches = schema[keyword];
+            if (Array.isArray(branches)) branches.forEach(visit);
+        }
+        for (const keyword of ['if', 'then', 'else']) visit(schema[keyword]);
+        const dependencies = schema.dependencies;
+        if (isSchemaObject(dependencies)) {
+            Object.values(dependencies).forEach((dependency) => {
+                if (isSchemaObject(dependency)) visit(dependency);
+            });
+        }
+    };
+
+    visit(rootSchema);
+    return { propertyNames, patternNames, declaresObject, referencesResolved };
+}
+
 export class SchemaGuard extends BaseGuard {
     name = 'SchemaGuard';
     description = 'Validates response against JSON Schema';
@@ -658,22 +760,89 @@ export class SchemaGuard extends BaseGuard {
         super();
         try {
             const validatorSchema = { ...schema };
-            const schemaType = validatorSchema.type;
-            const declaresObject =
-                schemaType === 'object' ||
-                (Array.isArray(schemaType) && schemaType.includes('object')) ||
-                ['properties', 'patternProperties'].some((keyword) =>
-                    Object.prototype.hasOwnProperty.call(validatorSchema, keyword)
-                );
+            const {
+                propertyNames,
+                patternNames,
+                declaresObject,
+                referencesResolved,
+            } = collectRootObjectFields(validatorSchema);
+            const rootAllOf = validatorSchema.allOf;
+            const rootReferenceCanBeRewritten =
+                !Object.prototype.hasOwnProperty.call(validatorSchema, '$ref') ||
+                !Object.prototype.hasOwnProperty.call(validatorSchema, 'allOf') ||
+                Array.isArray(rootAllOf);
 
             if (
                 options.allowAdditionalProperties !== true &&
                 declaresObject &&
+                referencesResolved &&
+                rootReferenceCanBeRewritten &&
                 !Object.prototype.hasOwnProperty.call(
                     validatorSchema,
                     'additionalProperties'
                 )
             ) {
+                const rootReference = validatorSchema.$ref;
+                if (typeof rootReference === 'string') {
+                    delete validatorSchema.$ref;
+                    validatorSchema.allOf = [
+                        { $ref: rootReference },
+                        ...(Array.isArray(rootAllOf) ? rootAllOf : []),
+                    ];
+                }
+
+                const hasRootProperties = Object.prototype.hasOwnProperty.call(
+                    validatorSchema,
+                    'properties'
+                );
+                const rootPropertiesValue = validatorSchema.properties;
+                const canMergeRootProperties =
+                    !hasRootProperties ||
+                    (rootPropertiesValue !== null &&
+                        typeof rootPropertiesValue === 'object' &&
+                        !Array.isArray(rootPropertiesValue));
+                if (
+                    canMergeRootProperties &&
+                    (hasRootProperties || propertyNames.size > 0)
+                ) {
+                    const rootProperties = Object.assign(
+                        Object.create(null) as SchemaObject,
+                        isSchemaObject(rootPropertiesValue) ? rootPropertiesValue : {}
+                    );
+                    propertyNames.forEach((name) => {
+                        if (!Object.prototype.hasOwnProperty.call(rootProperties, name)) {
+                            rootProperties[name] = {};
+                        }
+                    });
+                    validatorSchema.properties = rootProperties;
+                }
+
+                const hasRootPatterns = Object.prototype.hasOwnProperty.call(
+                    validatorSchema,
+                    'patternProperties'
+                );
+                const rootPatternsValue = validatorSchema.patternProperties;
+                const canMergeRootPatterns =
+                    !hasRootPatterns ||
+                    (rootPatternsValue !== null &&
+                        typeof rootPatternsValue === 'object' &&
+                        !Array.isArray(rootPatternsValue));
+                if (
+                    canMergeRootPatterns &&
+                    (hasRootPatterns || patternNames.size > 0)
+                ) {
+                    const rootPatterns = Object.assign(
+                        Object.create(null) as SchemaObject,
+                        isSchemaObject(rootPatternsValue) ? rootPatternsValue : {}
+                    );
+                    patternNames.forEach((name) => {
+                        if (!Object.prototype.hasOwnProperty.call(rootPatterns, name)) {
+                            rootPatterns[name] = {};
+                        }
+                    });
+                    validatorSchema.patternProperties = rootPatterns;
+                }
+
                 validatorSchema.additionalProperties = false;
             }
 
