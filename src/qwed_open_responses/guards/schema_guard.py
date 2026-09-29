@@ -4,7 +4,7 @@ Schema Guard - Validates AI response against JSON Schema.
 Ensures structured outputs match the expected schema.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import re
 from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 from urllib.parse import unquote, urlsplit
@@ -70,15 +70,21 @@ def _is_valid_date_time_format(value: Any) -> bool:
 
     normalized_value = value[:10] + "T" + value[11:]
     if match.group("second") == "60":
-        if value[11:16] != "23:59":
-            return False
         normalized_value = normalized_value[:17] + "59" + normalized_value[19:]
     if value[-1:].lower() == "z":
         normalized_value = normalized_value[:-1] + "+00:00"
     try:
-        datetime.fromisoformat(normalized_value)
+        parsed_value = datetime.fromisoformat(normalized_value)
     except ValueError:
         return False
+    if match.group("second") == "60":
+        next_utc_second = parsed_value.astimezone(timezone.utc) + timedelta(seconds=1)
+        if (
+            next_utc_second.hour != 0
+            or next_utc_second.minute != 0
+            or next_utc_second.second != 0
+        ):
+            return False
     return True
 
 

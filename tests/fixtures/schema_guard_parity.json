@@ -84,6 +84,18 @@
     "expected": true
   },
   {
+    "name": "date-time-leap-second-offset-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2017-01-01T00:59:60+01:00"},
+    "expected": true
+  },
+  {
+    "name": "date-time-leap-second-offset-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "2017-01-01T00:59:60+02:00"},
+    "expected": false
+  },
+  {
     "name": "date-time-leap-second-invalid-outside-23-59",
     "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
     "data": {"value": "2016-12-31T12:00:60Z"},
