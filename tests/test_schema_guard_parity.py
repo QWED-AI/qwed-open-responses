@@ -7,7 +7,6 @@ import pytest
 from qwed_open_responses import SchemaGuard
 from qwed_open_responses.guards import schema_guard as schema_guard_module
 
-
 PARITY_CASES = json.loads(
     (Path(__file__).parent / "fixtures" / "schema_guard_parity.json").read_text(
         encoding="utf-8"
@@ -55,3 +54,22 @@ def test_date_time_and_uri_formats_do_not_depend_on_optional_checkers(
     result = guard.check({"output": {"timestamp": timestamp, "uri": uri}})
 
     assert result.passed is expected
+
+
+def test_unresolved_reference_in_inactive_branch_does_not_disable_root_closure():
+    guard = SchemaGuard(
+        schema={
+            "type": "object",
+            "properties": {"kind": {"enum": ["basic", "special"]}},
+            "if": {
+                "properties": {"kind": {"const": "special"}},
+                "required": ["kind"],
+            },
+            "then": {"$ref": "#/definitions/missing"},
+            "else": {},
+        }
+    )
+
+    result = guard.check({"output": {"kind": "basic", "unexpected": True}})
+
+    assert result.passed is False

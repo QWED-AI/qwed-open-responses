@@ -6,7 +6,7 @@ Ensures structured outputs match the expected schema.
 
 from datetime import datetime
 import re
-from typing import Any, Dict, Optional, List, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 from urllib.parse import unquote, urlsplit
 import uuid
 from .base import BaseGuard, GuardResult
@@ -37,9 +37,9 @@ def _is_valid_uuid_format(value: Any) -> bool:
 
 
 _DATE_TIME_FORMAT = re.compile(
-    r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T"
+    r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt]"
     r"(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?"
-    r"(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
+    r"(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
 )
 _URI_INVALID_CHARACTERS = re.compile(r"[^\x21-\x7e]|[<>\"{}|\\^`]")
 _URI_INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9a-fA-F]{2})")
@@ -52,7 +52,9 @@ def _is_valid_date_time_format(value: Any) -> bool:
     if not _DATE_TIME_FORMAT.fullmatch(value):
         return False
 
-    normalized_value = value[:-1] + "+00:00" if value.endswith("Z") else value
+    normalized_value = value[:10] + "T" + value[11:]
+    if value[-1:].lower() == "z":
+        normalized_value = normalized_value[:-1] + "+00:00"
     try:
         datetime.fromisoformat(normalized_value)
     except ValueError:
@@ -94,21 +96,52 @@ def _resolve_local_schema_reference(
     return referenced_schema
 
 
-def _collect_root_object_fields(
-    root_schema: Dict[str, object],
-) -> Tuple[Set[str], Set[str], bool, bool]:
+class _RootObjectFields(NamedTuple):
+    property_names: Set[str]
+    pattern_names: Set[str]
+    declares_object: bool
+    references_resolved: bool
+    property_activations: Dict[str, Set[Tuple[str, ...]]]
+    pattern_activations: Dict[str, Set[Tuple[str, ...]]]
+    activation_schemas: Dict[str, object]
+
+
+def _collect_root_object_fields(root_schema: Dict[str, object]) -> _RootObjectFields:
     property_names: Set[str] = set()
     pattern_names: Set[str] = set()
-    visited_schema_ids: Set[int] = set()
-    visited_references: Set[str] = set()
+    property_activations: Dict[str, Set[Tuple[str, ...]]] = {}
+    pattern_activations: Dict[str, Set[Tuple[str, ...]]] = {}
+    activation_schemas: Dict[str, object] = {}
+    visited_schema_ids: Set[Tuple[int, Tuple[str, ...]]] = set()
     declares_object = False
     references_resolved = True
 
-    def visit(schema: object) -> None:
+    def add_activation(
+        activation: Tuple[str, ...], marker: str, predicate: object
+    ) -> Tuple[str, ...]:
+        activation_schemas.setdefault(marker, predicate)
+        return tuple(sorted(set(activation) | {marker}))
+
+    def visit(schema: object, activation: Tuple[str, ...] = ()) -> None:
         nonlocal declares_object, references_resolved
-        if not isinstance(schema, dict) or id(schema) in visited_schema_ids:
+        if not isinstance(schema, dict):
             return
-        visited_schema_ids.add(id(schema))
+
+        visit_key = (id(schema), activation)
+        if visit_key in visited_schema_ids:
+            return
+        visited_schema_ids.add(visit_key)
+
+        reference = schema.get("$ref")
+        if isinstance(reference, str):
+            referenced_schema = _resolve_local_schema_reference(root_schema, reference)
+            if referenced_schema is None:
+                if not activation:
+                    references_resolved = False
+            else:
+                visit(referenced_schema, activation)
+            # Draft 7 ignores every sibling of $ref.
+            return
 
         schema_type = schema.get("type")
         properties = schema.get("properties")
@@ -122,38 +155,181 @@ def _collect_root_object_fields(
             declares_object = True
 
         if isinstance(properties, dict):
-            property_names.update(name for name in properties if isinstance(name, str))
+            names = {name for name in properties if isinstance(name, str)}
+            property_names.update(names)
+            for name in names:
+                property_activations.setdefault(name, set()).add(activation)
         if isinstance(pattern_properties, dict):
-            pattern_names.update(
-                name for name in pattern_properties if isinstance(name, str)
-            )
+            names = {name for name in pattern_properties if isinstance(name, str)}
+            pattern_names.update(names)
+            for name in names:
+                pattern_activations.setdefault(name, set()).add(activation)
 
-        reference = schema.get("$ref")
-        if isinstance(reference, str) and reference not in visited_references:
-            visited_references.add(reference)
-            referenced_schema = _resolve_local_schema_reference(root_schema, reference)
-            if referenced_schema is None:
-                references_resolved = False
-            else:
-                visit(referenced_schema)
+        all_of = schema.get("allOf")
+        if isinstance(all_of, list):
+            for branch in all_of:
+                visit(branch, activation)
 
-        for keyword in ("allOf", "anyOf", "oneOf"):
+        for keyword in ("anyOf", "oneOf"):
             branches = schema.get(keyword)
             if isinstance(branches, list):
-                for branch in branches:
-                    visit(branch)
-
-        for keyword in ("if", "then", "else"):
-            visit(schema.get(keyword))
+                for index, branch in enumerate(branches):
+                    branch_activation = add_activation(
+                        activation,
+                        f"{keyword}:{id(schema)}:{index}",
+                        branch,
+                    )
+                    visit(branch, branch_activation)
 
         dependencies = schema.get("dependencies")
         if isinstance(dependencies, dict):
-            for dependency in dependencies.values():
+            for dependency_name, dependency in dependencies.items():
                 if isinstance(dependency, dict):
-                    visit(dependency)
+                    dependency_activation = add_activation(
+                        activation,
+                        f"dependency:{id(schema)}:{dependency_name}",
+                        {"required": [dependency_name]},
+                    )
+                    visit(dependency, dependency_activation)
 
-    visit(root_schema)
-    return property_names, pattern_names, declares_object, references_resolved
+        if "if" in schema:
+            condition = schema.get("if")
+            visit(condition, activation)
+            if "then" in schema:
+                then_activation = add_activation(
+                    activation, f"if:{id(schema)}:then", condition
+                )
+                visit(schema.get("then"), then_activation)
+            if "else" in schema:
+                else_activation = add_activation(
+                    activation,
+                    f"if:{id(schema)}:else",
+                    {"not": condition},
+                )
+                visit(schema.get("else"), else_activation)
+
+    root_reference = root_schema.get("$ref")
+    if isinstance(root_reference, str):
+        referenced_schema = _resolve_local_schema_reference(root_schema, root_reference)
+        if referenced_schema is None:
+            references_resolved = False
+        else:
+            visit(referenced_schema)
+    else:
+        visit(root_schema)
+
+    return _RootObjectFields(
+        property_names,
+        pattern_names,
+        declares_object,
+        references_resolved,
+        property_activations,
+        pattern_activations,
+        activation_schemas,
+    )
+
+
+def _activation_schema(
+    activation: Tuple[str, ...], activation_schemas: Dict[str, object]
+) -> object:
+    schemas = [activation_schemas[marker] for marker in activation]
+    return schemas[0] if len(schemas) == 1 else {"allOf": schemas}
+
+
+def _conditional_field_constraints(
+    fields: _RootObjectFields,
+) -> List[Dict[str, object]]:
+    constraints: List[Dict[str, object]] = []
+
+    for property_name, activations in fields.property_activations.items():
+        if () in activations:
+            continue
+        constraints.append(
+            {
+                "if": {"type": "object", "required": [property_name]},
+                "then": {
+                    "anyOf": [
+                        _activation_schema(activation, fields.activation_schemas)
+                        for activation in sorted(activations)
+                    ]
+                },
+            }
+        )
+
+    for pattern_name, activations in fields.pattern_activations.items():
+        if () in activations:
+            continue
+        constraints.append(
+            {
+                "if": {
+                    "not": {
+                        "anyOf": [
+                            _activation_schema(activation, fields.activation_schemas)
+                            for activation in sorted(activations)
+                        ]
+                    }
+                },
+                "then": {
+                    "type": "object",
+                    "propertyNames": {"not": {"pattern": pattern_name}},
+                },
+            }
+        )
+
+    return constraints
+
+
+_DRAFT7_VALIDATION_KEYWORDS = {
+    "$ref",
+    "additionalItems",
+    "items",
+    "contains",
+    "additionalProperties",
+    "properties",
+    "patternProperties",
+    "dependencies",
+    "propertyNames",
+    "const",
+    "enum",
+    "type",
+    "format",
+    "multipleOf",
+    "maximum",
+    "exclusiveMaximum",
+    "minimum",
+    "exclusiveMinimum",
+    "maxLength",
+    "minLength",
+    "pattern",
+    "maxItems",
+    "minItems",
+    "uniqueItems",
+    "maxProperties",
+    "minProperties",
+    "required",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "not",
+    "if",
+    "then",
+    "else",
+}
+
+
+def _wrap_root_reference(
+    root_schema: Dict[str, object],
+    reference: str,
+    closure_schema: Dict[str, object],
+    conditional_constraints: List[Dict[str, object]],
+) -> Dict[str, object]:
+    wrapper = {
+        key: value
+        for key, value in root_schema.items()
+        if key not in _DRAFT7_VALIDATION_KEYWORDS
+    }
+    wrapper["allOf"] = [{"$ref": reference}, closure_schema, *conditional_constraints]
+    return wrapper
 
 
 class SchemaGuard(BaseGuard):
@@ -200,53 +376,71 @@ class SchemaGuard(BaseGuard):
             )
 
         validator_schema = schema.copy()
-        (
-            property_names,
-            pattern_names,
-            declares_object,
-            references_resolved,
-        ) = _collect_root_object_fields(validator_schema)
-        root_all_of = validator_schema.get("allOf")
-        root_reference_can_be_rewritten = (
-            "$ref" not in validator_schema
-            or "allOf" not in validator_schema
-            or isinstance(root_all_of, list)
-        )
+        root_fields = _collect_root_object_fields(validator_schema)
         if (
             not allow_additional_properties
-            and declares_object
-            and references_resolved
-            and root_reference_can_be_rewritten
+            and root_fields.declares_object
+            and root_fields.references_resolved
             and "additionalProperties" not in validator_schema
         ):
-            root_reference = validator_schema.pop("$ref", None)
+            conditional_constraints = _conditional_field_constraints(root_fields)
+            root_reference = validator_schema.get("$ref")
             if isinstance(root_reference, str):
-                validator_schema["allOf"] = [
-                    {"$ref": root_reference},
-                    *(root_all_of if isinstance(root_all_of, list) else []),
-                ]
+                closure_properties: Dict[str, object] = {
+                    property_name: {} for property_name in root_fields.property_names
+                }
+                closure_patterns: Dict[str, object] = {
+                    pattern_name: {} for pattern_name in root_fields.pattern_names
+                }
+                closure_object_schema: Dict[str, object] = {
+                    "type": "object",
+                    "additionalProperties": False,
+                }
+                if closure_properties:
+                    closure_object_schema["properties"] = closure_properties
+                if closure_patterns:
+                    closure_object_schema["patternProperties"] = closure_patterns
+                closure_schema: Dict[str, object] = {
+                    "anyOf": [
+                        {"not": {"type": "object"}},
+                        closure_object_schema,
+                    ]
+                }
+                validator_schema = _wrap_root_reference(
+                    validator_schema,
+                    root_reference,
+                    closure_schema,
+                    conditional_constraints,
+                )
+            else:
+                root_properties = validator_schema.get("properties")
+                if "properties" not in validator_schema or isinstance(
+                    root_properties, dict
+                ):
+                    merged_properties = dict(root_properties or {})
+                    for property_name in root_fields.property_names:
+                        merged_properties.setdefault(property_name, {})
+                    if merged_properties:
+                        validator_schema["properties"] = merged_properties
 
-            root_properties = validator_schema.get("properties")
-            if "properties" not in validator_schema or isinstance(
-                root_properties, dict
-            ):
-                root_properties = dict(root_properties or {})
-                for property_name in property_names:
-                    root_properties.setdefault(property_name, {})
-                if root_properties:
-                    validator_schema["properties"] = root_properties
+                root_patterns = validator_schema.get("patternProperties")
+                if "patternProperties" not in validator_schema or isinstance(
+                    root_patterns, dict
+                ):
+                    merged_patterns = dict(root_patterns or {})
+                    for pattern_name in root_fields.pattern_names:
+                        merged_patterns.setdefault(pattern_name, {})
+                    if merged_patterns:
+                        validator_schema["patternProperties"] = merged_patterns
 
-            root_patterns = validator_schema.get("patternProperties")
-            if "patternProperties" not in validator_schema or isinstance(
-                root_patterns, dict
-            ):
-                root_patterns = dict(root_patterns or {})
-                for pattern_name in pattern_names:
-                    root_patterns.setdefault(pattern_name, {})
-                if root_patterns:
-                    validator_schema["patternProperties"] = root_patterns
-
-            validator_schema["additionalProperties"] = False
+                validator_schema["additionalProperties"] = False
+                if conditional_constraints:
+                    root_all_of = validator_schema.get("allOf")
+                    if "allOf" not in validator_schema or isinstance(root_all_of, list):
+                        validator_schema["allOf"] = [
+                            *(root_all_of if isinstance(root_all_of, list) else []),
+                            *conditional_constraints,
+                        ]
 
         self.schema = validator_schema
         self.strict = strict
