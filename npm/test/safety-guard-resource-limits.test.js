@@ -65,6 +65,9 @@ describe("bounded verification resources", () => {
         const valid = new SafetyGuard().check({
             content: "Contact user.name+tag@example.com",
         });
+        const trailingDomainChar = new SafetyGuard().check({
+            content: "Contact a@b.com1 or user@example.com-",
+        });
         const adversarial = new SafetyGuard().check({
             content: "a.".repeat(1_000) + "@" + "b.".repeat(1_000) + "!",
         });
@@ -75,6 +78,9 @@ describe("bounded verification resources", () => {
         expect(valid.passed).toBe(true);
         expect(valid.severity).toBe("warning");
         expect(valid.details.issues[0].details).toEqual(["email"]);
+        expect(trailingDomainChar.passed).toBe(true);
+        expect(trailingDomainChar.severity).toBe("warning");
+        expect(trailingDomainChar.details.issues[0].details).toEqual(["email"]);
         expect(adversarial.passed).toBe(true);
         expect(malformed.passed).toBe(true);
     });

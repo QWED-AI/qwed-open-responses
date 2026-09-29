@@ -442,6 +442,7 @@ class SafetyGuard(BaseGuard):
 
             domain_chars = 0
             tld_chars = 0
+            found_tld = False
             after_dot = False
             malformed_domain = False
             pos = at + 1
@@ -459,12 +460,13 @@ class SafetyGuard(BaseGuard):
                 elif after_dot:
                     if is_alpha:
                         tld_chars += 1
+                        if tld_chars >= 2:
+                            found_tld = True
                     else:
                         after_dot = False
-                        tld_chars = 0
                 domain_chars += 1
                 pos += 1
-            if not malformed_domain and tld_chars >= 2:
+            if not malformed_domain and found_tld:
                 return True
             cursor = max(cursor, pos)
 

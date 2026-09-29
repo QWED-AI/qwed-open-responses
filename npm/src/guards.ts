@@ -1524,6 +1524,7 @@ export class SafetyGuard extends BaseGuard {
 
             let domainChars = 0;
             let tldChars = 0;
+            let foundTld = false;
             let afterDot = false;
             let malformedDomain = false;
             let pos = at + 1;
@@ -1542,15 +1543,15 @@ export class SafetyGuard extends BaseGuard {
                 } else if (afterDot) {
                     if (isAlpha) {
                         tldChars++;
+                        if (tldChars >= 2) foundTld = true;
                     } else {
                         afterDot = false;
-                        tldChars = 0;
                     }
                 }
                 domainChars++;
                 pos++;
             }
-            if (!malformedDomain && tldChars >= 2) return true;
+            if (!malformedDomain && foundTld) return true;
             cursor = Math.max(cursor, pos);
         }
     }
