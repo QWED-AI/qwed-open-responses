@@ -97,6 +97,25 @@ export function createQWEDMiddleware(options: QWEDMiddlewareOptions = {}): Reque
     };
 }
 
+function failedRequestBodyResult(message: string): VerificationResult {
+    return {
+        verified: false,
+        response: undefined,
+        guardsPassed: 0,
+        guardsFailed: 1,
+        guardResults: [{
+            guardName: 'ResponseVerifier',
+            passed: false,
+            message,
+            severity: 'error',
+        }],
+        warnings: [],
+        blocked: true,
+        blockReason: message,
+        timestamp: new Date().toISOString(),
+    };
+}
+
 /**
  * Middleware to verify incoming request bodies.
  */
@@ -110,11 +129,30 @@ export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestH
     const verifier = new ResponseVerifier(guards);
 
     return (req: Request, res: Response, next: NextFunction) => {
-        if (!req.body) {
+        const bodyMissing = req.body === undefined;
+        const contentLength = req.get('content-length');
+        const bodyDeclared = req.get('transfer-encoding') !== undefined
+            || (contentLength !== undefined && Number(contentLength) !== 0);
+
+        if (bodyMissing && !bodyDeclared) {
             return next();
         }
 
-        const result = verifier.verify(req.body);
+        let result: VerificationResult;
+        let verificationUnavailable = false;
+        if (bodyMissing) {
+            verificationUnavailable = true;
+            result = failedRequestBodyResult(
+                'Request body was not parsed; verification cannot proceed.'
+            );
+        } else {
+            try {
+                result = verifier.verify(req.body);
+            } catch {
+                verificationUnavailable = true;
+                result = failedRequestBodyResult('Request body could not be verified.');
+            }
+        }
 
         if (verbose) {
             console.log(`[QWED] Request body ${req.method} ${req.path} -> ${result.verified ? 'PASS' : 'FAIL'}`);
@@ -122,7 +160,7 @@ export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestH
 
         (req as any)._qwedVerification = result;
 
-        if (!result.verified && blockOnFailure) {
+        if (verificationUnavailable || (!result.verified && blockOnFailure)) {
             return res.status(422).json({
                 error: 'Request verification failed',
                 code: 'QWED_REQUEST_BLOCKED',
