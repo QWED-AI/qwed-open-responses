@@ -240,6 +240,16 @@ def _conditional_field_constraints(
     fields: _RootObjectFields,
 ) -> List[Dict[str, object]]:
     constraints: List[Dict[str, object]] = []
+    base_property_names = sorted(
+        name
+        for name, activations in fields.property_activations.items()
+        if () in activations
+    )
+    base_pattern_names = sorted(
+        name
+        for name, activations in fields.pattern_activations.items()
+        if () in activations
+    )
 
     for property_name, activations in fields.property_activations.items():
         if () in activations:
@@ -259,19 +269,37 @@ def _conditional_field_constraints(
     for pattern_name, activations in fields.pattern_activations.items():
         if () in activations:
             continue
+        allowed_name_schemas: List[object] = [{"not": {"pattern": pattern_name}}]
+        if base_property_names:
+            allowed_name_schemas.insert(0, {"enum": base_property_names})
+        allowed_name_schemas.extend(
+            {"pattern": base_pattern_name} for base_pattern_name in base_pattern_names
+        )
+        property_name_schema: object = (
+            allowed_name_schemas[0]
+            if len(allowed_name_schemas) == 1
+            else {"anyOf": allowed_name_schemas}
+        )
         constraints.append(
             {
                 "if": {
-                    "not": {
-                        "anyOf": [
-                            _activation_schema(activation, fields.activation_schemas)
-                            for activation in sorted(activations)
-                        ]
-                    }
+                    "allOf": [
+                        {"type": "object"},
+                        {
+                            "not": {
+                                "anyOf": [
+                                    _activation_schema(
+                                        activation, fields.activation_schemas
+                                    )
+                                    for activation in sorted(activations)
+                                ]
+                            }
+                        },
+                    ]
                 },
                 "then": {
                     "type": "object",
-                    "propertyNames": {"not": {"pattern": pattern_name}},
+                    "propertyNames": property_name_schema,
                 },
             }
         )

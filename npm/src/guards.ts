@@ -869,6 +869,14 @@ function activationSchema(
 
 function conditionalFieldConstraints(fields: ReturnType<typeof collectRootObjectFields>): SchemaObject[] {
     const constraints: SchemaObject[] = [];
+    const basePropertyNames = Array.from(fields.propertyActivations.entries())
+        .filter(([, activations]) => activations.has('[]'))
+        .map(([name]) => name)
+        .sort();
+    const basePatternNames = Array.from(fields.patternActivations.entries())
+        .filter(([, activations]) => activations.has('[]'))
+        .map(([name]) => name)
+        .sort();
 
     for (const [propertyName, activations] of fields.propertyActivations) {
         if (activations.has('[]')) continue;
@@ -884,18 +892,31 @@ function conditionalFieldConstraints(fields: ReturnType<typeof collectRootObject
 
     for (const [patternName, activations] of fields.patternActivations) {
         if (activations.has('[]')) continue;
+        const allowedNameSchemas: unknown[] = [{ not: { pattern: patternName } }];
+        if (basePropertyNames.length > 0) {
+            allowedNameSchemas.unshift({ enum: basePropertyNames });
+        }
+        basePatternNames.forEach((basePatternName) => {
+            allowedNameSchemas.push({ pattern: basePatternName });
+        });
+        const propertyNameSchema =
+            allowedNameSchemas.length === 1
+                ? allowedNameSchemas[0]
+                : { anyOf: allowedNameSchemas };
         constraints.push({
             if: {
-                not: {
-                    anyOf: Array.from(activations.values()).map((activation) =>
-                        activationSchema(activation, fields.activationSchemas)
-                    ),
-                },
+                allOf: [
+                    { type: 'object' },
+                    {
+                        not: {
+                            anyOf: Array.from(activations.values()).map((activation) =>
+                                activationSchema(activation, fields.activationSchemas)
+                            ),
+                        },
+                    },
+                ],
             },
-            then: {
-                type: 'object',
-                propertyNames: { not: { pattern: patternName } },
-            },
+            then: { type: 'object', propertyNames: propertyNameSchema },
         });
     }
 
