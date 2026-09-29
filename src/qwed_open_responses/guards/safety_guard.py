@@ -277,7 +277,6 @@ class SafetyGuard(BaseGuard):
         """Collect scan text and credential leaves within fixed resource caps."""
         content_parts: List[str] = []
         leaf_strings: List[str] = []
-        visited: Set[int] = set()
         active: Set[int] = set()
         node_count = 0
         content_chars = 0
@@ -287,11 +286,12 @@ class SafetyGuard(BaseGuard):
 
         def add_content(text: str) -> bool:
             nonlocal content_chars, limit_error
-            if content_chars + len(text) > self._MAX_CONTENT_CHARS:
+            separator_cost = 1 if content_parts else 0
+            if content_chars + separator_cost + len(text) > self._MAX_CONTENT_CHARS:
                 limit_error = "scanned content exceeds the character limit"
                 return False
             content_parts.append(text)
-            content_chars += len(text)
+            content_chars += separator_cost + len(text)
             return True
 
         def collect(
@@ -321,9 +321,6 @@ class SafetyGuard(BaseGuard):
                 ):
                     limit_error = "credential scan exceeds the character limit"
                     return
-                if label_chars + label_cost > self._MAX_FIELD_LABEL_CHARS:
-                    limit_error = "field labels exceed the inspection limit"
-                    return
                 if not add_content(value):
                     return
 
@@ -331,7 +328,6 @@ class SafetyGuard(BaseGuard):
                 if field_name is not None:
                     leaf_strings.append(f"{field_name}={value}")
                 leaf_chars += len(value) + scan_cost
-                label_chars += label_cost
                 return
 
             if isinstance(value, dict):
@@ -339,15 +335,20 @@ class SafetyGuard(BaseGuard):
                 if identity in active:
                     limit_error = "response contains a cycle"
                     return
-                if identity in visited:
-                    return
-                visited.add(identity)
                 active.add(identity)
                 for key, child in value.items():
+                    if not isinstance(key, str):
+                        limit_error = "response contains a non-string object key"
+                        break
+                    label_cost = len(key) + 1
+                    if label_chars + label_cost > self._MAX_FIELD_LABEL_CHARS:
+                        limit_error = "field labels exceed the inspection limit"
+                        break
+                    label_chars += label_cost
                     include_content = stringify_content or (
                         depth == 0 and key in ("output", "arguments")
                     )
-                    if stringify_content and isinstance(key, str):
+                    if stringify_content:
                         node_count += 1
                         if node_count > self._MAX_CONTENT_NODES:
                             limit_error = (
@@ -356,12 +357,7 @@ class SafetyGuard(BaseGuard):
                             break
                         if not add_content(key):
                             break
-                    elif stringify_content:
-                        limit_error = "response contains a non-string object key"
-                        break
-                    child_field = (
-                        key if isinstance(key, str) and isinstance(child, str) else None
-                    )
+                    child_field = key if isinstance(child, str) else None
                     collect(child, depth + 1, child_field, include_content)
                     if limit_error is not None:
                         break
@@ -373,9 +369,6 @@ class SafetyGuard(BaseGuard):
                 if identity in active:
                     limit_error = "response contains a cycle"
                     return
-                if identity in visited:
-                    return
-                visited.add(identity)
                 active.add(identity)
                 for child in value:
                     collect(child, depth + 1, stringify_content=stringify_content)
@@ -384,23 +377,31 @@ class SafetyGuard(BaseGuard):
                 active.remove(identity)
                 return
 
-            if stringify_content:
-                if value is None:
-                    add_content("null")
-                elif value is True:
-                    add_content("true")
-                elif value is False:
-                    add_content("false")
-                elif isinstance(value, int):
-                    if value.bit_length() > self._MAX_CONTENT_CHARS * 4:
+            if isinstance(value, int) and not isinstance(value, bool):
+                if value.bit_length() > self._MAX_CONTENT_CHARS * 4:
+                    limit_error = "scanned content exceeds the character limit"
+                elif stringify_content:
+                    try:
+                        if not add_content(str(value)):
+                            return
+                    except (MemoryError, ValueError):
                         limit_error = "scanned content exceeds the character limit"
-                    else:
-                        try:
-                            add_content(str(value))
-                        except (MemoryError, ValueError):
-                            limit_error = "scanned content exceeds the character limit"
-                elif isinstance(value, float):
+                return
+
+            if isinstance(value, float):
+                if stringify_content:
                     add_content(str(value))
+                return
+
+            if value is None or isinstance(value, bool):
+                if stringify_content:
+                    add_content(
+                        "null" if value is None else ("true" if value else "false")
+                    )
+                return
+
+            if stringify_content:
+                limit_error = "response contains a non-JSON value"
 
         collect(response, 0)
         return " ".join(content_parts), leaf_strings, limit_error
@@ -442,6 +443,7 @@ class SafetyGuard(BaseGuard):
             domain_chars = 0
             tld_chars = 0
             after_dot = False
+            malformed_domain = False
             pos = at + 1
             while pos < len(content):
                 char = content[pos]
@@ -450,18 +452,20 @@ class SafetyGuard(BaseGuard):
                 if not (is_alpha or is_digit or char in ".-"):
                     break
                 if char == ".":
+                    if domain_chars == 0 or content[pos - 1] == ".":
+                        malformed_domain = True
                     after_dot = domain_chars > 0
                     tld_chars = 0
                 elif after_dot:
                     if is_alpha:
                         tld_chars += 1
-                        if tld_chars >= 2:
-                            return True
                     else:
                         after_dot = False
                         tld_chars = 0
                 domain_chars += 1
                 pos += 1
+            if not malformed_domain and tld_chars >= 2:
+                return True
             cursor = max(cursor, pos)
 
     def _check_injection(self, content: str) -> List[str]:

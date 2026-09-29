@@ -68,11 +68,48 @@ describe("bounded verification resources", () => {
         const adversarial = new SafetyGuard().check({
             content: "a.".repeat(1_000) + "@" + "b.".repeat(1_000) + "!",
         });
+        const malformed = new SafetyGuard().check({
+            content: "user@foo..com",
+        });
 
         expect(valid.passed).toBe(true);
         expect(valid.severity).toBe("warning");
         expect(valid.details.issues[0].details).toEqual(["email"]);
         expect(adversarial.passed).toBe(true);
+        expect(malformed.passed).toBe(true);
+    });
+
+    test("rechecks shared objects in each inspection context", () => {
+        const shared = { phone: 1234567890 };
+        const result = new SafetyGuard().check({
+            ordinary: shared,
+            arguments: shared,
+        });
+
+        expect(result.passed).toBe(true);
+        expect(result.severity).toBe("warning");
+        expect(result.details.issues[0].details).toEqual(["phone"]);
+    });
+
+    test("charges field names and join separators", () => {
+        const wideKey = new SafetyGuard().check({
+            ["x".repeat(20_000)]: 0,
+        });
+        expect(wideKey.passed).toBe(false);
+        expect(wideKey.details.resourceLimit).toContain("field labels");
+
+        const fields = new SafetyGuard().check({
+            items: Array(9_997).fill("x".repeat(10)),
+        });
+        expect(fields.passed).toBe(false);
+        expect(fields.details.resourceLimit).toContain("character limit");
+    });
+
+    test("fails closed for bigint values in ordinary fields", () => {
+        const result = new SafetyGuard().check({ value: 1n });
+
+        expect(result.passed).toBe(false);
+        expect(result.details.resourceLimit).toContain("non-JSON");
     });
 
     test("reports only the first schema validation error", () => {
@@ -144,5 +181,13 @@ describe("bounded verification resources", () => {
 
         expect(result.verified).toBe(true);
         expect(result.response).toEqual({ type: "text", content: "not JSON" });
+    });
+
+    test("keeps plain text fallback with many brackets", () => {
+        const text = "[".repeat(101) + " code sample";
+        const result = new ResponseVerifier([new SafetyGuard()]).verify(text);
+
+        expect(result.verified).toBe(true);
+        expect(result.response).toEqual({ type: "text", content: text });
     });
 });

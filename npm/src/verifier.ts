@@ -8,8 +8,24 @@ import { VerificationResult, GuardResult, ParsedResponse, ResultBinding } from '
 
 const MAX_JSON_RESPONSE_CHARS = 100_000;
 const MAX_JSON_NESTING_DEPTH = 100;
+const SAFE_PARSE_LIMIT_MESSAGES = new Set([
+    'JSON response exceeds the character limit',
+    'JSON response exceeds the nesting depth limit',
+    'JSON response could not be parsed within safe limits',
+]);
 
-class ResponseParseLimitError extends Error {}
+class ResponseParseLimitError extends Error {
+    readonly publicMessage: string;
+
+    constructor(publicMessage: string) {
+        const safeMessage = SAFE_PARSE_LIMIT_MESSAGES.has(publicMessage)
+            ? publicMessage
+            : 'JSON response could not be parsed within safe limits';
+        super(safeMessage);
+        this.publicMessage = safeMessage;
+        this.name = 'ResponseParseLimitError';
+    }
+}
 
 function countCodePoints(text: string): number {
     let count = 0;
@@ -168,7 +184,7 @@ export class ResponseVerifier {
             parsedResponse = this.parseResponse(response);
         } catch (error) {
             if (!(error instanceof ResponseParseLimitError)) throw error;
-            const message = error.message;
+            const message = error.publicMessage;
             return {
                 verified: false,
                 response,
@@ -338,11 +354,6 @@ export class ResponseVerifier {
                     'JSON response exceeds the character limit'
                 );
             }
-            if (jsonNestingExceedsLimit(response)) {
-                throw new ResponseParseLimitError(
-                    'JSON response exceeds the nesting depth limit'
-                );
-            }
 
             let parsed: any;
             try {
@@ -354,6 +365,14 @@ export class ResponseVerifier {
                     );
                 }
                 return { type: 'text', content: response };
+            }
+            // Apply the nesting limit only after JSON parsing succeeds.  A
+            // plain-text response may legitimately contain many brackets and
+            // must still reach the text fallback above.
+            if (jsonNestingExceedsLimit(response)) {
+                throw new ResponseParseLimitError(
+                    'JSON response exceeds the nesting depth limit'
+                );
             }
             // JSON arrays are rejected like direct array inputs (Sentry HIGH,
             // PR #34): an array payload bypasses per-item inspection, so its

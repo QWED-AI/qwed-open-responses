@@ -12,13 +12,30 @@ import hashlib
 import json
 import math
 
-
 _MAX_JSON_RESPONSE_CHARS = 100_000
 _MAX_JSON_NESTING_DEPTH = 100
+_SAFE_PARSE_LIMIT_MESSAGES = frozenset(
+    {
+        "JSON response exceeds the character limit",
+        "JSON response exceeds the nesting depth limit",
+        "JSON response could not be parsed within safe limits",
+    }
+)
 
 
 class _ResponseParseLimitError(ValueError):
     """Raised when parsing a JSON response would exceed bounded resources."""
+
+    def __init__(self, public_message: str):
+        # Only fixed, locally-authored messages are exposed to callers.  Keep
+        # the public text separate so an unexpected exception cannot leak
+        # parser internals through the verification result.
+        self.public_message = (
+            public_message
+            if public_message in _SAFE_PARSE_LIMIT_MESSAGES
+            else "JSON response could not be parsed within safe limits"
+        )
+        super().__init__(self.public_message)
 
 
 def _json_nesting_exceeds_limit(text: str) -> bool:
@@ -400,7 +417,7 @@ class ResponseVerifier:
         try:
             parsed_response = self._parse_response(response)
         except _ResponseParseLimitError as error:
-            message = str(error)
+            message = error.public_message
             return VerificationResult(
                 verified=False,
                 response=response,
@@ -649,10 +666,6 @@ class ResponseVerifier:
                 raise _ResponseParseLimitError(
                     "JSON response exceeds the character limit"
                 )
-            if _json_nesting_exceeds_limit(response):
-                raise _ResponseParseLimitError(
-                    "JSON response exceeds the nesting depth limit"
-                )
 
             # Try to parse as JSON
             try:
@@ -663,6 +676,13 @@ class ResponseVerifier:
                 raise _ResponseParseLimitError(
                     "JSON response could not be parsed within safe limits"
                 ) from error
+            # Apply the nesting limit only after JSON parsing succeeds.  A
+            # plain-text response may legitimately contain many brackets and
+            # must still reach the text fallback above.
+            if _json_nesting_exceeds_limit(response):
+                raise _ResponseParseLimitError(
+                    "JSON response exceeds the nesting depth limit"
+                )
             # JSON scalars/arrays are rejected like direct non-dict inputs
             # (Sentry HIGH, PR #34): an array payload bypasses per-item
             # inspection, so its content would verify without ever being

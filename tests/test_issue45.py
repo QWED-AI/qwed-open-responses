@@ -75,16 +75,38 @@ def test_safety_guard_fails_closed_on_unstringifiable_large_integer():
     assert "character limit" in result.details["resource_limit"]
 
 
+def test_safety_guard_rechecks_shared_objects_in_each_context():
+    shared = {"phone": 1234567890}
+
+    result = SafetyGuard().check({"ordinary": shared, "arguments": shared})
+
+    assert result.passed is True
+    assert result.severity == "warning"
+    assert result.details["issues"][0]["details"] == ["phone"]
+
+
+def test_safety_guard_charges_field_names_and_join_separators():
+    wide_key = SafetyGuard().check({"x" * 20_000: 0})
+    assert wide_key.passed is False
+    assert "field labels" in wide_key.details["resource_limit"]
+
+    fields = SafetyGuard().check({"items": ["x" * 10] * 9_997})
+    assert fields.passed is False
+    assert "character limit" in fields.details["resource_limit"]
+
+
 def test_safety_guard_email_detection_handles_valid_and_adversarial_text():
     valid = SafetyGuard().check({"content": "Contact user.name+tag@example.com"})
     adversarial = SafetyGuard().check(
         {"content": ("a." * 1_000) + "@" + ("b." * 1_000) + "!"}
     )
+    malformed = SafetyGuard().check({"content": "user@foo..com"})
 
     assert valid.passed is True
     assert valid.severity == "warning"
     assert valid.details["issues"][0]["details"] == ["email"]
     assert adversarial.passed is True
+    assert malformed.passed is True
 
 
 def test_schema_guard_stops_after_first_validation_error():
@@ -145,3 +167,12 @@ def test_verifier_keeps_plain_text_and_non_object_json_contracts():
     assert result.response == {"type": "text", "content": "not JSON"}
     with pytest.raises(ValueError, match="Cannot parse JSON response"):
         ResponseVerifier(default_guards=[SafetyGuard()]).verify("[]")
+
+
+def test_verifier_keeps_plain_text_with_many_brackets():
+    text = "[" * 101 + " code sample"
+
+    result = ResponseVerifier(default_guards=[SafetyGuard()]).verify(text)
+
+    assert result.verified is True
+    assert result.response == {"type": "text", "content": text}

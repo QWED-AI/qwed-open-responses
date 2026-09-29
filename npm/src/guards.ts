@@ -1403,13 +1403,13 @@ export class SafetyGuard extends BaseGuard {
         let collected: { content: string; leaves: string[]; limitError?: string };
         try {
             collected = this.collectBoundedContent(response);
-        } catch (err) {
+        } catch {
             // Cyclic / unserializable structures cannot be inspected —
             // fail closed instead of crashing the caller (Greptile P1).
             return this.failResult(
                 'BLOCKED: Response content could not be safely inspected '
                 + '(cyclic or unserializable structure).',
-                { error: String(err) },
+                { error: 'cyclic or unserializable structure' },
             );
         }
         if (collected.limitError) {
@@ -1525,6 +1525,7 @@ export class SafetyGuard extends BaseGuard {
             let domainChars = 0;
             let tldChars = 0;
             let afterDot = false;
+            let malformedDomain = false;
             let pos = at + 1;
             while (pos < content.length) {
                 const char = content[pos];
@@ -1533,12 +1534,14 @@ export class SafetyGuard extends BaseGuard {
                 const isDigit = code >= 48 && code <= 57;
                 if (!(isAlpha || isDigit || char === '.' || char === '-')) break;
                 if (char === '.') {
+                    if (domainChars === 0 || content[pos - 1] === '.') {
+                        malformedDomain = true;
+                    }
                     afterDot = domainChars > 0;
                     tldChars = 0;
                 } else if (afterDot) {
                     if (isAlpha) {
                         tldChars++;
-                        if (tldChars >= 2) return true;
                     } else {
                         afterDot = false;
                         tldChars = 0;
@@ -1547,6 +1550,7 @@ export class SafetyGuard extends BaseGuard {
                 domainChars++;
                 pos++;
             }
+            if (!malformedDomain && tldChars >= 2) return true;
             cursor = Math.max(cursor, pos);
         }
     }
@@ -1563,7 +1567,6 @@ export class SafetyGuard extends BaseGuard {
         const MAX_CREDENTIAL_SCAN_CHARS = 2 * MAX_CHARS + MAX_FIELD_LABEL_CHARS;
         const parts: string[] = [];
         const leaves: string[] = [];
-        const visited = new WeakSet<object>();
         const active = new WeakSet<object>();
         let nodeCount = 0;
         let contentChars = 0;
@@ -1573,12 +1576,13 @@ export class SafetyGuard extends BaseGuard {
 
         const addContent = (text: string): boolean => {
             const textLength = countCodePoints(text);
-            if (contentChars + textLength > MAX_CHARS) {
+            const separatorCost = parts.length > 0 ? 1 : 0;
+            if (contentChars + separatorCost + textLength > MAX_CHARS) {
                 limitError = 'scanned content exceeds the character limit';
                 return false;
             }
             parts.push(text);
-            contentChars += textLength;
+            contentChars += separatorCost + textLength;
             return true;
         };
 
@@ -1609,16 +1613,11 @@ export class SafetyGuard extends BaseGuard {
                     limitError = 'credential scan exceeds the character limit';
                     return;
                 }
-                if (labelChars + labelCost > MAX_FIELD_LABEL_CHARS) {
-                    limitError = 'field labels exceed the inspection limit';
-                    return;
-                }
                 if (!addContent(value)) return;
 
                 leaves.push(value);
                 if (fieldName !== undefined) leaves.push(fieldName + '=' + value);
                 leafChars += valueLength + scanCost;
-                labelChars += labelCost;
                 return;
             }
 
@@ -1637,9 +1636,7 @@ export class SafetyGuard extends BaseGuard {
                 return;
             }
             if (typeof value === 'bigint') {
-                if (stringifyContent) {
-                    limitError = 'response contains a non-JSON value';
-                }
+                limitError = 'response contains a non-JSON value';
                 return;
             }
             if (value === null || typeof value !== 'object') return;
@@ -1647,8 +1644,6 @@ export class SafetyGuard extends BaseGuard {
                 limitError = 'response contains a cycle';
                 return;
             }
-            if (visited.has(value)) return;
-            visited.add(value);
             active.add(value);
 
             if (Array.isArray(value)) {
@@ -1661,6 +1656,12 @@ export class SafetyGuard extends BaseGuard {
                 for (const key in record) {
                     if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
                     const child = record[key];
+                    const labelCost = countCodePoints(key) + 1;
+                    if (labelChars + labelCost > MAX_FIELD_LABEL_CHARS) {
+                        limitError = 'field labels exceed the inspection limit';
+                        break;
+                    }
+                    labelChars += labelCost;
                     const includeContent = stringifyContent
                         || (depth === 0 && (key === 'output' || key === 'arguments'));
                     if (stringifyContent) {
