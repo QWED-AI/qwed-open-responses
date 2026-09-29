@@ -190,39 +190,34 @@ export class ToolGuard extends BaseGuard {
                 });
             }
 
-            // Check dangerous patterns — serialization itself can throw
-            // (circular refs / extreme depth), so fail closed on it.
-            let argsStr: string;
-            try {
-                argsStr = JSON.stringify(args);
-            } catch {
-                return this.failResult('BLOCKED: Tool arguments could not be serialized');
-            }
-            for (const pattern of this.dangerousPatterns) {
-                if (ToolGuard.matches(pattern, argsStr)) {
-                    return this.failResult('BLOCKED: Dangerous pattern detected in tool arguments', {
-                        tool: toolName,
-                        pattern: pattern.source,
-                    });
-                }
-            }
-
-            // #31: base64-encoded payloads defeat plain pattern scanning —
-            // decode bounded, printable-looking tokens and scan the decoded
-            // text with the same patterns. Heuristic, not a boundary.
-            for (const token of argsStr.match(ToolGuard.BASE64_TOKEN_RE) || []) {
-                const decoded = ToolGuard.tryBase64Decode(token);
-                if (decoded === null) continue;
+            // Scan parsed string values directly; JSON.stringify escapes
+            // control bytes and can hide whitespace from regexes.
+            for (const stringValue of ToolGuard.stringLeaves(args)) {
                 for (const pattern of this.dangerousPatterns) {
-                    if (ToolGuard.matches(pattern, decoded)) {
-                        return this.failResult(
-                            'BLOCKED: Dangerous pattern detected in base64-encoded tool arguments',
-                            {
-                                tool: toolName,
-                                pattern: pattern.source,
-                                encoding: 'base64',
-                            },
-                        );
+                    if (ToolGuard.matches(pattern, stringValue)) {
+                        return this.failResult('BLOCKED: Dangerous pattern detected in tool arguments', {
+                            tool: toolName,
+                            pattern: pattern.source,
+                        });
+                    }
+                }
+
+                // #31: Decode bounded, printable-looking tokens in each raw
+                // string value and scan decoded text with the same patterns.
+                for (const token of stringValue.match(ToolGuard.BASE64_TOKEN_RE) || []) {
+                    const decoded = ToolGuard.tryBase64Decode(token);
+                    if (decoded === null) continue;
+                    for (const pattern of this.dangerousPatterns) {
+                        if (ToolGuard.matches(pattern, decoded)) {
+                            return this.failResult(
+                                'BLOCKED: Dangerous pattern detected in base64-encoded tool arguments',
+                                {
+                                    tool: toolName,
+                                    pattern: pattern.source,
+                                    encoding: 'base64',
+                                },
+                            );
+                        }
                     }
                 }
             }
@@ -477,6 +472,25 @@ export class ToolGuard extends BaseGuard {
     private static MAX_ARGS_JSON_CHARS = 10_000;
 
     private static MAX_ARGS_JSON_DEPTH = 128;
+
+    private static *stringLeaves(value: unknown): IterableIterator<string> {
+        const stack: unknown[] = [value];
+        while (stack.length > 0) {
+            const node = stack.pop();
+            if (typeof node === 'string') {
+                yield node;
+                continue;
+            }
+            if (node === null || typeof node !== 'object') continue;
+
+            const children: unknown[] = Array.isArray(node)
+                ? node
+                : Object.values(node as Record<string, unknown>);
+            for (let index = children.length - 1; index >= 0; index--) {
+                stack.push(children[index]);
+            }
+        }
+    }
 
     /**
      * Non-recursive max container nesting depth of a value.

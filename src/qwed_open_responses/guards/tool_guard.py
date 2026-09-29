@@ -4,7 +4,7 @@ Tool Guard - Validates tool calls for safety and correctness.
 Blocks dangerous tools and validates tool arguments.
 """
 
-from typing import Any, Dict, Optional, List, Set, Callable, Tuple
+from typing import Any, Dict, Optional, List, Set, Callable, Iterator, Tuple
 from .base import BaseGuard, GuardResult
 import json
 import re
@@ -387,37 +387,36 @@ class ToolGuard(BaseGuard):
                     "BLOCKED: Tool arguments exceed maximum nesting depth.",
                     details={"tool": tool_name},
                 )
-            args_str = str(arguments)
-            for pattern in self.dangerous_patterns:
-                if pattern.search(args_str):
-                    return self.fail_result(
-                        "BLOCKED: Dangerous pattern detected in tool arguments",
-                        details={
-                            "tool": tool_name,
-                            "pattern": pattern.pattern,
-                        },
-                    )
-
-            # #31: encoded payloads (6-bit-group text encoding) defeat plain
-            # pattern scanning ("cm0gLXJmIC8=" carries "rm -rf /" invisibly).
-            # Decode bounded, printable-looking tokens and scan the decoded
-            # text with the same patterns. Heuristic mitigation, not a
-            # boundary.
-            for token in ToolGuard._ENCODED_TOKEN_RE.findall(args_str):
-                decoded = ToolGuard._try_decode_encoded_token(token)
-                if decoded is None:
-                    continue
+            # Scan the parsed values themselves. Re-serializing arguments
+            # escapes control bytes and can hide whitespace from regexes.
+            for string_value in ToolGuard._iter_string_leaves(arguments):
                 for pattern in self.dangerous_patterns:
-                    if pattern.search(decoded):
+                    if pattern.search(string_value):
                         return self.fail_result(
-                            "BLOCKED: Dangerous pattern detected in "
-                            "base64-encoded tool arguments",
+                            "BLOCKED: Dangerous pattern detected in tool arguments",
                             details={
                                 "tool": tool_name,
                                 "pattern": pattern.pattern,
-                                "encoding": "base64",
                             },
                         )
+
+                # #31: Decode bounded, printable-looking tokens in each raw
+                # string value and scan decoded text with the same patterns.
+                for token in ToolGuard._ENCODED_TOKEN_RE.findall(string_value):
+                    decoded = ToolGuard._try_decode_encoded_token(token)
+                    if decoded is None:
+                        continue
+                    for pattern in self.dangerous_patterns:
+                        if pattern.search(decoded):
+                            return self.fail_result(
+                                "BLOCKED: Dangerous pattern detected in "
+                                "base64-encoded tool arguments",
+                                details={
+                                    "tool": tool_name,
+                                    "pattern": pattern.pattern,
+                                    "encoding": "base64",
+                                },
+                            )
 
             # Run custom validator if exists
             if folded_name in self.custom_validators:
@@ -461,7 +460,7 @@ class ToolGuard(BaseGuard):
 
         # Responses API direct function_call items (#33 review). Only when the
         # known shapes yielded nothing — a hybrid response carrying both
-        # type: function_call and a tool_calls array must not double-count.
+        # a type="function_call" item and a tool_calls array must not double-count.
         if not calls and resp_type == "function_call":
             calls.append(response)
 
@@ -489,11 +488,24 @@ class ToolGuard(BaseGuard):
         return ()
 
     @staticmethod
+    def _iter_string_leaves(value: Any) -> Iterator[str]:
+        """Yield parsed string values without serializing their containers."""
+        stack = [value]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, str):
+                yield node
+            elif isinstance(node, dict):
+                stack.extend(reversed(node.values()))
+            elif isinstance(node, list):
+                stack.extend(reversed(node))
+
+    @staticmethod
     def _arguments_depth(obj: Any) -> int:
         """Non-recursive max container nesting depth of a Python object.
 
         Used to fail closed on deeply-nested dict arguments before
-        ``str(arguments)`` / json.dumps can raise RecursionError (Greptile P1).
+        argument serialization can raise RecursionError (Greptile P1).
         Uses an explicit stack, so it never recurses itself. Returns -1 when
         an ancestor back-reference (true cycle) is detected, so callers fail
         closed (Greptile P1). Containers shared by siblings (acyclic DAG
