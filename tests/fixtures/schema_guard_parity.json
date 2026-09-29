@@ -30,6 +30,12 @@
     "expected": true
   },
   {
+    "name": "email-single-label-domain-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@localhost"},
+    "expected": true
+  },
+  {
     "name": "email-invalid",
     "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
     "data": {"value": "not-an-email"},

@@ -6,6 +6,14 @@ import Ajv, { ValidateFunction, ErrorObject } from 'ajv';
 import addFormats from 'ajv-formats';
 import { GuardResult, ParsedResponse } from './types';
 
+const EMAIL_ATOM = "[a-z0-9!#$%&'*+/=?^_`{|}~-]+";
+const EMAIL_LOCAL_PART = `${EMAIL_ATOM}(?:\\.${EMAIL_ATOM})*`;
+const EMAIL_DOMAIN_LABEL = '[a-z0-9](?:[a-z0-9-]*[a-z0-9])?';
+const EMAIL_FORMAT = new RegExp(
+    `^${EMAIL_LOCAL_PART}@(?:${EMAIL_DOMAIN_LABEL}\\.)*${EMAIL_DOMAIN_LABEL}(?![\\s\\S])`,
+    'i',
+);
+
 /**
  * Base class for all guards.
  */
@@ -1116,6 +1124,10 @@ export class SchemaGuard extends BaseGuard {
 
             const ajv = new Ajv({ allErrors: true });
             addFormats(ajv as any);
+            ajv.addFormat('email', {
+                type: 'string',
+                validate: (value: string) => EMAIL_FORMAT.test(value),
+            });
             this.validate = ajv.compile(validatorSchema);
         } catch (error) {
             throw new Error(

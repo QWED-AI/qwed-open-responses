@@ -71,6 +71,7 @@ def test_email_format_does_not_depend_on_optional_checkers(monkeypatch):
     )
 
     assert guard.check({"output": {"email": "user@example.com"}}).passed
+    assert guard.check({"output": {"email": "user@localhost"}}).passed
     assert not guard.check({"output": {"email": "not-an-email"}}).passed
 
 
