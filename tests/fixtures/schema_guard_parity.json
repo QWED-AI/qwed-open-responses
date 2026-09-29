@@ -102,6 +102,12 @@
     "expected": false
   },
   {
+    "name": "date-time-leap-second-boundary-year-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "date-time"}}},
+    "data": {"value": "9999-12-31T23:59:60Z"},
+    "expected": true
+  },
+  {
     "name": "uri-valid",
     "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "uri"}}},
     "data": {"value": "https://example.com/path"},
