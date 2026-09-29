@@ -36,6 +36,18 @@
     "expected": true
   },
   {
+    "name": "email-max-domain-label-valid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "expected": true
+  },
+  {
+    "name": "email-overlong-domain-label-invalid",
+    "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
+    "data": {"value": "user@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "expected": false
+  },
+  {
     "name": "email-invalid",
     "schema": {"type": "object", "properties": {"value": {"type": "string", "format": "email"}}},
     "data": {"value": "not-an-email"},

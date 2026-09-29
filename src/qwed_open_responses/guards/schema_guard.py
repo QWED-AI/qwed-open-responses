@@ -39,8 +39,8 @@ def _is_valid_uuid_format(value: Any) -> bool:
 _EMAIL_FORMAT = re.compile(
     r"^[a-z0-9!#$%&'*+/=?^_`{|}~-]+"
     r"(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@"
-    r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*"
-    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
     re.IGNORECASE | re.ASCII,
 )
 

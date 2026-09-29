@@ -8,7 +8,7 @@ import { GuardResult, ParsedResponse } from './types';
 
 const EMAIL_ATOM = "[a-z0-9!#$%&'*+/=?^_`{|}~-]+";
 const EMAIL_LOCAL_PART = `${EMAIL_ATOM}(?:\\.${EMAIL_ATOM})*`;
-const EMAIL_DOMAIN_LABEL = '[a-z0-9](?:[a-z0-9-]*[a-z0-9])?';
+const EMAIL_DOMAIN_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
 const EMAIL_FORMAT = new RegExp(
     `^${EMAIL_LOCAL_PART}@(?:${EMAIL_DOMAIN_LABEL}\\.)*${EMAIL_DOMAIN_LABEL}(?![\\s\\S])`,
     'i',
