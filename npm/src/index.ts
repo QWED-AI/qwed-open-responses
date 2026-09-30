@@ -119,17 +119,13 @@ function failedRequestBodyResult(message: string): VerificationResult {
 /**
  * Middleware to verify incoming request bodies.
  */
-function isUnparsedRequestBody(
-    body: unknown,
-    bodyWasParsed: boolean,
-    bodyIsChunked: boolean,
-): boolean {
+function isUnparsedRequestBody(body: unknown, bodyWasParsed: boolean): boolean {
     const bodyIsEmptyObject = body !== null
         && typeof body === 'object'
         && !Array.isArray(body)
         && Object.keys(body).length === 0;
 
-    return body === undefined || (bodyIsEmptyObject && (!bodyWasParsed || bodyIsChunked));
+    return body === undefined || (bodyIsEmptyObject && !bodyWasParsed);
 }
 
 export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestHandler {
@@ -150,7 +146,7 @@ export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestH
             || (!express4BodyParser && typeof req.app === 'function' && req.body !== undefined);
         const contentLength = req.get('content-length');
         const bodyIsChunked = req.get('transfer-encoding') !== undefined;
-        const bodyUnparsed = isUnparsedRequestBody(req.body, bodyWasParsed, bodyIsChunked);
+        const bodyUnparsed = isUnparsedRequestBody(req.body, bodyWasParsed);
         const bodyDeclared = bodyIsChunked
             || (contentLength !== undefined && Number(contentLength) !== 0);
 
