@@ -1,5 +1,6 @@
 """Regression tests for ToolGuard vocabulary and separator normalization."""
 
+import base64
 import json
 
 import pytest
@@ -63,14 +64,109 @@ def test_custom_validator_uses_padded_normalized_name():
     assert calls == [{"ok": True}]
 
 
-def test_allowed_tools_use_the_same_separator_normalization():
+def test_allowed_tools_preserve_name_separators():
     guard = ToolGuard(
         use_default_blocklist=False,
         allowed_tools=["safe-tool"],
     )
 
-    result = guard.check(
+    exact_name = guard.check(
+        {"type": "tool_call", "tool_name": "safe-tool", "arguments": {}}
+    )
+    alias_name = guard.check(
         {"type": "tool_call", "tool_name": "safeTool", "arguments": {}}
     )
 
+    assert exact_name.passed is True
+    assert alias_name.passed is False
+
+
+@pytest.mark.parametrize(
+    "payload", ["rm -r -f /", "rm -f -r /", "rm --force --recursive /"]
+)
+def test_separate_rm_flags_are_blocked(payload):
+    result = ToolGuard().check(
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "arguments": {"command": payload},
+        }
+    )
+
+    assert result.passed is False
+    assert "dangerous pattern" in result.message.lower()
+
+
+def test_rm_flag_normalization_does_not_rewrite_unrecognized_words():
+    result = ToolGuard().check(
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "arguments": {"query": "rm -refactor documentation"},
+        }
+    )
+
     assert result.passed is True
+
+
+@pytest.mark.parametrize("payload", ["rm -fr /", "DROP/*comment*/TABLE users"])
+def test_base64_decoded_arguments_receive_pattern_normalization(payload):
+    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    result = ToolGuard().check(
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "arguments": {"query": encoded},
+        }
+    )
+
+    assert result.passed is False
+    assert result.details.get("encoding") == "base64"
+
+
+def test_blocked_tool_casefolds_long_s():
+    guard = ToolGuard(blocked_tools=["bash"], use_default_blocklist=False)
+
+    result = guard.check(
+        {"type": "tool_call", "tool_name": "ba\u017fh", "arguments": {}}
+    )
+
+    assert result.passed is False
+
+
+def test_custom_validators_keep_separator_distinct_names():
+    seen = []
+
+    def validator(label):
+        def check(_arguments):
+            seen.append(label)
+            return True, ""
+
+        return check
+
+    guard = ToolGuard(
+        use_default_blocklist=False,
+        custom_validators={
+            "pay-out": validator("hyphen"),
+            "pay_out": validator("underscore"),
+        },
+    )
+    for name in ("pay-out", "pay_out"):
+        assert (
+            guard.check(
+                {"type": "tool_call", "tool_name": name, "arguments": {}}
+            ).passed
+            is True
+        )
+
+    assert seen == ["hyphen", "underscore"]
+
+
+def test_custom_validators_reject_casefold_collisions():
+    with pytest.raises(ValueError, match="Conflicting custom validators"):
+        ToolGuard(
+            custom_validators={
+                "pay-out": lambda _args: (True, ""),
+                "PAY-OUT": lambda _args: (False, "different policy"),
+            }
+        )

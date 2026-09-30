@@ -106,6 +106,8 @@ export class ToolGuard extends BaseGuard {
         /subprocess/i,
         /os\.system/i,
     ];
+    private static RM_OPTION_SEQUENCE_RE =
+        /\brm((?:\s+(?:-[firdv]+|--(?:recursive|force))){1,8})(?=\s|[;&|)]|$)/gi;
 
     constructor(options: {
         blockedTools?: string[];
@@ -128,7 +130,7 @@ export class ToolGuard extends BaseGuard {
         }
 
         this.allowedTools = allowedTools
-            ? new Set(allowedTools.map((t) => ToolGuard.normalizeToolName(t)))
+            ? new Set(allowedTools.map((t) => ToolGuard.normalizeToolIdentity(t)))
             : null;
         this.dangerousPatterns = [
             ...ToolGuard.DEFAULT_DANGEROUS_PATTERNS,
@@ -196,8 +198,9 @@ export class ToolGuard extends BaseGuard {
             }
             const args = call.arguments || {};
 
-            // #40: normalized matching — mirrors Python tool-name folding.
+            // Blocked names fold separators; allowlists preserve them.
             const folded = ToolGuard.normalizeToolName(toolName);
+            const identity = ToolGuard.normalizeToolIdentity(toolName);
 
             // Check blocked list
             if (this.blockedTools.has(folded)) {
@@ -205,7 +208,7 @@ export class ToolGuard extends BaseGuard {
             }
 
             // Check allowed list (whitelist mode)
-            if (this.allowedTools && !this.allowedTools.has(folded)) {
+            if (this.allowedTools && !this.allowedTools.has(identity)) {
                 return this.failResult(`BLOCKED: Tool '${toolName}' is not in allowed list`, {
                     tool: toolName,
                     allowed: Array.from(this.allowedTools),
@@ -240,16 +243,18 @@ export class ToolGuard extends BaseGuard {
                     for (const token of stringValue.match(ToolGuard.BASE64_TOKEN_RE) || []) {
                         const decoded = ToolGuard.tryBase64Decode(token);
                         if (decoded === null) continue;
-                        for (const pattern of this.dangerousPatterns) {
-                            if (ToolGuard.matches(pattern, decoded)) {
-                                return this.failResult(
-                                    'BLOCKED: Dangerous pattern detected in base64-encoded tool arguments',
-                                    {
-                                        tool: toolName,
-                                        pattern: pattern.source,
-                                        encoding: 'base64',
-                                    },
-                                );
+                        for (const scanValue of ToolGuard.patternScanValues(decoded)) {
+                            for (const pattern of this.dangerousPatterns) {
+                                if (ToolGuard.matches(pattern, scanValue)) {
+                                    return this.failResult(
+                                        'BLOCKED: Dangerous pattern detected in base64-encoded tool arguments',
+                                        {
+                                            tool: toolName,
+                                            pattern: pattern.source,
+                                            encoding: 'base64',
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
@@ -270,16 +275,14 @@ export class ToolGuard extends BaseGuard {
         return typeof name === 'string' && name.trim().length > 0;
     }
 
-    // #31 parity: Python matches with str.casefold(); plain toLowerCase()
-    // misses full-folding pairs (ß→ss, ligatures), which would give
-    // STRASSE and Straße different decisions across runtimes. ASCII-only
-    // names are unaffected by these entries.
-    private static FULL_FOLD_RE = /[ßﬀﬁﬂﬃﬄﬅﬆς]/g;
+    // #31 parity: JavaScript lacks str.casefold(); include the full-folding
+    // pairs used by common tool names, including long-s (ſ -> s).
+    private static FULL_FOLD_RE = /[ßﬀﬁﬂﬃﬄﬅﬆς\u017f]/g;
     private static FULL_FOLD_MAP: Record<string, string> = {
         'ß': 'ss', 'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl',
         'ﬃ': 'ffi', 'ﬄ': 'ffl', 'ﬅ': 'st', 'ﬆ': 'st',
         // Greek final sigma folds to standard sigma (Python casefold does).
-        'ς': 'σ',
+        'ς': 'σ', '\u017f': 's',
     };
 
     private static casefold(name: string): string {
@@ -289,14 +292,23 @@ export class ToolGuard extends BaseGuard {
     }
 
     private static normalizeToolName(name: string): string {
-        return ToolGuard.casefold(name).trim().replace(/[^\p{L}\p{N}]+/gu, '');
+        return ToolGuard.normalizeToolIdentity(name).replace(/[^\p{L}\p{N}]+/gu, '');
+    }
+
+    private static normalizeToolIdentity(name: string): string {
+        return ToolGuard.casefold(name).trim();
     }
 
     private static normalizePatternText(value: string): string {
         let normalized = value.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, ' ');
         normalized = normalized.replace(/\s*\.\s*/g, '.');
-        normalized = normalized.replace(/\brm\s+-[A-Za-z]*f[A-Za-z]*r[A-Za-z]*/gi, 'rm -rf');
-        normalized = normalized.replace(/\brm\s+-[A-Za-z]*r[A-Za-z]*f[A-Za-z]*/gi, 'rm -rf');
+        normalized = normalized.replace(ToolGuard.RM_OPTION_SEQUENCE_RE, (match, options: string) => {
+            const shortFlags = (options.match(/-[firdv]+/gi) || []).join('').toLowerCase();
+            const longFlags = options.toLowerCase();
+            const hasRecursive = shortFlags.includes('r') || longFlags.includes('--recursive');
+            const hasForce = shortFlags.includes('f') || longFlags.includes('--force');
+            return hasRecursive && hasForce ? 'rm -rf' : match;
+        });
         return normalized;
     }
 

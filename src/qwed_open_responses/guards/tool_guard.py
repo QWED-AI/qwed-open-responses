@@ -22,9 +22,9 @@ class ToolGuard(BaseGuard):
     - Custom validation functions
 
     Security model (#31):
-    - The blocklist/allowlist is matched after tool-name normalization
-      (case folding, trimming, and separator/punctuation folding), and the
-      default blocklist covers common shells and OS command interpreters.
+    - The blocklist folds separators to catch aliases, while the allowlist
+      preserves them so one registered tool cannot authorize another.
+    - The default blocklist covers common shells and OS command interpreters.
     - Argument pattern scanning additionally decodes bounded, printable
       base64 tokens and scans the decoded text with the same patterns.
     - Pattern scanning is a HEURISTIC, not a security boundary: encoding
@@ -135,11 +135,20 @@ class ToolGuard(BaseGuard):
     _TOKEN_CHARS = (
         string.ascii_uppercase + string.ascii_lowercase + string.digits + "+/"
     )
+    _RM_OPTION_SEQUENCE_RE = re.compile(
+        r"\brm((?:\s+(?:-[firdv]+|--(?:recursive|force))){1,8})(?=\s|[;&|)]|$)",
+        re.IGNORECASE | re.ASCII,
+    )
+
+    @staticmethod
+    def _normalize_tool_identity(name: str) -> str:
+        """Fold case and surrounding whitespace without merging separators."""
+        return name.strip().casefold()
 
     @staticmethod
     def _normalize_tool_name(name: str) -> str:
         """Fold case, surrounding whitespace, and name separators."""
-        folded = name.strip().casefold()
+        folded = ToolGuard._normalize_tool_identity(name)
         return re.sub(r"[\W_]+", "", folded, flags=re.UNICODE)
 
     @staticmethod
@@ -152,17 +161,21 @@ class ToolGuard(BaseGuard):
         """
         normalized = re.sub(r"/\*[\s\S]*?(?:\*/|$)", " ", value)
         normalized = re.sub(r"\s*\.\s*", ".", normalized)
-        normalized = re.sub(
-            r"\brm\s+-[A-Za-z]*f[A-Za-z]*r[A-Za-z]*",
-            "rm -rf",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        normalized = re.sub(
-            r"\brm\s+-[A-Za-z]*r[A-Za-z]*f[A-Za-z]*",
-            "rm -rf",
-            normalized,
-            flags=re.IGNORECASE,
+
+        def normalize_rm_flags(match: re.Match[str]) -> str:
+            options = re.findall(
+                r"-([firdv]+)|--(recursive|force)",
+                match.group(1),
+                flags=re.IGNORECASE | re.ASCII,
+            )
+            short_flags = "".join(short for short, _ in options).casefold()
+            long_flags = {long.casefold() for _, long in options if long}
+            has_recursive = "r" in short_flags or "recursive" in long_flags
+            has_force = "f" in short_flags or "force" in long_flags
+            return "rm -rf" if has_recursive and has_force else match.group(0)
+
+        normalized = ToolGuard._RM_OPTION_SEQUENCE_RE.sub(
+            normalize_rm_flags, normalized
         )
         return normalized
 
@@ -312,7 +325,7 @@ class ToolGuard(BaseGuard):
             )
 
         self.allowed_tools: Optional[Set[str]] = (
-            {self._normalize_tool_name(t) for t in allowed_tools}
+            {self._normalize_tool_identity(t) for t in allowed_tools}
             if allowed_tools
             else None
         )
@@ -334,12 +347,14 @@ class ToolGuard(BaseGuard):
                 re.compile(p, re.IGNORECASE) for p in dangerous_patterns
             )
 
-        self.custom_validators = {
-            # #40: validator keys use the same normalization as tool names,
-            # including surrounding whitespace and separators.
-            self._normalize_tool_name(name): validator
-            for name, validator in (custom_validators or {}).items()
-        }
+        self.custom_validators: Dict[str, Callable] = {}
+        for name, validator in (custom_validators or {}).items():
+            validator_name = self._normalize_tool_identity(name)
+            if validator_name in self.custom_validators:
+                raise ValueError(
+                    f"Conflicting custom validators for tool name: {name!r}"
+                )
+            self.custom_validators[validator_name] = validator
         self.max_calls = max_calls_per_response
 
     def check(
@@ -414,8 +429,9 @@ class ToolGuard(BaseGuard):
 
             arguments = call.get("arguments", {})
 
-            # #40: normalized matching — see __init__.
+            # Blocked names fold separators; allowlists and validators preserve them.
             folded_name = self._normalize_tool_name(tool_name)
+            tool_identity = self._normalize_tool_identity(tool_name)
 
             # Check blocked list
             if folded_name in self.blocked_tools:
@@ -425,7 +441,7 @@ class ToolGuard(BaseGuard):
                 )
 
             # Check allowed list (whitelist mode)
-            if self.allowed_tools and folded_name not in self.allowed_tools:
+            if self.allowed_tools and tool_identity not in self.allowed_tools:
                 return self.fail_result(
                     f"BLOCKED: Tool '{tool_name}' is not in allowed list",
                     details={
@@ -469,17 +485,18 @@ class ToolGuard(BaseGuard):
                         decoded = ToolGuard._try_decode_encoded_token(token)
                         if decoded is None:
                             continue
-                        for pattern in self.dangerous_patterns:
-                            if pattern.search(decoded):
-                                return self.fail_result(
-                                    "BLOCKED: Dangerous pattern detected in "
-                                    "base64-encoded tool arguments",
-                                    details={
-                                        "tool": tool_name,
-                                        "pattern": pattern.pattern,
-                                        "encoding": "base64",
-                                    },
-                                )
+                        for scan_value in ToolGuard._pattern_scan_values(decoded):
+                            for pattern in self.dangerous_patterns:
+                                if pattern.search(scan_value):
+                                    return self.fail_result(
+                                        "BLOCKED: Dangerous pattern detected in "
+                                        "base64-encoded tool arguments",
+                                        details={
+                                            "tool": tool_name,
+                                            "pattern": pattern.pattern,
+                                            "encoding": "base64",
+                                        },
+                                    )
             except Exception:
                 return self.fail_result(
                     "BLOCKED: Tool arguments could not be inspected safely.",
@@ -487,9 +504,9 @@ class ToolGuard(BaseGuard):
                 )
 
             # Run custom validator if exists
-            if folded_name in self.custom_validators:
+            if tool_identity in self.custom_validators:
                 try:
-                    validator = self.custom_validators[folded_name]
+                    validator = self.custom_validators[tool_identity]
                     is_valid, error_msg = validator(arguments)
                     if not is_valid:
                         return self.fail_result(
