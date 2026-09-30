@@ -811,10 +811,10 @@ class ToolGuard(BaseGuard):
         if cls._normalized_type(call.get("type", "")) != "function_call":
             return None
         name = call.get("name")
-        if "name" not in call:
+        if not cls._valid_tool_name(name):
             # Some Open Responses producers use the canonical tool_name field
-            # on a function_call item. Preserve that supported shape while
-            # still rejecting calls without a usable name.
+            # on a function_call item. Use it when name is missing or invalid,
+            # while still rejecting calls without a usable name.
             name = call.get("tool_name")
         if not cls._valid_tool_name(name):
             return cls._unrecognized_sentinel(None)
@@ -1011,8 +1011,13 @@ class ToolGuard(BaseGuard):
         tool-shaped (an object carrying name/arguments), so ordinary fields
         like ``function: "parse_csv"`` on a structured response still pass.
         """
-        # Tool-shaped objects under recognizable hint keys.
-        for key in ("tool_use", "tool_call", "function_call", "function"):
+        # Tool-shaped objects under recognizable hint keys. Result envelopes
+        # may repeat the root ``function``/``tool_name`` fields for
+        # correlation, but explicit nested call envelopes remain suspicious.
+        hint_keys: Tuple[str, ...] = ("tool_use", "tool_call", "function_call")
+        if resp_type not in {"tool_result", "function_call_output"}:
+            hint_keys += ("function",)
+        for key in hint_keys:
             value = response.get(key)
             if isinstance(value, dict) and ("name" in value or "arguments" in value):
                 return True

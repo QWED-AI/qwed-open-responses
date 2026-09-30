@@ -602,7 +602,7 @@ class TestVerifiedToolCalls:
             ("process_payroll", {"gross_ytd": 1000, "claimed_tax": 100})
         ]
 
-    def test_invalid_function_call_name_does_not_fallback_to_tool_name(self):
+    def test_invalid_function_call_name_falls_back_to_tool_name(self):
         class CapturingTaxGuard(TaxGuard):
             def __init__(self):
                 self.calls = []
@@ -622,9 +622,11 @@ class TestVerifiedToolCalls:
 
         result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
 
-        assert result[0]["type"] == "system_intervention"
-        assert guard.calls == []
-        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+        assert result == [item]
+        assert guard.calls == [
+            ("process_payroll", {"gross_ytd": 1000, "claimed_tax": 100})
+        ]
+        assert mw.get_stats() == {"total": 1, "verified": 1, "blocked": 0}
 
     def test_tool_result_items_pass_through_without_verification(self):
         guard = CaptureGuard()
@@ -653,6 +655,30 @@ class TestVerifiedToolCalls:
             "arguments": {"gross_ytd": 1000, "claimed_tax": 100},
             "tool_use_id": "call_1",
             "content": {"status": "ok"},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert result[0] is item
+        assert guard.responses == []
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
+
+    def test_function_call_output_correlation_fields_pass_through_without_verification(
+        self,
+    ):
+        guard = CaptureGuard()
+        mw = OpenResponsesMiddleware(guards=[guard])
+        item = {
+            "type": "function_call_output",
+            "tool_name": "process_payroll",
+            "arguments": {"gross_ytd": 1000, "claimed_tax": 100},
+            "function": {
+                "name": "process_payroll",
+                "arguments": {"gross_ytd": 1000, "claimed_tax": 100},
+            },
+            "call_id": "call_1",
+            "output": {"status": "ok"},
         }
 
         result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))

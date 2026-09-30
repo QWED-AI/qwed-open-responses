@@ -152,6 +152,7 @@ class OpenResponsesMiddleware:
             "tool_result",
             "function_call_output",
         }
+        result_item_types = {"tool_result", "function_call_output"}
         stack = [item]
         seen: set[int] = set()
         scanned_nodes = 0
@@ -199,15 +200,20 @@ class OpenResponsesMiddleware:
 
             if isinstance(node, dict):
                 normalized_type = ToolGuard._normalized_type(node.get("type", ""))
-                is_tool_type = normalized_type.startswith(tool_type_prefixes) or (
-                    "tool" in normalized_type
-                    and normalized_type not in passthrough_on_scan_limit
+                is_tool_type = normalized_type not in passthrough_on_scan_limit and (
+                    normalized_type.startswith(tool_type_prefixes)
+                    or "tool" in normalized_type
                 )
                 if is_tool_type:
                     return bool(ToolGuard.normalize_tool_calls(item)) or bool(
                         OpenResponsesMiddleware._has_tool_hint(node)
                     )
-                if envelope_keys.intersection(node):
+                node_envelope_keys = envelope_keys
+                if node is item and root_type in result_item_types:
+                    # Result correlation metadata is not a new invocation. Keep
+                    # explicit nested tool envelopes fail-closed below.
+                    node_envelope_keys = envelope_keys - {"function", "tool_name"}
+                if node_envelope_keys.intersection(node):
                     return bool(ToolGuard.normalize_tool_calls(node)) or bool(
                         OpenResponsesMiddleware._has_tool_hint(node)
                     )

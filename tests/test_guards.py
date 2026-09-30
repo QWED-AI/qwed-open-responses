@@ -94,6 +94,35 @@ class TestToolGuard:
 
         assert result.passed is True
 
+    def test_function_call_output_correlation_fields_are_not_tool_calls(self):
+        guard = ToolGuard()
+        result = guard.check(
+            {
+                "type": "function_call_output",
+                "tool_name": "process_payroll",
+                "arguments": {"gross_ytd": 1000},
+                "function": {
+                    "name": "process_payroll",
+                    "arguments": {"gross_ytd": 1000},
+                },
+                "output": {"status": "ok"},
+            }
+        )
+
+        assert result.passed is True
+
+    def test_function_call_uses_tool_name_when_name_is_invalid(self):
+        result = ToolGuard().check(
+            {
+                "type": "function_call",
+                "name": " ",
+                "tool_name": "process_payroll",
+                "arguments": {"gross_ytd": 1000},
+            }
+        )
+
+        assert result.passed is True
+
 
 class TestMathGuard:
     """Test MathGuard class."""
