@@ -97,9 +97,37 @@ export function createQWEDMiddleware(options: QWEDMiddlewareOptions = {}): Reque
     };
 }
 
+function failedRequestBodyResult(message: string): VerificationResult {
+    return {
+        verified: false,
+        response: undefined,
+        guardsPassed: 0,
+        guardsFailed: 1,
+        guardResults: [{
+            guardName: 'ResponseVerifier',
+            passed: false,
+            message,
+            severity: 'error',
+        }],
+        warnings: [],
+        blocked: true,
+        blockReason: message,
+        timestamp: new Date().toISOString(),
+    };
+}
+
 /**
  * Middleware to verify incoming request bodies.
  */
+function isUnparsedRequestBody(body: unknown, bodyWasParsed: boolean): boolean {
+    const bodyIsEmptyObject = body !== null
+        && typeof body === 'object'
+        && !Array.isArray(body)
+        && Object.keys(body).length === 0;
+
+    return body === undefined || (bodyIsEmptyObject && !bodyWasParsed);
+}
+
 export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestHandler {
     const {
         guards = [],
@@ -110,11 +138,37 @@ export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestH
     const verifier = new ResponseVerifier(guards);
 
     return (req: Request, res: Response, next: NextFunction) => {
-        if (!req.body) {
+        // Body-parser 1 marks parsed Express 4 requests; body-parser 2 leaves skipped Express 5 bodies undefined.
+        const express4App = req.app as (Request['app'] & { lazyrouter?: unknown }) | undefined;
+        const express4BodyParser = typeof express4App?.lazyrouter === 'function';
+        const bodyParserMarkedParsed = (req as Request & { _body?: boolean })._body === true;
+        const bodyWasParsed = bodyParserMarkedParsed
+            || (!express4BodyParser && typeof req.app === 'function' && req.body !== undefined);
+        const contentLength = req.get('content-length');
+        const bodyIsChunked = req.get('transfer-encoding') !== undefined;
+        const bodyUnparsed = isUnparsedRequestBody(req.body, bodyWasParsed);
+        const bodyDeclared = bodyIsChunked
+            || (contentLength !== undefined && Number(contentLength) !== 0);
+
+        if (bodyUnparsed && !bodyDeclared) {
             return next();
         }
 
-        const result = verifier.verify(req.body);
+        let result: VerificationResult;
+        let verificationUnavailable = false;
+        if (bodyUnparsed) {
+            verificationUnavailable = true;
+            result = failedRequestBodyResult(
+                'Request body was not parsed; verification cannot proceed.'
+            );
+        } else {
+            try {
+                result = verifier.verify(req.body);
+            } catch {
+                verificationUnavailable = true;
+                result = failedRequestBodyResult('Request body could not be verified.');
+            }
+        }
 
         if (verbose) {
             console.log(`[QWED] Request body ${req.method} ${req.path} -> ${result.verified ? 'PASS' : 'FAIL'}`);
@@ -122,7 +176,7 @@ export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestH
 
         (req as any)._qwedVerification = result;
 
-        if (!result.verified && blockOnFailure) {
+        if (verificationUnavailable || (!result.verified && blockOnFailure)) {
             return res.status(422).json({
                 error: 'Request verification failed',
                 code: 'QWED_REQUEST_BLOCKED',
