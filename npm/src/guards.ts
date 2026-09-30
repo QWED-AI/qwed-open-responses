@@ -81,6 +81,9 @@ export class ToolGuard extends BaseGuard {
         'powershell.exe', 'pwsh.exe', 'osascript', 'wscript', 'cscript',
         'delete_file', 'remove_file', 'write_file', 'modify_file',
         'send_email', 'transfer_money', 'make_payment',
+        // Common aliases used by agent tool registries (#40). Separator
+        // folding also covers camelCase and dashed/space-separated spellings.
+        'run_command', 'execute_command', 'command_line', 'terminal',
     ]);
 
     // Unified cross-language superset — every pattern case-insensitive.
@@ -119,13 +122,13 @@ export class ToolGuard extends BaseGuard {
             dangerousPatterns = [],
         } = options;
 
-        this.blockedTools = new Set(blockedTools.map((t) => ToolGuard.casefold(t)));
+        this.blockedTools = new Set(blockedTools.map((t) => ToolGuard.normalizeToolName(t)));
         if (useDefaultBlocklist) {
-            ToolGuard.DEFAULT_BLOCKED_TOOLS.forEach(t => this.blockedTools.add(t));
+            ToolGuard.DEFAULT_BLOCKED_TOOLS.forEach(t => this.blockedTools.add(ToolGuard.normalizeToolName(t)));
         }
 
         this.allowedTools = allowedTools
-            ? new Set(allowedTools.map((t) => ToolGuard.casefold(t)))
+            ? new Set(allowedTools.map((t) => ToolGuard.normalizeToolName(t)))
             : null;
         this.dangerousPatterns = [
             ...ToolGuard.DEFAULT_DANGEROUS_PATTERNS,
@@ -193,8 +196,8 @@ export class ToolGuard extends BaseGuard {
             }
             const args = call.arguments || {};
 
-            // #31: case-insensitive matching — mirrors Python casefold().
-            const folded = ToolGuard.casefold(toolName);
+            // #40: normalized matching — mirrors Python tool-name folding.
+            const folded = ToolGuard.normalizeToolName(toolName);
 
             // Check blocked list
             if (this.blockedTools.has(folded)) {
@@ -221,12 +224,14 @@ export class ToolGuard extends BaseGuard {
                 // Scan parsed keys and values directly; serialization escapes
                 // control bytes and can hide whitespace from regexes.
                 for (const stringValue of ToolGuard.stringLeaves(args)) {
-                    for (const pattern of this.dangerousPatterns) {
-                        if (ToolGuard.matches(pattern, stringValue)) {
-                            return this.failResult('BLOCKED: Dangerous pattern detected in tool arguments', {
-                                tool: toolName,
-                                pattern: pattern.source,
-                            });
+                    for (const scanValue of ToolGuard.patternScanValues(stringValue)) {
+                        for (const pattern of this.dangerousPatterns) {
+                            if (ToolGuard.matches(pattern, scanValue)) {
+                                return this.failResult('BLOCKED: Dangerous pattern detected in tool arguments', {
+                                    tool: toolName,
+                                    pattern: pattern.source,
+                                });
+                            }
                         }
                     }
 
@@ -281,6 +286,23 @@ export class ToolGuard extends BaseGuard {
         return name
             .toLowerCase()
             .replace(ToolGuard.FULL_FOLD_RE, (ch) => ToolGuard.FULL_FOLD_MAP[ch] ?? ch);
+    }
+
+    private static normalizeToolName(name: string): string {
+        return ToolGuard.casefold(name).trim().replace(/[^\p{L}\p{N}]+/gu, '');
+    }
+
+    private static normalizePatternText(value: string): string {
+        let normalized = value.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, ' ');
+        normalized = normalized.replace(/\s*\.\s*/g, '.');
+        normalized = normalized.replace(/\brm\s+-[A-Za-z]*f[A-Za-z]*r[A-Za-z]*/gi, 'rm -rf');
+        normalized = normalized.replace(/\brm\s+-[A-Za-z]*r[A-Za-z]*f[A-Za-z]*/gi, 'rm -rf');
+        return normalized;
+    }
+
+    private static patternScanValues(value: string): string[] {
+        const normalized = ToolGuard.normalizePatternText(value);
+        return normalized === value ? [value] : [value, normalized];
     }
 
     // Caller-supplied /g or /y regexes retain lastIndex across test()

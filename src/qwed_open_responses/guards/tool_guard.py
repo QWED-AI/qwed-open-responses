@@ -22,9 +22,9 @@ class ToolGuard(BaseGuard):
     - Custom validation functions
 
     Security model (#31):
-    - The blocklist/allowlist is matched case-insensitively (names are
-      normalized with ``str.casefold()``), and the default blocklist
-      covers common shells and OS command interpreters.
+    - The blocklist/allowlist is matched after tool-name normalization
+      (case folding, trimming, and separator/punctuation folding), and the
+      default blocklist covers common shells and OS command interpreters.
     - Argument pattern scanning additionally decodes bounded, printable
       base64 tokens and scans the decoded text with the same patterns.
     - Pattern scanning is a HEURISTIC, not a security boundary: encoding
@@ -85,6 +85,12 @@ class ToolGuard(BaseGuard):
         "send_email",
         "transfer_money",
         "make_payment",
+        # Common aliases used by agent tool registries (#40). Separator
+        # folding also covers camelCase and dashed/space-separated spellings.
+        "run_command",
+        "execute_command",
+        "command_line",
+        "terminal",
     }
 
     # Default dangerous patterns in arguments.
@@ -129,6 +135,44 @@ class ToolGuard(BaseGuard):
     _TOKEN_CHARS = (
         string.ascii_uppercase + string.ascii_lowercase + string.digits + "+/"
     )
+
+    @staticmethod
+    def _normalize_tool_name(name: str) -> str:
+        """Fold case, surrounding whitespace, and name separators."""
+        folded = name.strip().casefold()
+        return re.sub(r"[\W_]+", "", folded, flags=re.UNICODE)
+
+    @staticmethod
+    def _normalize_pattern_text(value: str) -> str:
+        """Normalize common command separators before regex matching.
+
+        The raw value is always scanned too. This bounded second form closes
+        equivalent spellings such as ``DROP/*comment*/TABLE``, ``os . system``
+        and ``rm -fr`` without changing user-supplied regex definitions.
+        """
+        normalized = re.sub(r"/\*[\s\S]*?(?:\*/|$)", " ", value)
+        normalized = re.sub(r"\s*\.\s*", ".", normalized)
+        normalized = re.sub(
+            r"\brm\s+-[A-Za-z]*f[A-Za-z]*r[A-Za-z]*",
+            "rm -rf",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        normalized = re.sub(
+            r"\brm\s+-[A-Za-z]*r[A-Za-z]*f[A-Za-z]*",
+            "rm -rf",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        return normalized
+
+    @classmethod
+    def _pattern_scan_values(cls, value: str) -> Iterator[str]:
+        """Yield raw and normalized forms used by dangerous-pattern scans."""
+        yield value
+        normalized = cls._normalize_pattern_text(value)
+        if normalized != value:
+            yield normalized
 
     @staticmethod
     def _try_decode_encoded_token(token: str) -> Optional[str]:
@@ -257,15 +301,20 @@ class ToolGuard(BaseGuard):
             custom_validators: Dict of tool_name -> validator function
             max_calls_per_response: Max tool calls in single response
         """
-        # #31: blocklist/allowlist matching is case-insensitive — names are
-        # normalized via str.casefold() here and at match time, so "Bash"
-        # cannot walk past a blocklist entry of "bash".
-        self.blocked_tools: Set[str] = {t.casefold() for t in (blocked_tools or [])}
+        # #40: normalize both configured and incoming names so casing,
+        # whitespace, and punctuation variants cannot bypass policy.
+        self.blocked_tools: Set[str] = {
+            self._normalize_tool_name(t) for t in (blocked_tools or [])
+        }
         if use_default_blocklist:
-            self.blocked_tools.update(self.DEFAULT_BLOCKED_TOOLS)
+            self.blocked_tools.update(
+                self._normalize_tool_name(t) for t in self.DEFAULT_BLOCKED_TOOLS
+            )
 
         self.allowed_tools: Optional[Set[str]] = (
-            {t.casefold() for t in allowed_tools} if allowed_tools else None
+            {self._normalize_tool_name(t) for t in allowed_tools}
+            if allowed_tools
+            else None
         )
 
         self.dangerous_patterns: List[re.Pattern] = []
@@ -286,10 +335,9 @@ class ToolGuard(BaseGuard):
             )
 
         self.custom_validators = {
-            # #31: keys casefolded like the blocklist — validator lookup in
-            # check() uses the casefolded tool name on both sides, so a
-            # casing mismatch can never raise KeyError.
-            name.casefold(): validator
+            # #40: validator keys use the same normalization as tool names,
+            # including surrounding whitespace and separators.
+            self._normalize_tool_name(name): validator
             for name, validator in (custom_validators or {}).items()
         }
         self.max_calls = max_calls_per_response
@@ -366,8 +414,8 @@ class ToolGuard(BaseGuard):
 
             arguments = call.get("arguments", {})
 
-            # #31: casefolded matching — see __init__.
-            folded_name = tool_name.casefold()
+            # #40: normalized matching — see __init__.
+            folded_name = self._normalize_tool_name(tool_name)
 
             # Check blocked list
             if folded_name in self.blocked_tools:
@@ -404,15 +452,16 @@ class ToolGuard(BaseGuard):
             # escapes control bytes and can hide whitespace from regexes.
             try:
                 for string_value in ToolGuard._iter_string_leaves(arguments):
-                    for pattern in self.dangerous_patterns:
-                        if pattern.search(string_value):
-                            return self.fail_result(
-                                "BLOCKED: Dangerous pattern detected in tool arguments",
-                                details={
-                                    "tool": tool_name,
-                                    "pattern": pattern.pattern,
-                                },
-                            )
+                    for scan_value in ToolGuard._pattern_scan_values(string_value):
+                        for pattern in self.dangerous_patterns:
+                            if pattern.search(scan_value):
+                                return self.fail_result(
+                                    "BLOCKED: Dangerous pattern detected in tool arguments",
+                                    details={
+                                        "tool": tool_name,
+                                        "pattern": pattern.pattern,
+                                    },
+                                )
 
                     # #31: Decode bounded, printable-looking tokens in each raw
                     # string and scan decoded text with the same patterns.
