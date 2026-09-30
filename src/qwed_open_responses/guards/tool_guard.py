@@ -946,6 +946,12 @@ class ToolGuard(BaseGuard):
         tool-shaped (an object carrying name/arguments), so ordinary fields
         like ``function: "parse_csv"`` on a structured response still pass.
         """
+        if resp_type in {"tool_result", "function_call_output"}:
+            # Results are data returned by an already executed call, not a new
+            # invocation to verify in the streaming path. Check this before
+            # correlation metadata such as tool_name/arguments.
+            return False
+
         # Tool-shaped objects under recognizable hint keys.
         for key in ("tool_use", "function_call", "function"):
             value = response.get(key)
@@ -974,10 +980,6 @@ class ToolGuard(BaseGuard):
             # Untyped envelopes ("") stay deep-scanned - they are exactly the
             # laundering vector (Sentry: structured_output carrying
             # name+arguments is a legitimate payload shape, not a hidden tool).
-            return False
-        if resp_type in {"tool_result", "function_call_output"}:
-            # Results are data returned by an already executed call, not a new
-            # invocation to verify in the streaming path.
             return False
         if "tool" in resp_type:
             return True

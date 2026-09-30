@@ -406,6 +406,24 @@ class TestVerifiedToolCalls:
         assert guard.responses == []
         assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
 
+    def test_tool_result_correlation_fields_pass_through_without_verification(self):
+        guard = CaptureGuard()
+        mw = OpenResponsesMiddleware(guards=[guard])
+        item = {
+            "type": "tool_result",
+            "tool_name": "process_payroll",
+            "arguments": {"gross_ytd": 1000, "claimed_tax": 100},
+            "tool_use_id": "call_1",
+            "content": {"status": "ok"},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert result[0] is item
+        assert guard.responses == []
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
+
     def test_tool_call_passes_with_pass_guard(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
         items = [
