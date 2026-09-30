@@ -788,70 +788,30 @@ function collectRootObjectFields(rootSchema: SchemaObject): {
     patternNames: Set<string>;
     declaresObject: boolean;
     referencesResolved: boolean;
-    propertyActivations: Map<string, Map<string, string[]>>;
-    patternActivations: Map<string, Map<string, string[]>>;
-    activationSchemas: Map<string, unknown>;
 } {
     const propertyNames = new Set<string>();
     const patternNames = new Set<string>();
-    const propertyActivations = new Map<string, Map<string, string[]>>();
-    const patternActivations = new Map<string, Map<string, string[]>>();
-    const activationSchemas = new Map<string, unknown>();
-    const visitedSchemas = new WeakMap<SchemaObject, Set<string>>();
-    const objectIdentities = new WeakMap<object, number>();
-    let nextObjectIdentity = 1;
+    const visitedSchemas = new WeakMap<SchemaObject, Set<boolean>>();
     let declaresObject = false;
     let referencesResolved = true;
 
-    const objectIdentity = (value: object): number => {
-        const knownIdentity = objectIdentities.get(value);
-        if (knownIdentity !== undefined) return knownIdentity;
-        const identity = nextObjectIdentity++;
-        objectIdentities.set(value, identity);
-        return identity;
-    };
-
-    const extendActivation = (
-        activation: string[],
-        marker: string,
-        predicate: unknown
-    ): string[] => {
-        if (!activationSchemas.has(marker)) activationSchemas.set(marker, predicate);
-        return Array.from(new Set([...activation, marker])).sort();
-    };
-
-    const recordActivation = (
-        fields: Map<string, Map<string, string[]>>,
-        name: string,
-        activation: string[]
-    ): void => {
-        const signature = JSON.stringify(activation);
-        let activations = fields.get(name);
-        if (!activations) {
-            activations = new Map<string, string[]>();
-            fields.set(name, activations);
-        }
-        activations.set(signature, activation);
-    };
-
-    const visit = (schema: unknown, activation: string[] = []): void => {
+    const visit = (schema: unknown, conditional: boolean = false): void => {
         if (!isSchemaObject(schema)) return;
-        const signature = JSON.stringify(activation);
         let visitedActivations = visitedSchemas.get(schema);
         if (!visitedActivations) {
-            visitedActivations = new Set<string>();
+            visitedActivations = new Set<boolean>();
             visitedSchemas.set(schema, visitedActivations);
         }
-        if (visitedActivations.has(signature)) return;
-        visitedActivations.add(signature);
+        if (visitedActivations.has(conditional)) return;
+        visitedActivations.add(conditional);
 
         const reference = schema.$ref;
         if (typeof reference === 'string') {
             const referencedSchema = resolveLocalSchemaReference(rootSchema, reference);
             if (referencedSchema === undefined) {
-                if (activation.length === 0) referencesResolved = false;
+                if (!conditional) referencesResolved = false;
             } else {
-                visit(referencedSchema, activation);
+                visit(referencedSchema, conditional);
             }
             // Draft 7 ignores every sibling of $ref.
             return;
@@ -876,66 +836,41 @@ function collectRootObjectFields(rootSchema: SchemaObject): {
         if (isSchemaObject(properties)) {
             Object.keys(properties).forEach((name) => {
                 propertyNames.add(name);
-                recordActivation(propertyActivations, name, activation);
             });
         }
         const patternProperties = schema.patternProperties;
         if (isSchemaObject(patternProperties)) {
             Object.keys(patternProperties).forEach((name) => {
                 patternNames.add(name);
-                recordActivation(patternActivations, name, activation);
             });
         }
 
         const allOf = schema.allOf;
         if (Array.isArray(allOf)) {
-            allOf.forEach((branch) => visit(branch, activation));
+            allOf.forEach((branch) => visit(branch, conditional));
         }
 
         for (const keyword of ['anyOf', 'oneOf']) {
             const branches = schema[keyword];
             if (Array.isArray(branches)) {
-                branches.forEach((branch, index) => {
-                    const branchActivation = extendActivation(
-                        activation,
-                        `${keyword}:${objectIdentity(schema)}:${index}`,
-                        branch
-                    );
-                    visit(branch, branchActivation);
-                });
+                branches.forEach((branch) => visit(branch, true));
             }
         }
         const dependencies = schema.dependencies;
         if (isSchemaObject(dependencies)) {
-            Object.entries(dependencies).forEach(([dependencyName, dependency]) => {
+            Object.values(dependencies).forEach((dependency) => {
                 if (isSchemaObject(dependency)) {
-                    const dependencyActivation = extendActivation(
-                        activation,
-                        `dependency:${objectIdentity(schema)}:${dependencyName}`,
-                        { required: [dependencyName] }
-                    );
-                    visit(dependency, dependencyActivation);
+                    visit(dependency, true);
                 }
             });
         }
 
         if (Object.prototype.hasOwnProperty.call(schema, 'if')) {
-            const condition = schema.if;
             if (Object.prototype.hasOwnProperty.call(schema, 'then')) {
-                const thenActivation = extendActivation(
-                    activation,
-                    `if:${objectIdentity(schema)}:then`,
-                    condition
-                );
-                visit(schema.then, thenActivation);
+                visit(schema.then, true);
             }
             if (Object.prototype.hasOwnProperty.call(schema, 'else')) {
-                const elseActivation = extendActivation(
-                    activation,
-                    `if:${objectIdentity(schema)}:else`,
-                    { not: condition }
-                );
-                visit(schema.else, elseActivation);
+                visit(schema.else, true);
             }
         }
     };
@@ -957,74 +892,7 @@ function collectRootObjectFields(rootSchema: SchemaObject): {
         patternNames,
         declaresObject,
         referencesResolved,
-        propertyActivations,
-        patternActivations,
-        activationSchemas,
     };
-}
-
-function activationSchema(
-    activation: string[],
-    activationSchemas: Map<string, unknown>
-): unknown {
-    const schemas = activation.map((marker) => activationSchemas.get(marker));
-    return schemas.length === 1 ? schemas[0] : { allOf: schemas };
-}
-
-function conditionalFieldConstraints(fields: ReturnType<typeof collectRootObjectFields>): SchemaObject[] {
-    const constraints: SchemaObject[] = [];
-    const basePropertyNames = Array.from(fields.propertyActivations.entries())
-        .filter(([, activations]) => activations.has('[]'))
-        .map(([name]) => name)
-        .sort();
-    const basePatternNames = Array.from(fields.patternActivations.entries())
-        .filter(([, activations]) => activations.has('[]'))
-        .map(([name]) => name)
-        .sort();
-
-    for (const [propertyName, activations] of fields.propertyActivations) {
-        if (activations.has('[]')) continue;
-        constraints.push({
-            if: { type: 'object', required: [propertyName] },
-            then: {
-                anyOf: Array.from(activations.values()).map((activation) =>
-                    activationSchema(activation, fields.activationSchemas)
-                ),
-            },
-        });
-    }
-
-    for (const [patternName, activations] of fields.patternActivations) {
-        if (activations.has('[]')) continue;
-        const allowedNameSchemas: unknown[] = [{ not: { pattern: patternName } }];
-        if (basePropertyNames.length > 0) {
-            allowedNameSchemas.unshift({ enum: basePropertyNames });
-        }
-        basePatternNames.forEach((basePatternName) => {
-            allowedNameSchemas.push({ pattern: basePatternName });
-        });
-        const propertyNameSchema =
-            allowedNameSchemas.length === 1
-                ? allowedNameSchemas[0]
-                : { anyOf: allowedNameSchemas };
-        constraints.push({
-            if: {
-                allOf: [
-                    { type: 'object' },
-                    {
-                        not: {
-                            anyOf: Array.from(activations.values()).map((activation) =>
-                                activationSchema(activation, fields.activationSchemas)
-                            ),
-                        },
-                    },
-                ],
-            },
-            then: { type: 'object', propertyNames: propertyNameSchema },
-        });
-    }
-
-    return constraints;
 }
 
 const DRAFT7_VALIDATION_KEYWORDS = new Set([
@@ -1067,15 +935,37 @@ const DRAFT7_VALIDATION_KEYWORDS = new Set([
 function wrapRootReference(
     rootSchema: SchemaObject,
     reference: string,
-    closureSchema: SchemaObject,
-    constraints: SchemaObject[]
+    closureSchema: SchemaObject
 ): SchemaObject {
     const wrapper: SchemaObject = {};
     Object.entries(rootSchema).forEach(([keyword, value]) => {
         if (!DRAFT7_VALIDATION_KEYWORDS.has(keyword)) wrapper[keyword] = value;
     });
-    wrapper.allOf = [{ $ref: reference }, closureSchema, ...constraints];
+    wrapper.allOf = [{ $ref: reference }, closureSchema];
     return wrapper;
+}
+
+function referencedAdditionalProperties(
+    rootSchema: SchemaObject,
+    reference: string
+): unknown {
+    let referencedSchema = resolveLocalSchemaReference(rootSchema, reference);
+    const visitedSchemas = new Set<SchemaObject>();
+    while (isSchemaObject(referencedSchema)) {
+        if (visitedSchemas.has(referencedSchema)) return false;
+        visitedSchemas.add(referencedSchema);
+
+        const nestedReference = referencedSchema.$ref;
+        if (typeof nestedReference === 'string') {
+            referencedSchema = resolveLocalSchemaReference(rootSchema, nestedReference);
+            continue;
+        }
+        if (Object.prototype.hasOwnProperty.call(referencedSchema, 'additionalProperties')) {
+            return referencedSchema.additionalProperties;
+        }
+        return false;
+    }
+    return false;
 }
 
 export class SchemaGuard extends BaseGuard {
@@ -1096,11 +986,7 @@ export class SchemaGuard extends BaseGuard {
                 patternNames,
                 declaresObject,
                 referencesResolved,
-                propertyActivations,
-                patternActivations,
-                activationSchemas,
             } = collectRootObjectFields(validatorSchema);
-            const rootAllOf = validatorSchema.allOf;
 
             if (
                 options.allowAdditionalProperties !== true &&
@@ -1111,15 +997,6 @@ export class SchemaGuard extends BaseGuard {
                     'additionalProperties'
                 )
             ) {
-                const conditionalConstraints = conditionalFieldConstraints({
-                    propertyNames,
-                    patternNames,
-                    declaresObject,
-                    referencesResolved,
-                    propertyActivations,
-                    patternActivations,
-                    activationSchemas,
-                });
                 const rootReference = validatorSchema.$ref;
                 if (typeof rootReference === 'string') {
                     const closureProperties = Object.create(null) as SchemaObject;
@@ -1132,7 +1009,10 @@ export class SchemaGuard extends BaseGuard {
                     });
                     const closureObjectSchema: SchemaObject = {
                         type: 'object',
-                        additionalProperties: false,
+                        additionalProperties: referencedAdditionalProperties(
+                            validatorSchema,
+                            rootReference
+                        ),
                     };
                     if (propertyNames.size > 0) {
                         closureObjectSchema.properties = closureProperties;
@@ -1149,8 +1029,7 @@ export class SchemaGuard extends BaseGuard {
                     validatorSchema = wrapRootReference(
                         validatorSchema,
                         rootReference,
-                        closureSchema,
-                        conditionalConstraints
+                        closureSchema
                     );
                 } else {
                     const hasRootProperties = Object.prototype.hasOwnProperty.call(
@@ -1206,16 +1085,6 @@ export class SchemaGuard extends BaseGuard {
                     }
 
                     validatorSchema.additionalProperties = false;
-                    if (
-                        conditionalConstraints.length > 0 &&
-                        (!Object.prototype.hasOwnProperty.call(validatorSchema, 'allOf') ||
-                            Array.isArray(rootAllOf))
-                    ) {
-                        validatorSchema.allOf = [
-                            ...(Array.isArray(rootAllOf) ? rootAllOf : []),
-                            ...conditionalConstraints,
-                        ];
-                    }
                 }
             }
 

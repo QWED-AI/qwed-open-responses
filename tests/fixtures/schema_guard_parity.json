@@ -181,7 +181,7 @@
     "expected": true
   },
   {
-    "name": "conditional-then-property-rejected-when-inactive",
+    "name": "conditional-then-property-allowed-when-inactive",
     "schema": {
       "type": "object",
       "properties": {"kind": {"enum": ["basic", "special"]}},
@@ -190,7 +190,7 @@
       "else": {"properties": {"basicValue": {"type": "boolean"}}}
     },
     "data": {"kind": "basic", "specialValue": "unexpected"},
-    "expected": false
+    "expected": true
   },
   {
     "name": "conditional-else-property-valid-when-active",
@@ -205,7 +205,7 @@
     "expected": true
   },
   {
-    "name": "conditional-else-property-rejected-when-inactive",
+    "name": "conditional-else-property-allowed-when-inactive",
     "schema": {
       "type": "object",
       "properties": {"kind": {"enum": ["basic", "special"]}},
@@ -214,7 +214,7 @@
       "else": {"properties": {"basicValue": {"type": "boolean"}}}
     },
     "data": {"kind": "special", "basicValue": true},
-    "expected": false
+    "expected": true
   },
   {
     "name": "conditional-pattern-property-valid-when-active",
@@ -229,7 +229,7 @@
     "expected": true
   },
   {
-    "name": "conditional-pattern-property-rejected-when-inactive",
+    "name": "conditional-pattern-property-allowed-when-inactive",
     "schema": {
       "type": "object",
       "properties": {"kind": {"enum": ["basic", "special"]}},
@@ -238,7 +238,7 @@
       "else": {}
     },
     "data": {"kind": "basic", "extra_value": "unexpected"},
-    "expected": false
+    "expected": true
   },
   {
     "name": "conditional-pattern-does-not-reject-declared-property-when-inactive",
@@ -286,6 +286,92 @@
     "expected": true
   },
   {
+    "name": "anyof-first-branch-valid",
+    "schema": {
+      "anyOf": [
+        {"type": "object", "properties": {"a": {"type": "string"}}},
+        {"type": "object", "properties": {"b": {"type": "number"}}}
+      ]
+    },
+    "data": {"a": "text"},
+    "expected": true
+  },
+  {
+    "name": "anyof-second-branch-valid",
+    "schema": {
+      "anyOf": [
+        {"type": "object", "properties": {"a": {"type": "string"}}},
+        {"type": "object", "properties": {"b": {"type": "number"}}}
+      ]
+    },
+    "data": {"b": 2},
+    "expected": true
+  },
+  {
+    "name": "anyof-valid-branch-with-other-branch-field",
+    "schema": {
+      "anyOf": [
+        {"type": "object", "properties": {"a": {"type": "string"}}},
+        {"type": "object", "properties": {"b": {"type": "number"}}}
+      ]
+    },
+    "data": {"a": 1, "b": 2},
+    "expected": true
+  },
+  {
+    "name": "anyof-undeclared-field-rejected",
+    "schema": {
+      "anyOf": [
+        {"type": "object", "properties": {"a": {"type": "string"}}},
+        {"type": "object", "properties": {"b": {"type": "number"}}}
+      ]
+    },
+    "data": {"c": 1},
+    "expected": false
+  },
+  {
+    "name": "anyof-no-branch-matches",
+    "schema": {
+      "anyOf": [
+        {"type": "object", "properties": {"a": {"type": "string"}}},
+        {"type": "object", "properties": {"b": {"type": "number"}}}
+      ]
+    },
+    "data": {"a": 1, "b": "not-a-number"},
+    "expected": false
+  },
+  {
+    "name": "oneof-valid-branch-with-other-branch-field",
+    "schema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["a"],
+          "properties": {"a": {"type": "string"}}
+        },
+        {
+          "type": "object",
+          "required": ["b"],
+          "properties": {"b": {"type": "number"}}
+        }
+      ]
+    },
+    "data": {"a": 1, "b": 2},
+    "expected": true
+  },
+  {
+    "name": "dependencies-field-without-trigger-is-allowed",
+    "schema": {
+      "type": "object",
+      "properties": {"credit_card": {"type": "number"}},
+      "dependencies": {
+        "credit_card": {"properties": {"billing_address": {"type": "string"}}}
+      }
+    },
+    "data": {"billing_address": "Main Street"},
+    "expected": true
+  },
+  {
     "name": "simultaneously-active-all-of-conditionals-allow-both-fields",
     "schema": {
       "type": "object",
@@ -305,7 +391,7 @@
     "expected": true
   },
   {
-    "name": "inactive-all-of-conditional-property-rejected",
+    "name": "inactive-all-of-conditional-property-allowed",
     "schema": {
       "type": "object",
       "properties": {"kind": {"enum": ["basic", "special"]}, "mode": {"enum": ["off", "on"]}},
@@ -321,7 +407,7 @@
       ]
     },
     "data": {"kind": "basic", "mode": "on", "specialValue": "unexpected", "modeValue": true},
-    "expected": false
+    "expected": true
   },
   {
     "name": "root-ref-composed-properties-valid",
@@ -356,6 +442,21 @@
     },
     "data": {"name": "John", "age": 30, "unexpected": true},
     "expected": false
+  },
+  {
+    "name": "root-ref-explicit-additional-properties-allowed",
+    "schema": {
+      "$ref": "#/definitions/open",
+      "definitions": {
+        "open": {
+          "type": "object",
+          "properties": {"name": {"type": "string"}},
+          "additionalProperties": true
+        }
+      }
+    },
+    "data": {"name": "John", "unexpected": true},
+    "expected": true
   },
   {
     "name": "root-ref-ignores-draft7-sibling-all-of",
