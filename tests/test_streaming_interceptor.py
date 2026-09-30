@@ -364,6 +364,30 @@ class TestVerifiedToolCalls:
             ("process_payroll", {"gross_ytd": 1000, "claimed_tax": 100})
         ]
 
+    def test_invalid_function_call_name_does_not_fallback_to_tool_name(self):
+        class CapturingTaxGuard(TaxGuard):
+            def __init__(self):
+                self.calls = []
+
+            def verify_tool_call(self, tool_name, arguments):
+                self.calls.append((tool_name, arguments))
+                return self.pass_result()
+
+        guard = CapturingTaxGuard()
+        mw = OpenResponsesMiddleware(guards=[guard])
+        item = {
+            "type": "function_call",
+            "name": " ",
+            "tool_name": "process_payroll",
+            "arguments": {"gross_ytd": 1000, "claimed_tax": 100},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert guard.calls == []
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
     def test_tool_result_items_pass_through_without_verification(self):
         guard = CaptureGuard()
         mw = OpenResponsesMiddleware(guards=[guard])

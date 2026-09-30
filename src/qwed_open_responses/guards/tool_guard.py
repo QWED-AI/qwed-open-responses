@@ -653,7 +653,7 @@ class ToolGuard(BaseGuard):
         if cls._normalized_type(call.get("type", "")) != "function_call":
             return None
         name = call.get("name")
-        if not cls._valid_tool_name(name):
+        if "name" not in call:
             # Some Open Responses producers use the canonical tool_name field
             # on a function_call item. Preserve that supported shape while
             # still rejecting calls without a usable name.

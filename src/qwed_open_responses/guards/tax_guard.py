@@ -39,9 +39,13 @@ class TaxGuard(BaseGuard):
             isinstance(function, dict)
             and any(key in function for key in ("name", "arguments"))
         )
+        calls = (
+            ToolGuard.normalize_tool_calls(response)
+            if normalized_type in {"tool_call", "function_call"} or has_nested_call
+            else []
+        )
 
-        if normalized_type in {"tool_call", "function_call"} or has_nested_call:
-            calls = ToolGuard.normalize_tool_calls(response)
+        if normalized_type in {"tool_call", "function_call"} or calls:
             if not calls or any(
                 call.get("type") in {"__malformed__", "__unrecognized__"}
                 for call in calls
@@ -55,6 +59,9 @@ class TaxGuard(BaseGuard):
                 if not result.passed:
                     return result
             return self.pass_result(message=f"Verified {len(calls)} tax tool call(s)")
+
+        if has_nested_call:
+            return self.pass_result(message="No tax tool call to verify")
 
         return self.verify_tool_call(
             response.get("tool_name", ""), response.get("arguments", {})

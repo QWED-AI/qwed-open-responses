@@ -75,9 +75,12 @@ class ArgumentGuard(BaseGuard):
             isinstance(function, dict)
             and any(key in function for key in ("name", "arguments"))
         )
-
-        if normalized_type in {"tool_call", "function_call"} or has_nested_call:
-            calls = ToolGuard.normalize_tool_calls(response)
+        calls = (
+            ToolGuard.normalize_tool_calls(response)
+            if normalized_type in {"tool_call", "function_call"} or has_nested_call
+            else []
+        )
+        if normalized_type in {"tool_call", "function_call"} or calls:
             if not calls or any(
                 call.get("type") in {"__malformed__", "__unrecognized__"}
                 for call in calls

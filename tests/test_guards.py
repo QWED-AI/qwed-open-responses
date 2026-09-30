@@ -180,6 +180,28 @@ class TestStateGuard:
 class TestArgumentGuard:
     """Test ArgumentGuard class."""
 
+    def test_non_tool_metadata_with_nested_hint_is_ignored(self):
+        guard = ArgumentGuard(rules={"amount": {"type": "number", "max": 100}})
+
+        result = guard.check({"type": "metadata", "tool_call": {"source": "sdk"}})
+
+        assert result.passed is True
+
+    def test_unknown_type_with_tool_shaped_nested_call_fails_closed(self):
+        guard = ArgumentGuard(rules={"amount": {"type": "number", "max": 100}})
+
+        result = guard.check(
+            {
+                "type": "metadata",
+                "tool_call": {
+                    "name": "transfer_money",
+                    "arguments": {"amount": 101},
+                },
+            }
+        )
+
+        assert result.passed is False
+
     def test_valid_number(self):
         """Valid number argument."""
         guard = ArgumentGuard(
@@ -381,6 +403,30 @@ class TestTaxGuard:
         result = guard.check({"tool_name": "unknown_tool", "arguments": {}})
         assert result.passed is False
         assert "No tax guard for tool" in result.message
+
+    def test_non_tool_metadata_with_nested_hint_is_ignored(self):
+        guard = TaxGuard()
+        with patch.object(guard, "verify_tool_call") as verify_tool_call:
+            result = guard.check({"type": "metadata", "tool_call": {"source": "sdk"}})
+
+        assert result.passed is True
+        verify_tool_call.assert_not_called()
+
+    def test_unknown_type_with_tool_shaped_nested_call_fails_closed(self):
+        guard = TaxGuard()
+
+        result = guard.check(
+            {
+                "type": "metadata",
+                "tool_call": {
+                    "name": "send_international_wire",
+                    "arguments": {"amount_usd": 10},
+                },
+            }
+        )
+
+        assert result.passed is False
+        assert "Invalid or ambiguous tool-call payload" in result.message
 
     def test_missing_payroll_fields_returns_false(self):
         """Missing required payroll fields returns verified=False."""
