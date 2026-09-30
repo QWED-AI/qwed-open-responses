@@ -14,6 +14,12 @@ const EMAIL_FORMAT = new RegExp(
     'i',
 );
 
+function countCodePoints(text: string): number {
+    let count = 0;
+    for (const _character of text) count++;
+    return count;
+}
+
 /**
  * Base class for all guards.
  */
@@ -782,70 +788,30 @@ function collectRootObjectFields(rootSchema: SchemaObject): {
     patternNames: Set<string>;
     declaresObject: boolean;
     referencesResolved: boolean;
-    propertyActivations: Map<string, Map<string, string[]>>;
-    patternActivations: Map<string, Map<string, string[]>>;
-    activationSchemas: Map<string, unknown>;
 } {
     const propertyNames = new Set<string>();
     const patternNames = new Set<string>();
-    const propertyActivations = new Map<string, Map<string, string[]>>();
-    const patternActivations = new Map<string, Map<string, string[]>>();
-    const activationSchemas = new Map<string, unknown>();
-    const visitedSchemas = new WeakMap<SchemaObject, Set<string>>();
-    const objectIdentities = new WeakMap<object, number>();
-    let nextObjectIdentity = 1;
+    const visitedSchemas = new WeakMap<SchemaObject, Set<boolean>>();
     let declaresObject = false;
     let referencesResolved = true;
 
-    const objectIdentity = (value: object): number => {
-        const knownIdentity = objectIdentities.get(value);
-        if (knownIdentity !== undefined) return knownIdentity;
-        const identity = nextObjectIdentity++;
-        objectIdentities.set(value, identity);
-        return identity;
-    };
-
-    const extendActivation = (
-        activation: string[],
-        marker: string,
-        predicate: unknown
-    ): string[] => {
-        if (!activationSchemas.has(marker)) activationSchemas.set(marker, predicate);
-        return Array.from(new Set([...activation, marker])).sort();
-    };
-
-    const recordActivation = (
-        fields: Map<string, Map<string, string[]>>,
-        name: string,
-        activation: string[]
-    ): void => {
-        const signature = JSON.stringify(activation);
-        let activations = fields.get(name);
-        if (!activations) {
-            activations = new Map<string, string[]>();
-            fields.set(name, activations);
-        }
-        activations.set(signature, activation);
-    };
-
-    const visit = (schema: unknown, activation: string[] = []): void => {
+    const visit = (schema: unknown, conditional: boolean = false): void => {
         if (!isSchemaObject(schema)) return;
-        const signature = JSON.stringify(activation);
         let visitedActivations = visitedSchemas.get(schema);
         if (!visitedActivations) {
-            visitedActivations = new Set<string>();
+            visitedActivations = new Set<boolean>();
             visitedSchemas.set(schema, visitedActivations);
         }
-        if (visitedActivations.has(signature)) return;
-        visitedActivations.add(signature);
+        if (visitedActivations.has(conditional)) return;
+        visitedActivations.add(conditional);
 
         const reference = schema.$ref;
         if (typeof reference === 'string') {
             const referencedSchema = resolveLocalSchemaReference(rootSchema, reference);
             if (referencedSchema === undefined) {
-                if (activation.length === 0) referencesResolved = false;
+                if (!conditional) referencesResolved = false;
             } else {
-                visit(referencedSchema, activation);
+                visit(referencedSchema, conditional);
             }
             // Draft 7 ignores every sibling of $ref.
             return;
@@ -870,66 +836,41 @@ function collectRootObjectFields(rootSchema: SchemaObject): {
         if (isSchemaObject(properties)) {
             Object.keys(properties).forEach((name) => {
                 propertyNames.add(name);
-                recordActivation(propertyActivations, name, activation);
             });
         }
         const patternProperties = schema.patternProperties;
         if (isSchemaObject(patternProperties)) {
             Object.keys(patternProperties).forEach((name) => {
                 patternNames.add(name);
-                recordActivation(patternActivations, name, activation);
             });
         }
 
         const allOf = schema.allOf;
         if (Array.isArray(allOf)) {
-            allOf.forEach((branch) => visit(branch, activation));
+            allOf.forEach((branch) => visit(branch, conditional));
         }
 
         for (const keyword of ['anyOf', 'oneOf']) {
             const branches = schema[keyword];
             if (Array.isArray(branches)) {
-                branches.forEach((branch, index) => {
-                    const branchActivation = extendActivation(
-                        activation,
-                        `${keyword}:${objectIdentity(schema)}:${index}`,
-                        branch
-                    );
-                    visit(branch, branchActivation);
-                });
+                branches.forEach((branch) => visit(branch, true));
             }
         }
         const dependencies = schema.dependencies;
         if (isSchemaObject(dependencies)) {
-            Object.entries(dependencies).forEach(([dependencyName, dependency]) => {
+            Object.values(dependencies).forEach((dependency) => {
                 if (isSchemaObject(dependency)) {
-                    const dependencyActivation = extendActivation(
-                        activation,
-                        `dependency:${objectIdentity(schema)}:${dependencyName}`,
-                        { required: [dependencyName] }
-                    );
-                    visit(dependency, dependencyActivation);
+                    visit(dependency, true);
                 }
             });
         }
 
         if (Object.prototype.hasOwnProperty.call(schema, 'if')) {
-            const condition = schema.if;
             if (Object.prototype.hasOwnProperty.call(schema, 'then')) {
-                const thenActivation = extendActivation(
-                    activation,
-                    `if:${objectIdentity(schema)}:then`,
-                    condition
-                );
-                visit(schema.then, thenActivation);
+                visit(schema.then, true);
             }
             if (Object.prototype.hasOwnProperty.call(schema, 'else')) {
-                const elseActivation = extendActivation(
-                    activation,
-                    `if:${objectIdentity(schema)}:else`,
-                    { not: condition }
-                );
-                visit(schema.else, elseActivation);
+                visit(schema.else, true);
             }
         }
     };
@@ -951,74 +892,7 @@ function collectRootObjectFields(rootSchema: SchemaObject): {
         patternNames,
         declaresObject,
         referencesResolved,
-        propertyActivations,
-        patternActivations,
-        activationSchemas,
     };
-}
-
-function activationSchema(
-    activation: string[],
-    activationSchemas: Map<string, unknown>
-): unknown {
-    const schemas = activation.map((marker) => activationSchemas.get(marker));
-    return schemas.length === 1 ? schemas[0] : { allOf: schemas };
-}
-
-function conditionalFieldConstraints(fields: ReturnType<typeof collectRootObjectFields>): SchemaObject[] {
-    const constraints: SchemaObject[] = [];
-    const basePropertyNames = Array.from(fields.propertyActivations.entries())
-        .filter(([, activations]) => activations.has('[]'))
-        .map(([name]) => name)
-        .sort();
-    const basePatternNames = Array.from(fields.patternActivations.entries())
-        .filter(([, activations]) => activations.has('[]'))
-        .map(([name]) => name)
-        .sort();
-
-    for (const [propertyName, activations] of fields.propertyActivations) {
-        if (activations.has('[]')) continue;
-        constraints.push({
-            if: { type: 'object', required: [propertyName] },
-            then: {
-                anyOf: Array.from(activations.values()).map((activation) =>
-                    activationSchema(activation, fields.activationSchemas)
-                ),
-            },
-        });
-    }
-
-    for (const [patternName, activations] of fields.patternActivations) {
-        if (activations.has('[]')) continue;
-        const allowedNameSchemas: unknown[] = [{ not: { pattern: patternName } }];
-        if (basePropertyNames.length > 0) {
-            allowedNameSchemas.unshift({ enum: basePropertyNames });
-        }
-        basePatternNames.forEach((basePatternName) => {
-            allowedNameSchemas.push({ pattern: basePatternName });
-        });
-        const propertyNameSchema =
-            allowedNameSchemas.length === 1
-                ? allowedNameSchemas[0]
-                : { anyOf: allowedNameSchemas };
-        constraints.push({
-            if: {
-                allOf: [
-                    { type: 'object' },
-                    {
-                        not: {
-                            anyOf: Array.from(activations.values()).map((activation) =>
-                                activationSchema(activation, fields.activationSchemas)
-                            ),
-                        },
-                    },
-                ],
-            },
-            then: { type: 'object', propertyNames: propertyNameSchema },
-        });
-    }
-
-    return constraints;
 }
 
 const DRAFT7_VALIDATION_KEYWORDS = new Set([
@@ -1061,15 +935,37 @@ const DRAFT7_VALIDATION_KEYWORDS = new Set([
 function wrapRootReference(
     rootSchema: SchemaObject,
     reference: string,
-    closureSchema: SchemaObject,
-    constraints: SchemaObject[]
+    closureSchema: SchemaObject
 ): SchemaObject {
     const wrapper: SchemaObject = {};
     Object.entries(rootSchema).forEach(([keyword, value]) => {
         if (!DRAFT7_VALIDATION_KEYWORDS.has(keyword)) wrapper[keyword] = value;
     });
-    wrapper.allOf = [{ $ref: reference }, closureSchema, ...constraints];
+    wrapper.allOf = [{ $ref: reference }, closureSchema];
     return wrapper;
+}
+
+function referencedAdditionalProperties(
+    rootSchema: SchemaObject,
+    reference: string
+): unknown {
+    let referencedSchema = resolveLocalSchemaReference(rootSchema, reference);
+    const visitedSchemas = new Set<SchemaObject>();
+    while (isSchemaObject(referencedSchema)) {
+        if (visitedSchemas.has(referencedSchema)) return false;
+        visitedSchemas.add(referencedSchema);
+
+        const nestedReference = referencedSchema.$ref;
+        if (typeof nestedReference === 'string') {
+            referencedSchema = resolveLocalSchemaReference(rootSchema, nestedReference);
+            continue;
+        }
+        if (Object.prototype.hasOwnProperty.call(referencedSchema, 'additionalProperties')) {
+            return referencedSchema.additionalProperties;
+        }
+        return false;
+    }
+    return false;
 }
 
 export class SchemaGuard extends BaseGuard {
@@ -1090,11 +986,7 @@ export class SchemaGuard extends BaseGuard {
                 patternNames,
                 declaresObject,
                 referencesResolved,
-                propertyActivations,
-                patternActivations,
-                activationSchemas,
             } = collectRootObjectFields(validatorSchema);
-            const rootAllOf = validatorSchema.allOf;
 
             if (
                 options.allowAdditionalProperties !== true &&
@@ -1105,15 +997,6 @@ export class SchemaGuard extends BaseGuard {
                     'additionalProperties'
                 )
             ) {
-                const conditionalConstraints = conditionalFieldConstraints({
-                    propertyNames,
-                    patternNames,
-                    declaresObject,
-                    referencesResolved,
-                    propertyActivations,
-                    patternActivations,
-                    activationSchemas,
-                });
                 const rootReference = validatorSchema.$ref;
                 if (typeof rootReference === 'string') {
                     const closureProperties = Object.create(null) as SchemaObject;
@@ -1126,7 +1009,10 @@ export class SchemaGuard extends BaseGuard {
                     });
                     const closureObjectSchema: SchemaObject = {
                         type: 'object',
-                        additionalProperties: false,
+                        additionalProperties: referencedAdditionalProperties(
+                            validatorSchema,
+                            rootReference
+                        ),
                     };
                     if (propertyNames.size > 0) {
                         closureObjectSchema.properties = closureProperties;
@@ -1143,8 +1029,7 @@ export class SchemaGuard extends BaseGuard {
                     validatorSchema = wrapRootReference(
                         validatorSchema,
                         rootReference,
-                        closureSchema,
-                        conditionalConstraints
+                        closureSchema
                     );
                 } else {
                     const hasRootProperties = Object.prototype.hasOwnProperty.call(
@@ -1200,20 +1085,10 @@ export class SchemaGuard extends BaseGuard {
                     }
 
                     validatorSchema.additionalProperties = false;
-                    if (
-                        conditionalConstraints.length > 0 &&
-                        (!Object.prototype.hasOwnProperty.call(validatorSchema, 'allOf') ||
-                            Array.isArray(rootAllOf))
-                    ) {
-                        validatorSchema.allOf = [
-                            ...(Array.isArray(rootAllOf) ? rootAllOf : []),
-                            ...conditionalConstraints,
-                        ];
-                    }
                 }
             }
 
-            const ajv = new Ajv({ allErrors: true });
+            const ajv = new Ajv({ allErrors: false });
             addFormats(ajv as any);
             ajv.addFormat('email', {
                 type: 'string',
@@ -1238,15 +1113,16 @@ export class SchemaGuard extends BaseGuard {
         }
 
         if (!valid) {
-            const errors = this.validate.errors || [];
+            const errors = (this.validate.errors || []).slice(0, 1);
             const messages = errors.map((e: ErrorObject) =>
                 `${e.instancePath || '/'}: ${e.message}`
             );
             return this.failResult(
-                `Schema validation failed: ${errors.length} error(s)`,
+                'Schema validation failed (first error shown)',
                 {
-                    errors: messages.slice(0, 10),
-                    totalErrors: errors.length,
+                    errors: messages,
+                    totalErrors: null,
+                    errorsTruncated: true,
                 }
             );
         }
@@ -1263,7 +1139,6 @@ export class SafetyGuard extends BaseGuard {
     description = 'Comprehensive safety checks';
 
     private static PII_PATTERNS = {
-        email: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
         phone: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,
         ssn: /\b\d{3}-\d{2}-\d{4}\b/,
         creditCard: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,
@@ -1394,18 +1269,25 @@ export class SafetyGuard extends BaseGuard {
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
-        let content: string;
+        let collected: { content: string; leaves: string[]; limitError?: string };
         try {
-            content = this.extractContent(response);
-        } catch (err) {
+            collected = this.collectBoundedContent(response);
+        } catch {
             // Cyclic / unserializable structures cannot be inspected —
             // fail closed instead of crashing the caller (Greptile P1).
             return this.failResult(
                 'BLOCKED: Response content could not be safely inspected '
                 + '(cyclic or unserializable structure).',
-                { error: String(err) },
+                { error: 'cyclic or unserializable structure' },
             );
         }
+        if (collected.limitError) {
+            return this.failResult(
+                'Safety check failed: response exceeds inspection limits',
+                { resourceLimit: collected.limitError },
+            );
+        }
+        const { content, leaves } = collected;
         // Python parity: issues is a uniform array of
         // {type, severity, details} objects for BOTH paths — the error path
         // (all issues, errors AND warnings) and the warning-only path
@@ -1422,6 +1304,7 @@ export class SafetyGuard extends BaseGuard {
             // Python parity: one {type:'pii', severity:'warning'} entry whose
             // details carry the matched PII types (email, phone, ...).
             const piiTypes: string[] = [];
+            if (SafetyGuard.containsEmail(content)) piiTypes.push('email');
             for (const [type, pattern] of Object.entries(SafetyGuard.PII_PATTERNS)) {
                 if (pattern.test(content)) {
                     piiTypes.push(type);
@@ -1455,7 +1338,7 @@ export class SafetyGuard extends BaseGuard {
             // defeat the end-of-string anchor. Guidance prose skips only
             // the credential patterns, never PEM (Sentry/Greptile P1).
             const harmful: string[] = [];
-            for (const leaf of this.extractLeafStrings(response)) {
+            for (const leaf of leaves) {
                 if (SafetyGuard.isGuidanceProse(leaf)) continue;
                 if (SafetyGuard.placeholderTailAllows(leaf)) continue;
                 for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
@@ -1494,39 +1377,189 @@ export class SafetyGuard extends BaseGuard {
         return this.passResult('All safety checks passed');
     }
 
-    private extractContent(response: ParsedResponse, depth: number = 0): string {
-        const MAX_DEPTH = 12;
-        const KNOWN: Record<string, boolean> = { content: true, output: true, text: true, arguments: true };
-        const parts: string[] = [];
+    private static containsEmail(content: string): boolean {
+        const localChars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._%+-';
+        let cursor = 0;
+        while (true) {
+            const at = content.indexOf('@', cursor);
+            if (at < 0) return false;
+            cursor = at + 1;
 
-        if (typeof response.content === 'string') parts.push(response.content);
-        if (typeof response.output === 'string') parts.push(response.output);
-        if (typeof response.text === 'string') parts.push(response.text);
-
-        if (typeof response.output === 'object' && response.output !== null) parts.push(JSON.stringify(response.output));
-        if (response.arguments) parts.push(JSON.stringify(response.arguments));
-
-        // Recursive walk for unrecognized shapes (#29). Known keys are
-        // traversed too when they hold CONTAINERS — and string leaves under
-        // unknown keys are COLLECTED so injection/PII text cannot hide in a
-        // familiar or arbitrary nested key.
-        if (depth < MAX_DEPTH) {
-            for (const [key, value] of Object.entries(response)) {
-                if (typeof value === 'string') {
-                    if (!(key in KNOWN)) parts.push(value);
-                    continue; // known-key strings were collected above
-                }
-                if (value === null || typeof value !== 'object') continue;
-                if (key === 'arguments' && !Array.isArray(value)) continue; // already stringified above
-                if (key === 'output' && !Array.isArray(value)) continue; // already stringified above
-                parts.push(this.extractContent(value as ParsedResponse, depth + 1));
+            let localStart = at - 1;
+            while (localStart >= 0 && localChars.includes(content[localStart])) {
+                localStart--;
             }
-        }
+            if (localStart === at - 1) continue;
 
-        return parts.join(' ');
+            let domainChars = 0;
+            let tldChars = 0;
+            let foundTld = false;
+            let afterDot = false;
+            let malformedDomain = false;
+            let pos = at + 1;
+            while (pos < content.length) {
+                const char = content[pos];
+                const code = content.charCodeAt(pos);
+                const isAlpha = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+                const isDigit = code >= 48 && code <= 57;
+                if (!(isAlpha || isDigit || char === '.' || char === '-')) break;
+                if (char === '.') {
+                    if (domainChars === 0 || content[pos - 1] === '.') {
+                        malformedDomain = true;
+                    }
+                    afterDot = domainChars > 0;
+                    tldChars = 0;
+                } else if (afterDot) {
+                    if (isAlpha) {
+                        tldChars++;
+                        if (tldChars >= 2) foundTld = true;
+                    } else {
+                        afterDot = false;
+                    }
+                }
+                domainChars++;
+                pos++;
+            }
+            if (!malformedDomain && foundTld) return true;
+            cursor = Math.max(cursor, pos);
+        }
     }
 
-    private extractLeafStrings(response: ParsedResponse, depth: number = 0): string[] {
+    private collectBoundedContent(response: unknown): {
+        content: string;
+        leaves: string[];
+        limitError?: string;
+    } {
+        const MAX_DEPTH = 12;
+        const MAX_NODES = 10_000;
+        const MAX_CHARS = 100_000;
+        const MAX_FIELD_LABEL_CHARS = 10_000;
+        const MAX_CREDENTIAL_SCAN_CHARS = 2 * MAX_CHARS + MAX_FIELD_LABEL_CHARS;
+        const parts: string[] = [];
+        const leaves: string[] = [];
+        const active = new WeakSet<object>();
+        let nodeCount = 0;
+        let contentChars = 0;
+        let leafChars = 0;
+        let labelChars = 0;
+        let limitError: string | undefined;
+
+        const addContent = (text: string): boolean => {
+            const textLength = countCodePoints(text);
+            const separatorCost = parts.length > 0 ? 1 : 0;
+            if (contentChars + separatorCost + textLength > MAX_CHARS) {
+                limitError = 'scanned content exceeds the character limit';
+                return false;
+            }
+            parts.push(text);
+            contentChars += separatorCost + textLength;
+            return true;
+        };
+
+        const visit = (
+            value: unknown,
+            depth: number,
+            fieldName?: string,
+            stringifyContent: boolean = false
+        ): void => {
+            if (limitError) return;
+            nodeCount++;
+            if (nodeCount > MAX_NODES) {
+                limitError = 'response node count exceeds the inspection limit';
+                return;
+            }
+            if (depth > MAX_DEPTH) {
+                limitError = 'response nesting exceeds the inspection depth';
+                return;
+            }
+
+            if (typeof value === 'string') {
+                const valueLength = countCodePoints(value);
+                const labelCost = fieldName === undefined
+                    ? 0
+                    : countCodePoints(fieldName) + 1;
+                const scanCost = valueLength + labelCost;
+                const leafCost = valueLength + (fieldName === undefined ? 0 : scanCost);
+                if (leafChars + leafCost > MAX_CREDENTIAL_SCAN_CHARS) {
+                    limitError = 'credential scan exceeds the character limit';
+                    return;
+                }
+                if (!addContent(value)) return;
+
+                leaves.push(value);
+                if (fieldName !== undefined) leaves.push(fieldName + '=' + value);
+                leafChars += leafCost;
+                return;
+            }
+
+            if (typeof value === 'number' || typeof value === 'boolean') {
+                if (stringifyContent) {
+                    addContent(
+                        typeof value === 'number' && !Number.isFinite(value)
+                            ? 'null'
+                            : String(value),
+                    );
+                }
+                return;
+            }
+            if (value === null) {
+                if (stringifyContent) addContent('null');
+                return;
+            }
+            if (typeof value === 'bigint') {
+                limitError = 'response contains a non-JSON value';
+                return;
+            }
+            if (value === null || typeof value !== 'object') return;
+            if (active.has(value)) {
+                limitError = 'response contains a cycle';
+                return;
+            }
+            active.add(value);
+
+            if (Array.isArray(value)) {
+                for (const child of value) {
+                    visit(child, depth + 1, undefined, stringifyContent);
+                    if (limitError) break;
+                }
+            } else {
+                const record = value as Record<string, unknown>;
+                for (const key in record) {
+                    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+                    const child = record[key];
+                    const labelCost = countCodePoints(key) + 1;
+                    if (labelChars + labelCost > MAX_FIELD_LABEL_CHARS) {
+                        limitError = 'field labels exceed the inspection limit';
+                        break;
+                    }
+                    labelChars += labelCost;
+                    const includeContent = stringifyContent
+                        || (depth === 0 && (key === 'output' || key === 'arguments'));
+                    if (stringifyContent) {
+                        nodeCount++;
+                        if (nodeCount > MAX_NODES) {
+                            limitError = 'response node count exceeds the inspection limit';
+                            break;
+                        }
+                        if (!addContent(key)) break;
+                    }
+                    visit(
+                        child,
+                        depth + 1,
+                        typeof child === 'string' ? key : undefined,
+                        includeContent,
+                    );
+                    if (limitError) break;
+                }
+            }
+            active.delete(value);
+        };
+
+        visit(response, 0);
+        return { content: parts.join(' '), leaves, limitError };
+    }
+
+    private extractLeafStrings(response: ParsedResponse): string[] {
         // Every string leaf for per-field harmful evaluation (mirrors
         // Python _collect_leaf_strings). Dict entries contribute both the
         // bare value and the `key=value` form: the bare value alone drops
@@ -1535,20 +1568,7 @@ export class SafetyGuard extends BaseGuard {
         // (Greptile P1, PR #34). The strict placeholder exemption still
         // judges the `key=value` form. Bounded like extractContent so
         // deeply nested payloads terminate.
-        const MAX_DEPTH = 12;
-        if (depth > MAX_DEPTH) return [];
-        if (typeof response === 'string') return [response];
-        if (response === null || typeof response !== 'object') return [];
-        const leaves: string[] = [];
-        for (const [key, value] of Object.entries(response)) {
-            if (typeof value === 'string') {
-                leaves.push(value);
-                leaves.push(`${key}=${value}`);
-            } else if (value !== null && typeof value === 'object') {
-                leaves.push(...this.extractLeafStrings(value as ParsedResponse, depth + 1));
-            }
-        }
-        return leaves;
+        return this.collectBoundedContent(response).leaves;
     }
 }
 

@@ -12,6 +12,64 @@ import hashlib
 import json
 import math
 
+_MAX_JSON_RESPONSE_CHARS = 100_000
+_MAX_JSON_NESTING_DEPTH = 100
+_SAFE_PARSE_LIMIT_MESSAGES = frozenset(
+    {
+        "JSON response exceeds the character limit",
+        "JSON response exceeds the nesting depth limit",
+        "JSON response could not be parsed within safe limits",
+    }
+)
+
+
+class _ResponseParseLimitError(ValueError):
+    """Raised when parsing a JSON response would exceed bounded resources."""
+
+    def __init__(self, public_message: str) -> None:
+        # Only fixed, locally-authored messages are exposed to callers.  Keep
+        # the public text separate so an unexpected exception cannot leak
+        # parser internals through the verification result.
+        self.public_message = (
+            public_message
+            if public_message in _SAFE_PARSE_LIMIT_MESSAGES
+            else "JSON response could not be parsed within safe limits"
+        )
+        super().__init__(self.public_message)
+
+
+def _json_nesting_exceeds_limit(text: str) -> bool:
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > _MAX_JSON_NESTING_DEPTH:
+                return True
+        elif char in "]}" and depth:
+            depth -= 1
+
+    return False
+
+
+def _parse_bounded_json_int(token: str) -> int:
+    if len(token.lstrip("-")) > 4_300:
+        raise ValueError("JSON integer exceeds the conversion limit")
+    return int(token)
+
 
 def _format_number_js(value: float) -> str:
     """Format a float with JavaScript ``Number::toString`` semantics.
@@ -354,8 +412,30 @@ class ResponseVerifier:
         guards_to_use = guards if guards is not None else self.default_guards
         context = context or {}
 
-        # Parse response if needed
-        parsed_response = self._parse_response(response)
+        # Parse response if needed. Resource-limit failures are verdicts,
+        # while ordinary unsupported input types retain the existing exception.
+        try:
+            parsed_response = self._parse_response(response)
+        except _ResponseParseLimitError as error:
+            message = error.public_message
+            return VerificationResult(
+                verified=False,
+                response=response,
+                guards_passed=0,
+                guards_failed=1,
+                guard_results=[
+                    GuardResult(
+                        guard_name="ResponseVerifier",
+                        passed=False,
+                        message=message,
+                        details={"resource_limit": message},
+                        severity="error",
+                    )
+                ],
+                blocked=self.strict_mode,
+                block_reason=message if self.strict_mode else None,
+                request_id=context.get("request_id"),
+            )
 
         def _safe_binding(resp: Any, names: List[str]) -> Optional[Dict[str, Any]]:
             """Binding digest, or ``None`` when the response cannot be bound.
@@ -582,11 +662,27 @@ class ResponseVerifier:
         if isinstance(response, dict):
             return response
         elif isinstance(response, str):
+            if len(response) > _MAX_JSON_RESPONSE_CHARS:
+                raise _ResponseParseLimitError(
+                    "JSON response exceeds the character limit"
+                )
+
             # Try to parse as JSON
             try:
-                parsed = json.loads(response)
+                parsed = json.loads(response, parse_int=_parse_bounded_json_int)
             except json.JSONDecodeError:
                 return {"type": "text", "content": response}
+            except (RecursionError, ValueError, MemoryError) as error:
+                raise _ResponseParseLimitError(
+                    "JSON response could not be parsed within safe limits"
+                ) from error
+            # Apply the nesting limit only after JSON parsing succeeds.  A
+            # plain-text response may legitimately contain many brackets and
+            # must still reach the text fallback above.
+            if _json_nesting_exceeds_limit(response):
+                raise _ResponseParseLimitError(
+                    "JSON response exceeds the nesting depth limit"
+                )
             # JSON scalars/arrays are rejected like direct non-dict inputs
             # (Sentry HIGH, PR #34): an array payload bypasses per-item
             # inspection, so its content would verify without ever being

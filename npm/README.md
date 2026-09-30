@@ -51,6 +51,10 @@ const guard = new ToolGuard({
 
 ### SafetyGuard
 
+Safety inspection fails closed above 12 nesting levels, 10,000 nodes, or
+100,000 content characters. JSON input strings longer than 100,000 characters
+or nested beyond 100 levels also return a failed verification result.
+
 Detects PII and prompt injection.
 
 ```typescript
@@ -61,6 +65,9 @@ const guard = new SafetyGuard({
 ```
 
 ### SchemaGuard
+
+SchemaGuard reports the first validation error; the total error count is
+unknown because validation stops after that error.
 
 Validates JSON structure.
 

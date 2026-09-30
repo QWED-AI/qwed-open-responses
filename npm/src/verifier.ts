@@ -6,6 +6,115 @@ import { createHash } from 'crypto';
 import { BaseGuard } from './guards';
 import { VerificationResult, GuardResult, ParsedResponse, ResultBinding } from './types';
 
+const MAX_JSON_RESPONSE_CHARS = 100_000;
+const MAX_JSON_NESTING_DEPTH = 100;
+const MAX_JSON_INTEGER_DIGITS = 4_300;
+const SAFE_PARSE_LIMIT_MESSAGES = new Set([
+    'JSON response exceeds the character limit',
+    'JSON response exceeds the nesting depth limit',
+    'JSON response could not be parsed within safe limits',
+]);
+
+class ResponseParseLimitError extends Error {
+    readonly publicMessage: string;
+
+    constructor(publicMessage: string) {
+        const safeMessage = SAFE_PARSE_LIMIT_MESSAGES.has(publicMessage)
+            ? publicMessage
+            : 'JSON response could not be parsed within safe limits';
+        super(safeMessage);
+        this.publicMessage = safeMessage;
+        this.name = 'ResponseParseLimitError';
+    }
+}
+
+function countCodePoints(text: string): number {
+    let count = 0;
+    for (const _character of text) count++;
+    return count;
+}
+
+function jsonNestingExceedsLimit(text: string): boolean {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (const char of text) {
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (char === '\\') {
+                escaped = true;
+            } else if (char === '"') {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (char === '"') {
+            inString = true;
+        } else if (char === '[' || char === '{') {
+            depth++;
+            if (depth > MAX_JSON_NESTING_DEPTH) return true;
+        } else if ((char === ']' || char === '}') && depth > 0) {
+            depth--;
+        }
+    }
+
+    return false;
+}
+
+function jsonIntegerExceedsLimit(text: string): boolean {
+    let inString = false;
+    let escaped = false;
+
+    for (let index = 0; index < text.length; index++) {
+        const char = text[index];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') inString = false;
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            continue;
+        }
+        if (char !== '-' && (char < '0' || char > '9')) continue;
+
+        let cursor = index;
+        if (text[cursor] === '-') cursor++;
+        const integerStart = cursor;
+        while (cursor < text.length && text[cursor] >= '0' && text[cursor] <= '9') {
+            cursor++;
+        }
+        const integerDigits = cursor - integerStart;
+
+        // Decimal and exponent forms are parsed as floating-point values;
+        // Python's parse_int limit applies only to integer tokens.
+        let isInteger = true;
+        if (text[cursor] === '.') {
+            isInteger = false;
+            cursor++;
+            while (cursor < text.length && text[cursor] >= '0' && text[cursor] <= '9') {
+                cursor++;
+            }
+        }
+        if (text[cursor] === 'e' || text[cursor] === 'E') {
+            isInteger = false;
+            cursor++;
+            if (text[cursor] === '+' || text[cursor] === '-') cursor++;
+            while (cursor < text.length && text[cursor] >= '0' && text[cursor] <= '9') {
+                cursor++;
+            }
+        }
+        if (isInteger && integerDigits > MAX_JSON_INTEGER_DIGITS) return true;
+        index = Math.max(index, cursor - 1);
+    }
+
+    return false;
+}
+
 // Re-export types
 export { VerificationResult, GuardResult };
 
@@ -122,7 +231,31 @@ export class ResponseVerifier {
         context?: Record<string, any>
     ): VerificationResult {
         const guardsToUse = guards ?? this.defaultGuards;
-        const parsedResponse = this.parseResponse(response);
+        let parsedResponse: ParsedResponse;
+        try {
+            parsedResponse = this.parseResponse(response);
+        } catch (error) {
+            if (!(error instanceof ResponseParseLimitError)) throw error;
+            const message = error.publicMessage;
+            return {
+                verified: false,
+                response,
+                guardsPassed: 0,
+                guardsFailed: 1,
+                guardResults: [{
+                    guardName: 'ResponseVerifier',
+                    passed: false,
+                    message,
+                    details: { resourceLimit: message },
+                    severity: 'error',
+                }],
+                warnings: [],
+                requestId: context?.request_id ?? context?.requestId,
+                blocked: this.strictMode,
+                blockReason: this.strictMode ? message : undefined,
+                timestamp: new Date().toISOString(),
+            };
+        }
 
         // Fail-closed: zero guards must never produce verified=true (#27).
         if (guardsToUse.length === 0) {
@@ -268,11 +401,35 @@ export class ResponseVerifier {
         }
 
         if (typeof response === 'string') {
+            if (countCodePoints(response) > MAX_JSON_RESPONSE_CHARS) {
+                throw new ResponseParseLimitError(
+                    'JSON response exceeds the character limit'
+                );
+            }
+
             let parsed: any;
             try {
                 parsed = JSON.parse(response);
-            } catch {
+            } catch (error) {
+                if (error instanceof RangeError) {
+                    throw new ResponseParseLimitError(
+                        'JSON response could not be parsed within safe limits'
+                    );
+                }
                 return { type: 'text', content: response };
+            }
+            // Apply the nesting limit only after JSON parsing succeeds.  A
+            // plain-text response may legitimately contain many brackets and
+            // must still reach the text fallback above.
+            if (jsonNestingExceedsLimit(response)) {
+                throw new ResponseParseLimitError(
+                    'JSON response exceeds the nesting depth limit'
+                );
+            }
+            if (jsonIntegerExceedsLimit(response)) {
+                throw new ResponseParseLimitError(
+                    'JSON response could not be parsed within safe limits'
+                );
             }
             // JSON arrays are rejected like direct array inputs (Sentry HIGH,
             // PR #34): an array payload bypasses per-item inspection, so its

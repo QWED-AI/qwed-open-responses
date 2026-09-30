@@ -129,33 +129,21 @@ class _RootObjectFields(NamedTuple):
     pattern_names: Set[str]
     declares_object: bool
     references_resolved: bool
-    property_activations: Dict[str, Set[Tuple[str, ...]]]
-    pattern_activations: Dict[str, Set[Tuple[str, ...]]]
-    activation_schemas: Dict[str, object]
 
 
 def _collect_root_object_fields(root_schema: Dict[str, object]) -> _RootObjectFields:
     property_names: Set[str] = set()
     pattern_names: Set[str] = set()
-    property_activations: Dict[str, Set[Tuple[str, ...]]] = {}
-    pattern_activations: Dict[str, Set[Tuple[str, ...]]] = {}
-    activation_schemas: Dict[str, object] = {}
-    visited_schema_ids: Set[Tuple[int, Tuple[str, ...]]] = set()
+    visited_schema_ids: Set[Tuple[int, bool]] = set()
     declares_object = False
     references_resolved = True
 
-    def add_activation(
-        activation: Tuple[str, ...], marker: str, predicate: object
-    ) -> Tuple[str, ...]:
-        activation_schemas.setdefault(marker, predicate)
-        return tuple(sorted(set(activation) | {marker}))
-
-    def visit(schema: object, activation: Tuple[str, ...] = ()) -> None:
+    def visit(schema: object, conditional: bool = False) -> None:
         nonlocal declares_object, references_resolved
         if not isinstance(schema, dict):
             return
 
-        visit_key = (id(schema), activation)
+        visit_key = (id(schema), conditional)
         if visit_key in visited_schema_ids:
             return
         visited_schema_ids.add(visit_key)
@@ -164,10 +152,10 @@ def _collect_root_object_fields(root_schema: Dict[str, object]) -> _RootObjectFi
         if isinstance(reference, str):
             referenced_schema = _resolve_local_schema_reference(root_schema, reference)
             if referenced_schema is None:
-                if not activation:
+                if not conditional:
                     references_resolved = False
             else:
-                visit(referenced_schema, activation)
+                visit(referenced_schema, conditional)
             # Draft 7 ignores every sibling of $ref.
             return
 
@@ -185,55 +173,32 @@ def _collect_root_object_fields(root_schema: Dict[str, object]) -> _RootObjectFi
         if isinstance(properties, dict):
             names = {name for name in properties if isinstance(name, str)}
             property_names.update(names)
-            for name in names:
-                property_activations.setdefault(name, set()).add(activation)
         if isinstance(pattern_properties, dict):
             names = {name for name in pattern_properties if isinstance(name, str)}
             pattern_names.update(names)
-            for name in names:
-                pattern_activations.setdefault(name, set()).add(activation)
 
         all_of = schema.get("allOf")
         if isinstance(all_of, list):
             for branch in all_of:
-                visit(branch, activation)
+                visit(branch, conditional)
 
         for keyword in ("anyOf", "oneOf"):
             branches = schema.get(keyword)
             if isinstance(branches, list):
-                for index, branch in enumerate(branches):
-                    branch_activation = add_activation(
-                        activation,
-                        f"{keyword}:{id(schema)}:{index}",
-                        branch,
-                    )
-                    visit(branch, branch_activation)
+                for branch in branches:
+                    visit(branch, True)
 
         dependencies = schema.get("dependencies")
         if isinstance(dependencies, dict):
-            for dependency_name, dependency in dependencies.items():
+            for dependency in dependencies.values():
                 if isinstance(dependency, dict):
-                    dependency_activation = add_activation(
-                        activation,
-                        f"dependency:{id(schema)}:{dependency_name}",
-                        {"required": [dependency_name]},
-                    )
-                    visit(dependency, dependency_activation)
+                    visit(dependency, True)
 
         if "if" in schema:
-            condition = schema.get("if")
             if "then" in schema:
-                then_activation = add_activation(
-                    activation, f"if:{id(schema)}:then", condition
-                )
-                visit(schema.get("then"), then_activation)
+                visit(schema.get("then"), True)
             if "else" in schema:
-                else_activation = add_activation(
-                    activation,
-                    f"if:{id(schema)}:else",
-                    {"not": condition},
-                )
-                visit(schema.get("else"), else_activation)
+                visit(schema.get("else"), True)
 
     root_reference = root_schema.get("$ref")
     if isinstance(root_reference, str):
@@ -250,88 +215,7 @@ def _collect_root_object_fields(root_schema: Dict[str, object]) -> _RootObjectFi
         pattern_names,
         declares_object,
         references_resolved,
-        property_activations,
-        pattern_activations,
-        activation_schemas,
     )
-
-
-def _activation_schema(
-    activation: Tuple[str, ...], activation_schemas: Dict[str, object]
-) -> object:
-    schemas = [activation_schemas[marker] for marker in activation]
-    return schemas[0] if len(schemas) == 1 else {"allOf": schemas}
-
-
-def _conditional_field_constraints(
-    fields: _RootObjectFields,
-) -> List[Dict[str, object]]:
-    constraints: List[Dict[str, object]] = []
-    base_property_names = sorted(
-        name
-        for name, activations in fields.property_activations.items()
-        if () in activations
-    )
-    base_pattern_names = sorted(
-        name
-        for name, activations in fields.pattern_activations.items()
-        if () in activations
-    )
-
-    for property_name, activations in fields.property_activations.items():
-        if () in activations:
-            continue
-        constraints.append(
-            {
-                "if": {"type": "object", "required": [property_name]},
-                "then": {
-                    "anyOf": [
-                        _activation_schema(activation, fields.activation_schemas)
-                        for activation in sorted(activations)
-                    ]
-                },
-            }
-        )
-
-    for pattern_name, activations in fields.pattern_activations.items():
-        if () in activations:
-            continue
-        allowed_name_schemas: List[object] = [{"not": {"pattern": pattern_name}}]
-        if base_property_names:
-            allowed_name_schemas.insert(0, {"enum": base_property_names})
-        allowed_name_schemas.extend(
-            {"pattern": base_pattern_name} for base_pattern_name in base_pattern_names
-        )
-        property_name_schema: object = (
-            allowed_name_schemas[0]
-            if len(allowed_name_schemas) == 1
-            else {"anyOf": allowed_name_schemas}
-        )
-        constraints.append(
-            {
-                "if": {
-                    "allOf": [
-                        {"type": "object"},
-                        {
-                            "not": {
-                                "anyOf": [
-                                    _activation_schema(
-                                        activation, fields.activation_schemas
-                                    )
-                                    for activation in sorted(activations)
-                                ]
-                            }
-                        },
-                    ]
-                },
-                "then": {
-                    "type": "object",
-                    "propertyNames": property_name_schema,
-                },
-            }
-        )
-
-    return constraints
 
 
 _DRAFT7_VALIDATION_KEYWORDS = {
@@ -376,15 +260,37 @@ def _wrap_root_reference(
     root_schema: Dict[str, object],
     reference: str,
     closure_schema: Dict[str, object],
-    conditional_constraints: List[Dict[str, object]],
 ) -> Dict[str, object]:
     wrapper = {
         key: value
         for key, value in root_schema.items()
         if key not in _DRAFT7_VALIDATION_KEYWORDS
     }
-    wrapper["allOf"] = [{"$ref": reference}, closure_schema, *conditional_constraints]
+    wrapper["allOf"] = [{"$ref": reference}, closure_schema]
     return wrapper
+
+
+def _referenced_additional_properties(
+    root_schema: Dict[str, object], reference: str
+) -> object:
+    referenced_schema = _resolve_local_schema_reference(root_schema, reference)
+    visited_schema_ids: Set[int] = set()
+    while isinstance(referenced_schema, dict):
+        schema_id = id(referenced_schema)
+        if schema_id in visited_schema_ids:
+            return False
+        visited_schema_ids.add(schema_id)
+
+        nested_reference = referenced_schema.get("$ref")
+        if isinstance(nested_reference, str):
+            referenced_schema = _resolve_local_schema_reference(
+                root_schema, nested_reference
+            )
+            continue
+        if "additionalProperties" in referenced_schema:
+            return referenced_schema["additionalProperties"]
+        return False
+    return False
 
 
 class SchemaGuard(BaseGuard):
@@ -438,7 +344,6 @@ class SchemaGuard(BaseGuard):
             and root_fields.references_resolved
             and "additionalProperties" not in validator_schema
         ):
-            conditional_constraints = _conditional_field_constraints(root_fields)
             root_reference = validator_schema.get("$ref")
             if isinstance(root_reference, str):
                 closure_properties: Dict[str, object] = {
@@ -449,7 +354,9 @@ class SchemaGuard(BaseGuard):
                 }
                 closure_object_schema: Dict[str, object] = {
                     "type": "object",
-                    "additionalProperties": False,
+                    "additionalProperties": _referenced_additional_properties(
+                        validator_schema, root_reference
+                    ),
                 }
                 if closure_properties:
                     closure_object_schema["properties"] = closure_properties
@@ -465,7 +372,6 @@ class SchemaGuard(BaseGuard):
                     validator_schema,
                     root_reference,
                     closure_schema,
-                    conditional_constraints,
                 )
             else:
                 root_properties = validator_schema.get("properties")
@@ -489,13 +395,6 @@ class SchemaGuard(BaseGuard):
                         validator_schema["patternProperties"] = merged_patterns
 
                 validator_schema["additionalProperties"] = False
-                if conditional_constraints:
-                    root_all_of = validator_schema.get("allOf")
-                    if "allOf" not in validator_schema or isinstance(root_all_of, list):
-                        validator_schema["allOf"] = [
-                            *(root_all_of if isinstance(root_all_of, list) else []),
-                            *conditional_constraints,
-                        ]
 
         self.schema = validator_schema
         self.strict = strict
@@ -534,17 +433,15 @@ class SchemaGuard(BaseGuard):
         else:
             data = response
 
-        # Collect all errors
-        errors: List[str] = []
-        for error in self.validator.iter_errors(data):
-            errors.append(f"{error.json_path}: {error.message}")
-
-        if errors:
+        error = next(self.validator.iter_errors(data), None)
+        if error is not None:
+            errors = [f"{error.json_path}: {error.message}"]
             return self.fail_result(
-                message=f"Schema validation failed: {len(errors)} error(s)",
+                message="Schema validation failed (first error shown)",
                 details={
-                    "errors": errors[:10],  # Limit to first 10
-                    "total_errors": len(errors),
+                    "errors": errors,
+                    "total_errors": None,
+                    "errors_truncated": True,
                 },
             )
 
