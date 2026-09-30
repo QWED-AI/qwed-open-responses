@@ -275,20 +275,29 @@ export class ToolGuard extends BaseGuard {
         return typeof name === 'string' && name.trim().length > 0;
     }
 
-    // #31 parity: JavaScript lacks str.casefold(); include the full-folding
-    // pairs used by common tool names, including long-s (ſ -> s).
-    private static FULL_FOLD_RE = /[ßﬀﬁﬂﬃﬄﬅﬆς\u017f]/g;
-    private static FULL_FOLD_MAP: Record<string, string> = {
-        'ß': 'ss', 'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl',
-        'ﬃ': 'ffi', 'ﬄ': 'ffl', 'ﬅ': 'st', 'ﬆ': 'st',
-        // Greek final sigma folds to standard sigma (Python casefold does).
-        'ς': 'σ', '\u017f': 's',
-    };
-
     private static casefold(name: string): string {
-        return name
-            .toLowerCase()
-            .replace(ToolGuard.FULL_FOLD_RE, (ch) => ToolGuard.FULL_FOLD_MAP[ch] ?? ch);
+        return Array.from(name, (character) => {
+            const codePoint = character.codePointAt(0);
+            if (codePoint === undefined) return character;
+
+            // Python casefold preserves dotless i and folds Cherokee to uppercase.
+            if (codePoint === 0x0131 || (codePoint >= 0x13a0 && codePoint <= 0x13f5)) {
+                return character;
+            }
+            if (codePoint === 0x1e9e) return 'ss';
+            if (codePoint >= 0x13f8 && codePoint <= 0x13fd) {
+                return String.fromCodePoint(codePoint - 0x8);
+            }
+            if (codePoint >= 0xab70 && codePoint <= 0xabbf) {
+                return String.fromCodePoint(codePoint - 0x97d0);
+            }
+
+            // Per-code-point upper/lower casing supplies full-fold expansions
+            // without locale-sensitive or context-sensitive sigma behavior.
+            return Array.from(character.toUpperCase(), (upperCharacter) =>
+                upperCharacter.toLowerCase(),
+            ).join('');
+        }).join('');
     }
 
     private static normalizeToolName(name: string): string {

@@ -104,16 +104,37 @@ describe('ToolGuard issue #40 normalized separators and aliases', () => {
         expect(result.details.encoding).toBe('base64');
     });
 
-    test('casefolds long-s for blocked tool names', () => {
+    test.each([
+        ['bash', 'ba\u017fh', false],
+        ['\u13a0', '\uab70', false],
+        ['ss', '\u1e9e', false],
+        ['i', '\u0131', true],
+    ])('matches Python casefold for %s and %s', (blockedTool, toolName, passed) => {
         const result = new ToolGuard({
-            blockedTools: ['bash'],
+            blockedTools: [blockedTool],
             useDefaultBlocklist: false,
         }).check({
             type: 'tool_call',
-            tool_name: 'ba\u017fh',
+            tool_name: toolName,
             arguments: {},
         });
 
-        expect(result.passed).toBe(false);
+        expect(result.passed).toBe(passed);
+    });
+
+    test.each([
+        ['bash', 'ba\u017fh', true],
+        ['i', '\u0131', false],
+    ])('applies Python casefold to allowed tools %s and %s', (allowedTool, toolName, passed) => {
+        const result = new ToolGuard({
+            allowedTools: [allowedTool],
+            useDefaultBlocklist: false,
+        }).check({
+            type: 'tool_call',
+            tool_name: toolName,
+            arguments: {},
+        });
+
+        expect(result.passed).toBe(passed);
     });
 });

@@ -124,14 +124,40 @@ def test_base64_decoded_arguments_receive_pattern_normalization(payload):
     assert result.details.get("encoding") == "base64"
 
 
-def test_blocked_tool_casefolds_long_s():
-    guard = ToolGuard(blocked_tools=["bash"], use_default_blocklist=False)
+@pytest.mark.parametrize(
+    "blocked_tool,incoming_tool,blocked",
+    [
+        ("bash", "ba\u017fh", True),
+        ("\u13a0", "\uab70", True),
+        ("ss", "\u1e9e", True),
+        ("i", "\u0131", False),
+    ],
+)
+def test_blocked_tool_names_follow_python_casefold(blocked_tool, incoming_tool, blocked):
+    guard = ToolGuard(blocked_tools=[blocked_tool], use_default_blocklist=False)
 
     result = guard.check(
-        {"type": "tool_call", "tool_name": "ba\u017fh", "arguments": {}}
+        {"type": "tool_call", "tool_name": incoming_tool, "arguments": {}}
     )
 
-    assert result.passed is False
+    assert result.passed is not blocked
+
+
+@pytest.mark.parametrize(
+    "allowed_tool,incoming_tool,passed",
+    [
+        ("bash", "ba\u017fh", True),
+        ("i", "\u0131", False),
+    ],
+)
+def test_allowed_tool_names_follow_python_casefold(allowed_tool, incoming_tool, passed):
+    guard = ToolGuard(allowed_tools=[allowed_tool], use_default_blocklist=False)
+
+    result = guard.check(
+        {"type": "tool_call", "tool_name": incoming_tool, "arguments": {}}
+    )
+
+    assert result.passed is passed
 
 
 def test_custom_validators_keep_separator_distinct_names():
