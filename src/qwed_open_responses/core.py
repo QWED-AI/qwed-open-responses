@@ -26,7 +26,7 @@ _SAFE_PARSE_LIMIT_MESSAGES = frozenset(
 class _ResponseParseLimitError(ValueError):
     """Raised when parsing a JSON response would exceed bounded resources."""
 
-    def __init__(self, public_message: str):
+    def __init__(self, public_message: str) -> None:
         # Only fixed, locally-authored messages are exposed to callers.  Keep
         # the public text separate so an unexpected exception cannot leak
         # parser internals through the verification result.
