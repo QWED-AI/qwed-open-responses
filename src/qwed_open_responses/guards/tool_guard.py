@@ -947,7 +947,7 @@ class ToolGuard(BaseGuard):
         like ``function: "parse_csv"`` on a structured response still pass.
         """
         # Tool-shaped objects under recognizable hint keys.
-        for key in ("tool_use", "function_call", "function"):
+        for key in ("tool_use", "tool_call", "function_call", "function"):
             value = response.get(key)
             if isinstance(value, dict) and ("name" in value or "arguments" in value):
                 return True
