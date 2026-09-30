@@ -42,6 +42,37 @@ describe('ToolGuard issue #39 raw argument scanning', () => {
         expect(result.passed).toBe(false);
     });
 
+    test.each([
+        [{ port: 666 }, /^666$/, 'numeric value'],
+        [{ port: 1.0 }, /^1$/, 'integral floating-point value'],
+        [{ amount: 666.5 }, /^666\.5$/, 'floating-point value'],
+        [{ 666: 'numeric key' }, /^666$/, 'numeric key'],
+    ])('applies custom patterns to %s', (argumentsValue, pattern) => {
+        const guard = new ToolGuard({ dangerousPatterns: [pattern] });
+        const result = guard.check({
+            type: 'tool_call',
+            tool_name: 'search',
+            arguments: argumentsValue,
+        });
+
+        expect(result.passed).toBe(false);
+    });
+
+    test('uses JSON text for booleans without matching a Python repr', () => {
+        const guard = new ToolGuard({ dangerousPatterns: [/^true$/] });
+
+        expect(guard.check({
+            type: 'tool_call',
+            tool_name: 'search',
+            arguments: { enabled: true },
+        }).passed).toBe(false);
+        expect(guard.check({
+            type: 'tool_call',
+            tool_name: 'search',
+            arguments: { enabled: 'True' },
+        }).passed).toBe(true);
+    });
+
     test('allows benign string values containing whitespace', () => {
         const result = new ToolGuard().check({
             type: 'tool_call',

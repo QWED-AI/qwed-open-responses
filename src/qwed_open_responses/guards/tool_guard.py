@@ -7,6 +7,7 @@ Blocks dangerous tools and validates tool arguments.
 from typing import Any, Dict, Optional, List, Set, Callable, Iterator, Tuple
 from .base import BaseGuard, GuardResult
 import json
+import math
 import re
 import string
 
@@ -507,8 +508,59 @@ class ToolGuard(BaseGuard):
         return ()
 
     @staticmethod
+    def _number_to_text(value: Any) -> str:
+        """Return stable JSON-number text shared with the TypeScript guard."""
+        if isinstance(value, int):
+            return str(value)
+        if not math.isfinite(value):
+            return "null"
+        if value == 0:
+            return "0"
+
+        text = str(value)
+        if value.is_integer() and abs(value) < 1e21:
+            return str(int(value))
+        if "e" not in text.lower():
+            return text
+
+        mantissa, exponent = re.split("[eE]", text)
+        exponent_value = int(exponent)
+        if -6 <= exponent_value < 21:
+            sign = ""
+            if mantissa.startswith("-"):
+                sign, mantissa = "-", mantissa[1:]
+            whole, _, fraction = mantissa.partition(".")
+            digits = whole + fraction
+            decimal_index = len(whole) + exponent_value
+            if decimal_index <= 0:
+                normalized = "0." + ("0" * -decimal_index) + digits
+            elif decimal_index >= len(digits):
+                normalized = digits + ("0" * (decimal_index - len(digits)))
+            else:
+                normalized = digits[:decimal_index] + "." + digits[decimal_index:]
+            if "." in normalized:
+                normalized = normalized.rstrip("0").rstrip(".")
+            return sign + normalized
+        return f"{mantissa}e{exponent_value:+d}"
+
+    @staticmethod
+    def _scalar_to_text(value: Any) -> Optional[str]:
+        """Return JSON-style text for scalar values and dictionary keys."""
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return "null"
+        # bool is an int subclass in Python; check it before numeric values so
+        # both runtimes use the same JSON spelling instead of True/False.
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return ToolGuard._number_to_text(value)
+        return None
+
+    @staticmethod
     def _iter_string_leaves(value: Any) -> Iterator[str]:
-        """Yield bounded parsed string keys and values without serialization."""
+        """Yield bounded parsed scalar keys and values as matching text."""
         stack: List[Tuple[Any, int, bool]] = [(value, 0, True)]
         on_path: Set[int] = set()
         scanned_nodes = 0
@@ -521,13 +573,14 @@ class ToolGuard(BaseGuard):
             scanned_nodes += 1
             if scanned_nodes > ToolGuard._MAX_ARGS_SCAN_NODES:
                 raise ValueError("Tool arguments exceed the node inspection limit")
-            if isinstance(node, str):
-                scanned_chars += len(node)
+            scalar_text = ToolGuard._scalar_to_text(node)
+            if scalar_text is not None:
+                scanned_chars += len(scalar_text)
                 if scanned_chars > ToolGuard._MAX_ARGS_SCAN_CHARS:
                     raise ValueError(
                         "Tool arguments exceed the character inspection limit"
                     )
-                yield node
+                yield scalar_text
             elif isinstance(node, dict):
                 if depth >= ToolGuard._MAX_ARGS_JSON_DEPTH:
                     raise ValueError("Tool arguments exceed the depth inspection limit")
@@ -536,9 +589,10 @@ class ToolGuard(BaseGuard):
                     raise ValueError("Tool arguments contain a cycle")
                 on_path.add(marker)
                 stack.append((node, depth, False))
-                entries: List[Tuple[Any, Any]] = []
+                entries: List[Tuple[Optional[str], Any]] = []
                 for key, child in node.items():
-                    key_count = int(isinstance(key, str))
+                    key_text = ToolGuard._scalar_to_text(key)
+                    key_count = int(key_text is not None)
                     if (
                         scanned_nodes + len(stack) + len(entries) * 2 + 1 + key_count
                         > ToolGuard._MAX_ARGS_SCAN_NODES
@@ -546,11 +600,11 @@ class ToolGuard(BaseGuard):
                         raise ValueError(
                             "Tool arguments exceed the node inspection limit"
                         )
-                    entries.append((key, child))
-                for key, child in reversed(entries):
+                    entries.append((key_text, child))
+                for key_text, child in reversed(entries):
                     stack.append((child, depth + 1, True))
-                    if isinstance(key, str):
-                        stack.append((key, depth + 1, True))
+                    if key_text is not None:
+                        stack.append((key_text, depth + 1, True))
             elif isinstance(node, list):
                 if depth >= ToolGuard._MAX_ARGS_JSON_DEPTH:
                     raise ValueError("Tool arguments exceed the depth inspection limit")
@@ -691,6 +745,17 @@ class ToolGuard(BaseGuard):
             if any(key in call for key in ("tool_name", "name", "arguments")):
                 return ToolGuard._ambiguous_hybrid_sentinel()
             call = nested_call
+
+            # A nested direct call must not hide a conflicting function
+            # wrapper. Validate the complete envelope instead of allowing the
+            # wrapper's name to replace the name exposed to consumers.
+            nested_function = call.get("function")
+            if (
+                isinstance(nested_function, dict)
+                and any(key in nested_function for key in ("name", "arguments"))
+                and any(key in call for key in ("tool_name", "name", "arguments"))
+            ):
+                return ToolGuard._ambiguous_hybrid_sentinel()
 
         # OpenAI function wrapper: {function: {name, arguments-as-JSON-string}}.
         resolved = cls._normalize_function_wrapper(call)

@@ -230,6 +230,19 @@ class TestVerifiedToolCalls:
         assert "Unrecognized tool-call item type" in result[0]["reason"]
         assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
 
+    def test_unknown_tool_named_type_fails_closed(self):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        item = {
+            "type": "custom_tool",
+            "name": "execute_shell",
+            "arguments": {"cmd": "id"},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
     def test_unknown_nested_tool_envelopes_fail_closed(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
         items = [
@@ -261,6 +274,33 @@ class TestVerifiedToolCalls:
         ]
         assert mw.get_stats() == {"total": 2, "verified": 0, "blocked": 2}
 
+    def test_unknown_function_wrapper_fails_closed(self):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        item = {
+            "type": "custom_action",
+            "function": {"name": "execute_shell", "arguments": {"cmd": "id"}},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
+    def test_nested_direct_call_cannot_mask_function_wrapper(self):
+        mw = OpenResponsesMiddleware(guards=[ToolGuard(allowed_tools=["search"])])
+        item = {
+            "type": "tool_call",
+            "tool_call": {
+                "name": "execute_shell",
+                "function": {"name": "search", "arguments": {}},
+            },
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
     def test_benign_structured_output_and_metadata_pass_through(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
         items = [
@@ -277,6 +317,54 @@ class TestVerifiedToolCalls:
 
         assert all(actual is expected for actual, expected in zip(result, items))
         assert mw.get_stats() == {"total": 3, "verified": 0, "blocked": 0}
+
+    def test_unknown_business_event_name_and_arguments_pass_through(self):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        items = [
+            {
+                "type": "custom_action",
+                "name": "webhook",
+                "arguments": {"url": "https://example.com"},
+            },
+            {
+                "type": "custom_action",
+                "payload": {
+                    "name": "webhook",
+                    "arguments": {"url": "https://example.com"},
+                },
+            },
+        ]
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
+
+        assert result == items
+        assert all(actual is expected for actual, expected in zip(result, items))
+        assert mw.get_stats() == {"total": 2, "verified": 0, "blocked": 0}
+
+    def test_cyclic_business_payload_passes_through(self):
+        payload = []
+        payload.append(payload)
+        item = {"type": "custom_action", "payload": payload}
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert result[0] is item
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
+
+    def test_large_structured_output_passes_through(self):
+        item = {
+            "type": "structured_output",
+            "payload": [{} for _ in range(10_001)],
+        }
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert result[0] is item
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
 
     def test_unknown_tool_block_result_is_bound_to_original_item(self):
         results = []

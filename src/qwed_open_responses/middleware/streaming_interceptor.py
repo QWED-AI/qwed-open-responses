@@ -143,8 +143,68 @@ class OpenResponsesMiddleware:
 
     @staticmethod
     def _is_tool_shaped_item(item: Dict[str, Any]) -> bool:
-        """Identify actual tool-call content, including nested envelopes."""
-        return bool(ToolGuard.normalize_tool_calls(item))
+        """Identify tool calls using an explicit type or envelope marker."""
+        root_type = ToolGuard._normalized_type(item.get("type", ""))
+        passthrough_on_scan_limit = {
+            "text",
+            "message",
+            "structured_output",
+            "tool_result",
+            "function_call_output",
+        }
+        stack = [item]
+        seen: set[int] = set()
+        scanned_nodes = 0
+        envelope_keys = {
+            "tool_name",
+            "tool_call",
+            "function_call",
+            "function",
+            "tool_use",
+            "tool_calls",
+            "choices",
+        }
+        tool_type_prefixes = ("tool_call", "function_call", "tool_use")
+
+        while stack:
+            node = stack.pop()
+            scanned_nodes += 1
+            if scanned_nodes > ToolGuard._MAX_ARGS_SCAN_NODES:
+                return root_type not in passthrough_on_scan_limit
+
+            if isinstance(node, (dict, list)):
+                node_id = id(node)
+                if node_id in seen:
+                    continue
+                seen.add(node_id)
+
+            if isinstance(node, dict):
+                normalized_type = ToolGuard._normalized_type(node.get("type", ""))
+                is_tool_type = normalized_type.startswith(tool_type_prefixes) or (
+                    "tool" in normalized_type
+                    and normalized_type not in passthrough_on_scan_limit
+                )
+                if is_tool_type:
+                    return bool(ToolGuard.normalize_tool_calls(item))
+                if envelope_keys.intersection(node):
+                    return bool(ToolGuard.normalize_tool_calls(item))
+
+                children = node.values()
+                child_count = len(node)
+            elif isinstance(node, list):
+                children = node
+                child_count = len(node)
+            else:
+                continue
+
+            if (
+                scanned_nodes + len(stack) + child_count
+                > ToolGuard._MAX_ARGS_SCAN_NODES
+            ):
+                return root_type not in passthrough_on_scan_limit
+            stack.extend(children)
+
+        return False
 
     @staticmethod
     def _tool_name(item: Dict[str, Any]) -> str:
