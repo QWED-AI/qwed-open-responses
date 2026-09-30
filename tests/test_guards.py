@@ -205,13 +205,13 @@ class TestArgumentGuard:
     def test_batch_uses_tool_specific_argument_rules(self):
         guard = ArgumentGuard(
             tool_rules={
-                "search": {"query": {"type": "string", "required": True}},
-                "notify": {"email": {"type": "email", "required": True}},
+                "Search": {"query": {"type": "string", "required": True}},
+                "Notify": {"email": {"type": "email", "required": True}},
             }
         )
         response = {
             "tool_calls": [
-                {"tool_name": "search", "arguments": {"query": "weather"}},
+                {"tool_name": "SEARCH", "arguments": {"query": "weather"}},
                 {"tool_name": "notify", "arguments": {"email": "a@example.com"}},
             ]
         }

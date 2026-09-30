@@ -58,7 +58,11 @@ class ArgumentGuard(BaseGuard):
                 rules override ``rules`` for the matching tool in a batch.
         """
         self.rules = rules or {}
-        self.tool_rules = tool_rules
+        self.tool_rules = (
+            {tool_name.casefold(): rules for tool_name, rules in tool_rules.items()}
+            if tool_rules is not None
+            else None
+        )
         self.strict = strict
         self.allow_extra_args = allow_extra_args
 
@@ -125,7 +129,7 @@ class ArgumentGuard(BaseGuard):
                 tool_name = call.get("tool_name")
                 rules = self.rules
                 if self.tool_rules is not None and isinstance(tool_name, str):
-                    rules = self.tool_rules.get(tool_name, self.rules)
+                    rules = self.tool_rules.get(tool_name.casefold(), self.rules)
                 argument_sets.append((call.get("arguments", {}), rules))
         else:
             arguments = response.get("arguments", {})
