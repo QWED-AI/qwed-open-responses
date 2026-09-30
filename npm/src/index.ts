@@ -119,6 +119,17 @@ function failedRequestBodyResult(message: string): VerificationResult {
 /**
  * Middleware to verify incoming request bodies.
  */
+function isUnparsedRequestBody(body: unknown, contentType: string | undefined): boolean {
+    const bodyIsEmptyObject = body !== null
+        && typeof body === 'object'
+        && !Array.isArray(body)
+        && Object.keys(body).length === 0;
+    const contentTypeIsJson = contentType !== undefined
+        && /^application\/(?:json|[^/;\s]+\+json)(?:\s*;|$)/i.test(contentType.trim());
+
+    return body === undefined || (bodyIsEmptyObject && !contentTypeIsJson);
+}
+
 export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestHandler {
     const {
         guards = [],
@@ -129,18 +140,18 @@ export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestH
     const verifier = new ResponseVerifier(guards);
 
     return (req: Request, res: Response, next: NextFunction) => {
-        const bodyMissing = req.body === undefined;
+        const bodyUnparsed = isUnparsedRequestBody(req.body, req.get('content-type'));
         const contentLength = req.get('content-length');
         const bodyDeclared = req.get('transfer-encoding') !== undefined
             || (contentLength !== undefined && Number(contentLength) !== 0);
 
-        if (bodyMissing && !bodyDeclared) {
+        if (bodyUnparsed && !bodyDeclared) {
             return next();
         }
 
         let result: VerificationResult;
         let verificationUnavailable = false;
-        if (bodyMissing) {
+        if (bodyUnparsed) {
             verificationUnavailable = true;
             result = failedRequestBodyResult(
                 'Request body was not parsed; verification cannot proceed.'
