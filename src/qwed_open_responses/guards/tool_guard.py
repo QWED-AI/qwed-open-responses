@@ -946,21 +946,11 @@ class ToolGuard(BaseGuard):
         tool-shaped (an object carrying name/arguments), so ordinary fields
         like ``function: "parse_csv"`` on a structured response still pass.
         """
-        if resp_type in {"tool_result", "function_call_output"}:
-            # Results are data returned by an already executed call, not a new
-            # invocation to verify in the streaming path. Check this before
-            # correlation metadata such as tool_name/arguments.
-            return False
-
         # Tool-shaped objects under recognizable hint keys.
         for key in ("tool_use", "function_call", "function"):
             value = response.get(key)
             if isinstance(value, dict) and ("name" in value or "arguments" in value):
                 return True
-
-        # tool_name + arguments together is a tool call in all but name.
-        if response.get("tool_name") is not None and "arguments" in response:
-            return True
 
         content_blocks = response.get("content")
         if not isinstance(content_blocks, list):
@@ -971,6 +961,17 @@ class ToolGuard(BaseGuard):
             if isinstance(block, dict)
         }
         if nested_types & {"tool_use", "function_call"}:
+            return True
+
+        if resp_type in {"tool_result", "function_call_output"}:
+            # Results are data returned by an already executed call, not a new
+            # invocation to verify in the streaming path. Correlation metadata
+            # such as root-level tool_name/arguments is exempt, but explicit
+            # nested call shapes above still fail closed.
+            return False
+
+        # tool_name + arguments together is a tool call in all but name.
+        if response.get("tool_name") is not None and "arguments" in response:
             return True
 
         declared_benign = {"text", "message", "structured_output"}
