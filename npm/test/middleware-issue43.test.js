@@ -102,6 +102,40 @@ describe('request verification middleware (Issue #43)', () => {
     );
 
     test.each(expressVersions)(
+        'allows a parsed empty object from a custom text/plain JSON parser on $label',
+        async ({ express: expressVersion }) => {
+            const app = expressVersion();
+            let routeExecuted = false;
+            let routeBody;
+            app.use(expressVersion.json({ type: 'text/plain' }));
+            app.use(verifyRequestBody({ blockOnFailure: false }));
+            app.post('/execute', (req, res) => {
+                routeExecuted = true;
+                routeBody = req.body;
+                res.sendStatus(204);
+            });
+
+            const server = app.listen(0);
+            try {
+                const address = server.address();
+                const response = await fetch(`http://127.0.0.1:${address.port}/execute`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'text/plain' },
+                    body: '{}',
+                });
+
+                expect(response.status).toBe(204);
+                expect(routeExecuted).toBe(true);
+                expect(routeBody).toEqual({});
+            } finally {
+                await new Promise((resolve, reject) => {
+                    server.close((error) => error ? reject(error) : resolve());
+                });
+            }
+        }
+    );
+
+    test.each(expressVersions)(
         'allows a parsed empty vendor JSON object through on $label',
         async ({ express: expressVersion }) => {
             const app = expressVersion();

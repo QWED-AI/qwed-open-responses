@@ -119,15 +119,13 @@ function failedRequestBodyResult(message: string): VerificationResult {
 /**
  * Middleware to verify incoming request bodies.
  */
-function isUnparsedRequestBody(body: unknown, contentType: string | undefined): boolean {
+function isUnparsedRequestBody(body: unknown, bodyWasParsed: boolean): boolean {
     const bodyIsEmptyObject = body !== null
         && typeof body === 'object'
         && !Array.isArray(body)
         && Object.keys(body).length === 0;
-    const contentTypeIsJson = contentType !== undefined
-        && /^application\/(?:json|[^/;\s]+\+json)(?:\s*;|$)/i.test(contentType.trim());
 
-    return body === undefined || (bodyIsEmptyObject && !contentTypeIsJson);
+    return body === undefined || (bodyIsEmptyObject && !bodyWasParsed);
 }
 
 export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestHandler {
@@ -140,7 +138,13 @@ export function verifyRequestBody(options: QWEDMiddlewareOptions = {}): RequestH
     const verifier = new ResponseVerifier(guards);
 
     return (req: Request, res: Response, next: NextFunction) => {
-        const bodyUnparsed = isUnparsedRequestBody(req.body, req.get('content-type'));
+        // Body-parser 1 marks parsed Express 4 requests; body-parser 2 leaves skipped Express 5 bodies undefined.
+        const express4App = req.app as (Request['app'] & { lazyrouter?: unknown }) | undefined;
+        const express4BodyParser = typeof express4App?.lazyrouter === 'function';
+        const bodyParserMarkedParsed = (req as Request & { _body?: boolean })._body === true;
+        const bodyWasParsed = bodyParserMarkedParsed
+            || (!express4BodyParser && typeof req.app === 'function' && req.body !== undefined);
+        const bodyUnparsed = isUnparsedRequestBody(req.body, bodyWasParsed);
         const contentLength = req.get('content-length');
         const bodyDeclared = req.get('transfer-encoding') !== undefined
             || (contentLength !== undefined && Number(contentLength) !== 0);
