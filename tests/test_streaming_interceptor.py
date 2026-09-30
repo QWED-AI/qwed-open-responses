@@ -11,7 +11,6 @@ from qwed_open_responses.middleware.streaming_interceptor import (
     OpenResponsesMiddleware,
 )
 
-
 # ------------------------------------------------------------------ #
 #  Test helpers
 # ------------------------------------------------------------------ #
@@ -355,6 +354,27 @@ class TestVerifiedToolCalls:
         assert result[0]["type"] == "system_intervention"
         assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
 
+    def test_tool_calls_inside_large_choices_are_still_blocked(self):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        item = {
+            "type": "custom_response",
+            "choices": ["red"] * (ToolGuard._MAX_ARGS_SCAN_NODES + 1)
+            + [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {"function": {"name": "execute_shell", "arguments": {}}}
+                        ]
+                    }
+                }
+            ],
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
     def test_unknown_business_event_name_and_arguments_pass_through(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
         items = [
@@ -427,7 +447,53 @@ class TestVerifiedToolCalls:
     def test_large_benign_content_passes_through(self):
         item = {
             "type": "structured_output",
-            "content": [{} for _ in range(10_001)],
+            "content": [{} for _ in range(20_001)],
+        }
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert result[0] is item
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
+
+    def test_content_beyond_hint_depth_fails_closed(self):
+        hidden_tool = {
+            "type": "tool_use",
+            "name": "execute_shell",
+            "input": {"cmd": "id"},
+        }
+        for _ in range(ToolGuard._MAX_NESTED_SCAN_DEPTH + 1):
+            hidden_tool = {"payload": hidden_tool}
+        item = {
+            "type": "structured_output",
+            "content": [{} for _ in range(ToolGuard._MAX_ARGS_SCAN_NODES + 1)]
+            + [hidden_tool],
+        }
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
+    def test_content_beyond_priority_scan_budget_fails_closed(self):
+        item = {
+            "type": "structured_output",
+            "content": [{} for _ in range(ToolGuard._MAX_ARGS_SCAN_NODES * 4 + 1)],
+        }
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
+    def test_large_ordinary_choices_pass_through(self):
+        item = {
+            "type": "structured_output",
+            "choices": ["red", "blue"] * 10_000
+            + [{"name": "custom_option", "arguments": {"value": 1}}],
         }
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
 

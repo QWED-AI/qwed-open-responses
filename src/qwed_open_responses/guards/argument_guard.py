@@ -27,6 +27,9 @@ class ArgumentGuard(BaseGuard):
             "tool_name": "transfer",
             "arguments": {"amount": 500, "email": "user@example.com"}
         })
+
+    Batches can use tool-specific schemas with ``tool_rules`` while retaining
+    ``rules`` as the fallback schema for other tools.
     """
 
     name = "ArgumentGuard"
@@ -42,6 +45,7 @@ class ArgumentGuard(BaseGuard):
         rules: Optional[Dict[str, Dict]] = None,
         strict: bool = True,
         allow_extra_args: bool = True,
+        tool_rules: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     ):
         """
         Initialize ArgumentGuard.
@@ -50,8 +54,11 @@ class ArgumentGuard(BaseGuard):
             rules: Dict of argument_name -> validation rules
             strict: If True, fail on any validation error
             allow_extra_args: If True, allow arguments not in rules
+            tool_rules: Optional mapping of tool_name -> argument rules. These
+                rules override ``rules`` for the matching tool in a batch.
         """
         self.rules = rules or {}
+        self.tool_rules = tool_rules
         self.strict = strict
         self.allow_extra_args = allow_extra_args
 
@@ -68,12 +75,39 @@ class ArgumentGuard(BaseGuard):
             response_type.strip().casefold() if isinstance(response_type, str) else ""
         )
         function = response.get("function")
-        has_nested_call = any(
-            isinstance(response.get(key), dict)
-            for key in ("tool_call", "function_call")
+        choices = response.get("choices")
+        has_choice_tool_calls = isinstance(choices, list) and any(
+            isinstance(choice, dict)
+            and isinstance(choice.get("message"), dict)
+            and "tool_calls" in choice["message"]
+            for choice in choices
+        )
+        content = response.get("content")
+        has_content_tool_calls = (
+            isinstance(content, dict)
+            and ToolGuard._normalized_type(content.get("type", ""))
+            in {"tool_use", "tool_call", "function_call"}
         ) or (
-            isinstance(function, dict)
-            and any(key in function for key in ("name", "arguments"))
+            isinstance(content, list)
+            and any(
+                isinstance(block, dict)
+                and ToolGuard._normalized_type(block.get("type", ""))
+                in {"tool_use", "tool_call", "function_call"}
+                for block in content
+            )
+        )
+        has_nested_call = (
+            any(
+                isinstance(response.get(key), dict)
+                for key in ("tool_call", "function_call")
+            )
+            or (
+                isinstance(function, dict)
+                and any(key in function for key in ("name", "arguments"))
+            )
+            or "tool_calls" in response
+            or has_choice_tool_calls
+            or has_content_tool_calls
         )
         calls = (
             ToolGuard.normalize_tool_calls(response)
@@ -86,21 +120,26 @@ class ArgumentGuard(BaseGuard):
                 for call in calls
             ):
                 return self.fail_result("Invalid or ambiguous tool-call arguments")
-            argument_sets = [call.get("arguments", {}) for call in calls]
+            argument_sets = []
+            for call in calls:
+                tool_name = call.get("tool_name")
+                rules = self.rules
+                if self.tool_rules is not None and isinstance(tool_name, str):
+                    rules = self.tool_rules.get(tool_name, self.rules)
+                argument_sets.append((call.get("arguments", {}), rules))
         else:
             arguments = response.get("arguments", {})
             if not arguments and "output" in response:
                 arguments = response["output"]
-            argument_sets = [arguments]
+            argument_sets = [(arguments, self.rules)]
 
         errors: List[str] = []
 
-        for arguments in argument_sets:
+        for arguments, rules in argument_sets:
             if not isinstance(arguments, dict):
                 continue
 
-            # Check each rule against every call in a collection.
-            for arg_name, rule in self.rules.items():
+            for arg_name, rule in rules.items():
                 if arg_name in arguments:
                     value = arguments[arg_name]
                     arg_errors = self._validate_value(arg_name, value, rule)
@@ -110,7 +149,7 @@ class ArgumentGuard(BaseGuard):
 
             # Check for extra arguments
             if not self.allow_extra_args:
-                extra = set(arguments.keys()) - set(self.rules.keys())
+                extra = set(arguments.keys()) - set(rules.keys())
                 if extra:
                     errors.append(f"Unexpected arguments: {', '.join(extra)}")
 

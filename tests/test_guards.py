@@ -202,6 +202,37 @@ class TestArgumentGuard:
 
         assert result.passed is False
 
+    def test_batch_uses_tool_specific_argument_rules(self):
+        guard = ArgumentGuard(
+            tool_rules={
+                "search": {"query": {"type": "string", "required": True}},
+                "notify": {"email": {"type": "email", "required": True}},
+            }
+        )
+        response = {
+            "tool_calls": [
+                {"tool_name": "search", "arguments": {"query": "weather"}},
+                {"tool_name": "notify", "arguments": {"email": "a@example.com"}},
+            ]
+        }
+
+        result = guard.check(response)
+
+        assert result.passed is True
+
+        response["tool_calls"][1]["arguments"] = {"email": "not-an-email"}
+        result = guard.check(response)
+
+        assert result.passed is False
+        assert "invalid email format" in str(result.details).lower()
+
+    def test_ordinary_choices_are_not_treated_as_tool_calls(self):
+        result = ArgumentGuard().check(
+            {"type": "structured_output", "choices": ["red", "blue"]}
+        )
+
+        assert result.passed is True
+
     def test_valid_number(self):
         """Valid number argument."""
         guard = ArgumentGuard(

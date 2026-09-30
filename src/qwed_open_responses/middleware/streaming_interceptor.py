@@ -9,7 +9,7 @@ Source: Open Responses interoperable LLM interface.
 """
 
 import logging
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Callable, Dict, Iterable, List, Optional, Tuple
 
 from ..core import ResponseVerifier, VerificationResult
 from ..guards.base import BaseGuard, GuardResult
@@ -143,7 +143,7 @@ class OpenResponsesMiddleware:
 
     @staticmethod
     def _is_tool_shaped_item(item: Dict[str, Any]) -> bool:
-        """Identify tool calls using an explicit type or envelope marker."""
+        """Identify tool calls with a bounded main and overflow scan."""
         root_type = ToolGuard._normalized_type(item.get("type", ""))
         passthrough_on_scan_limit = {
             "text",
@@ -152,10 +152,7 @@ class OpenResponsesMiddleware:
             "tool_result",
             "function_call_output",
         }
-        # Keep tool-bearing branches ahead of ordinary payload branches. This
-        # lets a bounded scan inspect a declared ``content`` envelope before a
-        # large benign payload sibling consumes the budget.
-        stack = [(item, False)]
+        stack = [item]
         seen: set[int] = set()
         scanned_nodes = 0
         envelope_keys = {
@@ -167,17 +164,32 @@ class OpenResponsesMiddleware:
             "tool_calls",
         }
         priority_keys = envelope_keys | {"content", "choices"}
-        sensitive_keys = envelope_keys | {"content"}
+        priority_key_order = (
+            "tool_name",
+            "tool_call",
+            "function_call",
+            "function",
+            "tool_use",
+            "tool_calls",
+            "content",
+            "choices",
+        )
         tool_type_prefixes = ("tool_call", "function_call", "tool_use")
+        # Keep one explicit, shared overflow budget instead of multiplying a
+        # per-entry recursive hint scan across large collections.
+        overflow_scan_limit = ToolGuard._MAX_ARGS_SCAN_NODES * 4
 
         while stack:
-            node, sensitive_path = stack.pop()
+            if scanned_nodes >= ToolGuard._MAX_ARGS_SCAN_NODES:
+                return (
+                    OpenResponsesMiddleware._scan_tool_hint_values(
+                        reversed(stack), overflow_scan_limit
+                    )
+                    is not False
+                    or root_type not in passthrough_on_scan_limit
+                )
+            node = stack.pop()
             scanned_nodes += 1
-            if scanned_nodes > ToolGuard._MAX_ARGS_SCAN_NODES:
-                # An oversized ordinary payload is still valid declared
-                # output, but an oversized executable branch cannot be
-                # inspected safely. Unknown item types remain fail-closed.
-                return sensitive_path or root_type not in passthrough_on_scan_limit
 
             if isinstance(node, (dict, list)):
                 node_id = id(node)
@@ -199,100 +211,92 @@ class OpenResponsesMiddleware:
                     return bool(ToolGuard.normalize_tool_calls(node)) or bool(
                         OpenResponsesMiddleware._has_tool_hint(node)
                     )
-                choices_hint = OpenResponsesMiddleware._has_choices_tool_calls(
-                    node.get("choices")
-                )
-                if choices_hint is None:
-                    return True
-                if choices_hint:
-                    return bool(ToolGuard.normalize_tool_calls(node)) or bool(
-                        OpenResponsesMiddleware._has_tool_hint(node)
-                    )
-
-                ordinary_children: List[Tuple[Any, bool]] = []
-                priority_children: List[Tuple[Any, bool]] = []
-                for key, child in node.items():
-                    if key == "choices" and choices_hint is False:
-                        continue
-                    target = (
-                        priority_children if key in priority_keys else ordinary_children
-                    )
-                    target.append(
-                        (
-                            child,
-                            sensitive_path or key in sensitive_keys,
-                        )
-                    )
-                children = ordinary_children + priority_children
-                child_count = len(children)
-            elif isinstance(node, list):
-                if sensitive_path and (
+                if (
                     scanned_nodes + len(stack) + len(node)
                     > ToolGuard._MAX_ARGS_SCAN_NODES
                 ):
-                    # Content/tool collections can be large. Inspect direct
-                    # entries for executable markers with a separate finite
-                    # budget so a tool block at the end is not hidden by the
-                    # ordinary node budget, while an unbounded collection
-                    # still fails closed when it cannot be inspected.
-                    priority_scan_limit = ToolGuard._MAX_ARGS_SCAN_NODES * 2
-                    for index, child in enumerate(node):
-                        if OpenResponsesMiddleware._has_tool_hint(child):
-                            return True
-                        if index + 1 >= priority_scan_limit:
-                            return True
-                    return False
-                ordinary_list_children: List[Tuple[Any, bool]] = []
-                priority_list_children: List[Tuple[Any, bool]] = []
-                for child in node:
-                    target = (
-                        priority_list_children
-                        if OpenResponsesMiddleware._has_tool_hint(child)
-                        else ordinary_list_children
+
+                    def ordered_children() -> Iterable[Any]:
+                        for key in priority_key_order:
+                            if key in node:
+                                yield node[key]
+                        for key, child in node.items():
+                            if key not in priority_keys:
+                                yield child
+
+                    return (
+                        OpenResponsesMiddleware._scan_tool_hint_values(
+                            ordered_children(), overflow_scan_limit
+                        )
+                        is not False
+                        or root_type not in passthrough_on_scan_limit
                     )
-                    target.append((child, sensitive_path))
-                children = ordinary_list_children + priority_list_children
-                child_count = len(node)
+
+                ordinary_children: List[Any] = []
+                priority_children: List[Any] = []
+                for key, child in node.items():
+                    target = (
+                        priority_children if key in priority_keys else ordinary_children
+                    )
+                    target.append(child)
+                children = ordinary_children + priority_children
+            elif isinstance(node, list):
+                if (
+                    scanned_nodes + len(stack) + len(node)
+                    > ToolGuard._MAX_ARGS_SCAN_NODES
+                ):
+                    return (
+                        OpenResponsesMiddleware._scan_tool_hint_values(
+                            node, overflow_scan_limit
+                        )
+                        is not False
+                        or root_type not in passthrough_on_scan_limit
+                    )
+                children = node
             else:
                 continue
 
-            if (
-                scanned_nodes + len(stack) + child_count
-                > ToolGuard._MAX_ARGS_SCAN_NODES
-            ):
-                return sensitive_path or root_type not in passthrough_on_scan_limit
             stack.extend(children)
 
         return False
 
     @staticmethod
-    def _has_choices_tool_calls(choices: Any) -> Optional[bool]:
-        """Return whether ``choices`` contains an executable tool envelope."""
-        if not isinstance(choices, list):
-            return False
-        scan_limit = ToolGuard._MAX_ARGS_SCAN_NODES * 2
-        for index, choice in enumerate(choices):
-            if (
-                isinstance(choice, dict)
-                and isinstance(choice.get("message"), dict)
-                and "tool_calls" in choice["message"]
-            ):
-                return True
-            if index + 1 >= scan_limit:
+    def _has_tool_hint(value: Any) -> bool:
+        """Detect a bounded nested marker that can describe a call."""
+        hint, _ = OpenResponsesMiddleware._scan_tool_hint(value, 128)
+        return hint is not False
+
+    @staticmethod
+    def _scan_tool_hint_values(values: Iterable[Any], max_nodes: int) -> Optional[bool]:
+        """Scan values for explicit tool markers within one shared budget."""
+        scanned_nodes = 0
+        for value in values:
+            remaining = max_nodes - scanned_nodes
+            if remaining <= 0:
                 return None
+            hint, child_nodes = OpenResponsesMiddleware._scan_tool_hint(
+                value, remaining, allow_bare_name_arguments=False
+            )
+            scanned_nodes += child_nodes
+            if hint is not False:
+                return True
         return False
 
     @staticmethod
-    def _has_tool_hint(value: Any) -> bool:
-        """Prioritize bounded nested containers that can describe a call."""
+    def _scan_tool_hint(
+        value: Any,
+        max_nodes: int,
+        allow_bare_name_arguments: bool = True,
+    ) -> Tuple[Optional[bool], int]:
+        """Scan a subtree within a caller-shared node budget."""
         stack = [(value, 0)]
         seen: set[int] = set()
         scanned_nodes = 0
         while stack:
+            if scanned_nodes >= max_nodes:
+                return None, scanned_nodes
             node, depth = stack.pop()
             scanned_nodes += 1
-            if scanned_nodes > 128:
-                return True
             if isinstance(node, (dict, list)):
                 node_id = id(node)
                 if node_id in seen:
@@ -302,13 +306,39 @@ class OpenResponsesMiddleware:
             if isinstance(node, dict):
                 node_type = ToolGuard._normalized_type(node.get("type", ""))
                 is_result = node_type in {"tool_result", "function_call_output"}
-                if not is_result and ToolGuard._is_tool_shaped_dict(node):
-                    return True
+                if allow_bare_name_arguments:
+                    is_tool_shaped = ToolGuard._is_tool_shaped_dict(node)
+                else:
+                    is_tool_shaped = (
+                        node_type.startswith(("tool_call", "function_call", "tool_use"))
+                        or ("tool" in node_type and not is_result)
+                        or any(
+                            key in node
+                            for key in (
+                                "tool_name",
+                                "tool_call",
+                                "function_call",
+                                "function",
+                                "tool_use",
+                                "tool_calls",
+                            )
+                        )
+                    )
+                if not is_result and is_tool_shaped:
+                    return True, scanned_nodes
                 if depth < ToolGuard._MAX_NESTED_SCAN_DEPTH:
+                    if scanned_nodes + len(stack) + len(node) > max_nodes:
+                        return None, scanned_nodes
                     stack.extend((child, depth + 1) for child in node.values())
+                elif node:
+                    return None, scanned_nodes
             elif isinstance(node, list) and depth < ToolGuard._MAX_NESTED_SCAN_DEPTH:
+                if scanned_nodes + len(stack) + len(node) > max_nodes:
+                    return None, scanned_nodes
                 stack.extend((child, depth + 1) for child in node)
-        return False
+            elif isinstance(node, list) and node:
+                return None, scanned_nodes
+        return False, scanned_nodes
 
     @staticmethod
     def _tool_name(item: Dict[str, Any]) -> str:
