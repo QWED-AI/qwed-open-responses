@@ -300,7 +300,7 @@ class ToolGuard(BaseGuard):
         """Validate tool call(s) in response."""
 
         # Extract tool calls
-        tool_calls = self._extract_tool_calls(response)
+        tool_calls = self.normalize_tool_calls(response)
 
         if not tool_calls:
             return self.pass_result(message="No tool calls to verify")
@@ -351,7 +351,7 @@ class ToolGuard(BaseGuard):
             # A tool call must carry a real name — blank/non-string names can
             # never match blocklist/allowed/dangerous checks, so fail closed
             # rather than reporting an anonymous call verified (#33).
-            if not ToolGuard._valid_tool_name(tool_name):
+            if not isinstance(tool_name, str) or not tool_name.strip():
                 return self.fail_result(
                     "BLOCKED: Tool call has no valid (non-blank string) name.",
                     details={"response_keys": list(response.keys())},
@@ -440,8 +440,9 @@ class ToolGuard(BaseGuard):
             details={"tools_checked": [c.get("tool_name") for c in tool_calls]},
         )
 
-    def _extract_tool_calls(self, response: Dict[str, Any]) -> List[Dict]:
-        """Extract tool calls from various response formats.
+    @classmethod
+    def normalize_tool_calls(cls, response: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract and normalize tool calls from supported response formats.
 
         Also detects tool-ish content in unrecognized envelope shapes (#28):
         if the response contains keys that suggest a tool call but none of the
@@ -454,21 +455,20 @@ class ToolGuard(BaseGuard):
         ``tool_name``/``arguments`` regardless of envelope. Unparseable calls
         become fail-closed sentinels.
         """
-        resp_type = ToolGuard._normalized_type(response.get("type", ""))
+        resp_type = cls._normalized_type(response.get("type", ""))
 
         calls: List[Dict] = []
-        calls.extend(self._extract_known_shapes(response))
+        calls.extend(cls._extract_known_shapes(response))
 
-        # Responses API direct function_call items (#33 review). Only when the
-        # known shapes yielded nothing — a hybrid response carrying both
-        # type: function_call and a tool_calls array must not double-count.
+        # Add direct Responses API function_call items only when no other
+        # shape matched, so hybrid tool_calls arrays are not double-counted.
         if not calls and resp_type == "function_call":
             calls.append(response)
 
-        calls = self._normalize_calls(calls)
+        calls = cls._normalize_calls(calls)
 
         if not calls:
-            if self._looks_like_unrecognized_tool_content(response, resp_type):
+            if cls._looks_like_unrecognized_tool_content(response, resp_type):
                 calls.append(
                     {"type": "__unrecognized__", "tool_name": None, "arguments": {}}
                 )
@@ -574,6 +574,17 @@ class ToolGuard(BaseGuard):
 
         tool_call = call.get("tool_call")
         function_call = call.get("function_call")
+        function = call.get("function")
+        has_function_wrapper = isinstance(function, dict) and any(
+            key in function for key in ("name", "arguments")
+        )
+        has_root_call_fields = any(
+            key in call for key in ("tool_name", "name", "arguments")
+        )
+        if has_function_wrapper and (
+            tool_call is not None or function_call is not None or has_root_call_fields
+        ):
+            return ToolGuard._ambiguous_hybrid_sentinel()
         if tool_call is not None and function_call is not None:
             return ToolGuard._ambiguous_hybrid_sentinel()
         nested_call = tool_call if tool_call is not None else function_call

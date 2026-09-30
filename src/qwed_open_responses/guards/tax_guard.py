@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 from .base import BaseGuard, GuardResult
+from .tool_guard import ToolGuard
 
 
 class TaxGuard(BaseGuard):
@@ -26,9 +27,38 @@ class TaxGuard(BaseGuard):
             return self.fail_result(
                 f"Invalid response type: expected dict, got {type(response).__name__}"
             )
-        tool_name = response.get("tool_name", "")
-        arguments = response.get("arguments", {})
-        return self.verify_tool_call(tool_name, arguments)
+        response_type = response.get("type", "")
+        normalized_type = (
+            response_type.strip().casefold() if isinstance(response_type, str) else ""
+        )
+        function = response.get("function")
+        has_nested_call = any(
+            isinstance(response.get(key), dict)
+            for key in ("tool_call", "function_call")
+        ) or (
+            isinstance(function, dict)
+            and any(key in function for key in ("name", "arguments"))
+        )
+
+        if normalized_type in {"tool_call", "function_call"} or has_nested_call:
+            calls = ToolGuard.normalize_tool_calls(response)
+            if not calls or any(
+                call.get("type") in {"__malformed__", "__unrecognized__"}
+                for call in calls
+            ):
+                return self.fail_result("Invalid or ambiguous tool-call payload")
+            for call in calls:
+                result = self.verify_tool_call(
+                    call.get("tool_name") or call.get("name", ""),
+                    call.get("arguments", {}),
+                )
+                if not result.passed:
+                    return result
+            return self.pass_result(message=f"Verified {len(calls)} tax tool call(s)")
+
+        return self.verify_tool_call(
+            response.get("tool_name", ""), response.get("arguments", {})
+        )
 
     def _check_result(self, result: Any, default_error: str) -> GuardResult:
         if isinstance(result, dict):

@@ -3,7 +3,9 @@
 import asyncio
 
 from qwed_open_responses.core import GuardResult, VerificationResult
+from qwed_open_responses.guards.argument_guard import ArgumentGuard
 from qwed_open_responses.guards.base import BaseGuard
+from qwed_open_responses.guards.tax_guard import TaxGuard
 from qwed_open_responses.guards.tool_guard import ToolGuard
 from qwed_open_responses.middleware.streaming_interceptor import (
     OpenResponsesMiddleware,
@@ -161,6 +163,22 @@ class TestVerifiedToolCalls:
         assert result[0]["tool_name"] == "execute_shell"
         assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
 
+    def test_nested_safe_call_cannot_mask_sibling_function_call(self):
+        mw = OpenResponsesMiddleware(guards=[ToolGuard()])
+        item = {
+            "type": "tool_call",
+            "tool_call": {"name": "search", "arguments": {}},
+            "function": {
+                "name": "execute_shell",
+                "arguments": {"cmd": "rm -rf /"},
+            },
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
     def test_nested_stream_call_shapes_remain_supported_by_tool_guard(self):
         guard = ToolGuard(
             allowed_tools=["search", "calculate"], use_default_blocklist=False
@@ -211,6 +229,116 @@ class TestVerifiedToolCalls:
         assert result[0]["type"] == "system_intervention"
         assert "Unrecognized tool-call item type" in result[0]["reason"]
         assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
+    def test_unknown_nested_tool_envelopes_fail_closed(self):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        items = [
+            {
+                "type": "tool_call_v2",
+                "tool_use": {
+                    "name": "execute_shell",
+                    "input": {"cmd": "rm -rf /"},
+                },
+            },
+            {
+                "type": "tool_call_v2",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "execute_shell",
+                            "arguments": {"cmd": "rm -rf /"},
+                        }
+                    }
+                ],
+            },
+        ]
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
+
+        assert [item["type"] for item in result] == [
+            "system_intervention",
+            "system_intervention",
+        ]
+        assert mw.get_stats() == {"total": 2, "verified": 0, "blocked": 2}
+
+    def test_benign_structured_output_and_metadata_pass_through(self):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        items = [
+            {
+                "type": "structured_output",
+                "name": "person",
+                "arguments": {"name": "Ada"},
+            },
+            {"type": "metadata", "tool_call": {"source": "sdk"}},
+            {"type": "metadata", "function_call": {"status": "complete"}},
+        ]
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
+
+        assert all(actual is expected for actual, expected in zip(result, items))
+        assert mw.get_stats() == {"total": 3, "verified": 0, "blocked": 0}
+
+    def test_unknown_tool_block_result_is_bound_to_original_item(self):
+        results = []
+        item = {
+            "type": "tool_call_v2",
+            "tool_name": "execute_shell",
+            "arguments": {"cmd": "rm -rf /"},
+        }
+        mw = OpenResponsesMiddleware(
+            guards=[PassGuard()],
+            on_blocked=lambda _item, result: results.append(result),
+        )
+
+        asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert len(results) == 1
+        assert results[0].verify_binding(item)
+        assert results[0].binding["guards"] == [
+            "pass_guard",
+            "OpenResponsesMiddleware",
+        ]
+
+    def test_nested_arguments_are_checked_by_argument_guard(self):
+        mw = OpenResponsesMiddleware(
+            guards=[ArgumentGuard(rules={"amount": {"type": "number", "max": 100}})]
+        )
+        item = {
+            "type": "tool_call",
+            "tool_call": {
+                "name": "transfer_money",
+                "arguments": {"amount": 101},
+            },
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
+    def test_nested_arguments_are_passed_to_tax_guard(self):
+        class CapturingTaxGuard(TaxGuard):
+            def __init__(self):
+                self.calls = []
+
+            def verify_tool_call(self, tool_name, arguments):
+                self.calls.append((tool_name, arguments))
+                return self.pass_result()
+
+        guard = CapturingTaxGuard()
+        mw = OpenResponsesMiddleware(guards=[guard])
+        item = {
+            "type": "function_call",
+            "function_call": {
+                "name": "send_international_wire",
+                "arguments": {"amount_usd": 50},
+            },
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert guard.calls == [("send_international_wire", {"amount_usd": 50})]
 
     def test_tool_call_passes_with_pass_guard(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])

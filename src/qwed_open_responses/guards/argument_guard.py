@@ -6,6 +6,7 @@ Ensures arguments are within expected ranges and formats.
 
 from typing import Any, Dict, Optional, List, Callable
 from .base import BaseGuard, GuardResult
+from .tool_guard import ToolGuard
 import re
 
 
@@ -62,29 +63,53 @@ class ArgumentGuard(BaseGuard):
         """Validate arguments."""
 
         # Extract arguments
-        arguments = response.get("arguments", {})
-        if not arguments and "output" in response:
-            arguments = response["output"]
+        response_type = response.get("type", "")
+        normalized_type = (
+            response_type.strip().casefold() if isinstance(response_type, str) else ""
+        )
+        function = response.get("function")
+        has_nested_call = any(
+            isinstance(response.get(key), dict)
+            for key in ("tool_call", "function_call")
+        ) or (
+            isinstance(function, dict)
+            and any(key in function for key in ("name", "arguments"))
+        )
 
-        if not isinstance(arguments, dict):
-            return self.pass_result(message="No arguments to validate")
+        if normalized_type in {"tool_call", "function_call"} or has_nested_call:
+            calls = ToolGuard.normalize_tool_calls(response)
+            if not calls or any(
+                call.get("type") in {"__malformed__", "__unrecognized__"}
+                for call in calls
+            ):
+                return self.fail_result("Invalid or ambiguous tool-call arguments")
+            argument_sets = [call.get("arguments", {}) for call in calls]
+        else:
+            arguments = response.get("arguments", {})
+            if not arguments and "output" in response:
+                arguments = response["output"]
+            argument_sets = [arguments]
 
         errors: List[str] = []
 
-        # Check each rule
-        for arg_name, rule in self.rules.items():
-            if arg_name in arguments:
-                value = arguments[arg_name]
-                arg_errors = self._validate_value(arg_name, value, rule)
-                errors.extend(arg_errors)
-            elif rule.get("required", False):
-                errors.append(f"Missing required argument: {arg_name}")
+        for arguments in argument_sets:
+            if not isinstance(arguments, dict):
+                continue
 
-        # Check for extra arguments
-        if not self.allow_extra_args:
-            extra = set(arguments.keys()) - set(self.rules.keys())
-            if extra:
-                errors.append(f"Unexpected arguments: {', '.join(extra)}")
+            # Check each rule against every call in a collection.
+            for arg_name, rule in self.rules.items():
+                if arg_name in arguments:
+                    value = arguments[arg_name]
+                    arg_errors = self._validate_value(arg_name, value, rule)
+                    errors.extend(arg_errors)
+                elif rule.get("required", False):
+                    errors.append(f"Missing required argument: {arg_name}")
+
+            # Check for extra arguments
+            if not self.allow_extra_args:
+                extra = set(arguments.keys()) - set(self.rules.keys())
+                if extra:
+                    errors.append(f"Unexpected arguments: {', '.join(extra)}")
 
         if errors:
             return self.fail_result(

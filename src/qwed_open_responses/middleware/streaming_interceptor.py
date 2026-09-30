@@ -11,10 +11,26 @@ Source: Open Responses interoperable LLM interface.
 import logging
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
-from ..core import GuardResult, ResponseVerifier, VerificationResult
-from ..guards.base import BaseGuard
+from ..core import ResponseVerifier, VerificationResult
+from ..guards.base import BaseGuard, GuardResult
+from ..guards.tool_guard import ToolGuard
 
 logger = logging.getLogger(__name__)
+
+
+class _UnrecognizedToolItemGuard(BaseGuard):
+    name = "OpenResponsesMiddleware"
+    description = "Rejects tool calls with unsupported item types"
+
+    def __init__(self, reason: str):
+        self._reason = reason
+
+    def check(
+        self,
+        response: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> GuardResult:
+        return self.fail_result(self._reason)
 
 
 class OpenResponsesMiddleware:
@@ -127,15 +143,8 @@ class OpenResponsesMiddleware:
 
     @staticmethod
     def _is_tool_shaped_item(item: Dict[str, Any]) -> bool:
-        """Identify tool-call fields on an envelope with an unknown type."""
-        if any(key in item for key in ("tool_name", "tool_call", "function_call")):
-            return True
-        if "name" in item and "arguments" in item:
-            return True
-        function = item.get("function")
-        return isinstance(function, dict) and (
-            "name" in function or "arguments" in function
-        )
+        """Identify actual tool-call content, including nested envelopes."""
+        return bool(ToolGuard.normalize_tool_calls(item))
 
     @staticmethod
     def _tool_name(item: Dict[str, Any]) -> str:
@@ -168,19 +177,12 @@ class OpenResponsesMiddleware:
     ) -> Optional[Dict[str, Any]]:
         """Fail closed when a tool-shaped item declares an unknown type."""
         reason = f"Unrecognized tool-call item type: {item.get('type')!r}"
-        result = VerificationResult(
-            verified=False,
-            response=item,
-            guards_failed=1,
-            guard_results=[
-                GuardResult(
-                    guard_name="OpenResponsesMiddleware",
-                    passed=False,
-                    message=reason,
-                )
+        result = self._verifier.verify(
+            item,
+            guards=[
+                *self._verifier.default_guards,
+                _UnrecognizedToolItemGuard(reason),
             ],
-            blocked=True,
-            block_reason=reason,
         )
         return self._handle_tool_call_result(item, self._tool_name(item), result)
 
