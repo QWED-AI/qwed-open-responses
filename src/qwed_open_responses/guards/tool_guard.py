@@ -654,6 +654,11 @@ class ToolGuard(BaseGuard):
             return None
         name = call.get("name")
         if not cls._valid_tool_name(name):
+            # Some Open Responses producers use the canonical tool_name field
+            # on a function_call item. Preserve that supported shape while
+            # still rejecting calls without a usable name.
+            name = call.get("tool_name")
+        if not cls._valid_tool_name(name):
             return cls._unrecognized_sentinel(None)
         ok, args = cls._parse_tool_arguments(call.get("arguments", {}))
         if not ok:
@@ -876,6 +881,10 @@ class ToolGuard(BaseGuard):
             # Untyped envelopes ("") stay deep-scanned - they are exactly the
             # laundering vector (Sentry: structured_output carrying
             # name+arguments is a legitimate payload shape, not a hidden tool).
+            return False
+        if resp_type in {"tool_result", "function_call_output"}:
+            # Results are data returned by an already executed call, not a new
+            # invocation to verify in the streaming path.
             return False
         if "tool" in resp_type:
             return True

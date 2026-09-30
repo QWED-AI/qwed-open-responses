@@ -340,6 +340,48 @@ class TestVerifiedToolCalls:
         assert result == [item]
         assert guard.calls == [("send_international_wire", {"amount_usd": 50})]
 
+    def test_direct_function_call_tool_name_is_passed_to_tax_guard(self):
+        class CapturingTaxGuard(TaxGuard):
+            def __init__(self):
+                self.calls = []
+
+            def verify_tool_call(self, tool_name, arguments):
+                self.calls.append((tool_name, arguments))
+                return self.pass_result()
+
+        guard = CapturingTaxGuard()
+        mw = OpenResponsesMiddleware(guards=[guard])
+        item = {
+            "type": "function_call",
+            "tool_name": "process_payroll",
+            "arguments": {"gross_ytd": 1000, "claimed_tax": 100},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert guard.calls == [
+            ("process_payroll", {"gross_ytd": 1000, "claimed_tax": 100})
+        ]
+
+    def test_tool_result_items_pass_through_without_verification(self):
+        guard = CaptureGuard()
+        mw = OpenResponsesMiddleware(guards=[guard])
+        item = {
+            "type": "tool_result",
+            "id": "result_1",
+            "tool_use_id": "process_payroll",
+            "content": {"mime_type": "application/json", "text": "{}"},
+            "is_error": False,
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert result[0] is item
+        assert guard.responses == []
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
+
     def test_tool_call_passes_with_pass_guard(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
         items = [
