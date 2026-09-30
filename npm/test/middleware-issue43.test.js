@@ -1,3 +1,4 @@
+const http = require('node:http');
 const expressVersions = [
     { label: 'Express 4', express: require('express4') },
     { label: 'Express 5', express: require('express') },
@@ -127,6 +128,54 @@ describe('request verification middleware (Issue #43)', () => {
                 expect(response.status).toBe(204);
                 expect(routeExecuted).toBe(true);
                 expect(routeBody).toEqual({});
+            } finally {
+                await new Promise((resolve, reject) => {
+                    server.close((error) => error ? reject(error) : resolve());
+                });
+            }
+        }
+    );
+
+    test.each(expressVersions)(
+        'blocks an empty chunked request even when a custom JSON parser is configured on $label',
+        async ({ express: expressVersion }) => {
+            const app = expressVersion();
+            let routeExecuted = false;
+            app.use(expressVersion.json({ type: 'text/plain' }));
+            app.use(verifyRequestBody({ blockOnFailure: false }));
+            app.post('/execute', (_req, res) => {
+                routeExecuted = true;
+                res.sendStatus(204);
+            });
+
+            const server = app.listen(0);
+            try {
+                const address = server.address();
+                const response = await new Promise((resolve, reject) => {
+                    const request = http.request({
+                        hostname: '127.0.0.1',
+                        port: address.port,
+                        path: '/execute',
+                        method: 'POST',
+                        headers: {
+                            'content-type': 'text/plain',
+                            'transfer-encoding': 'chunked',
+                        },
+                    }, (res) => {
+                        let payload = '';
+                        res.setEncoding('utf8');
+                        res.on('data', (chunk) => { payload += chunk; });
+                        res.on('end', () => resolve({ status: res.statusCode, payload }));
+                    });
+                    request.on('error', reject);
+                    request.end();
+                });
+
+                expect(response.status).toBe(422);
+                expect(JSON.parse(response.payload)).toMatchObject({
+                    code: 'QWED_REQUEST_BLOCKED',
+                });
+                expect(routeExecuted).toBe(false);
             } finally {
                 await new Promise((resolve, reject) => {
                     server.close((error) => error ? reject(error) : resolve());
