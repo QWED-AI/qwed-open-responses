@@ -509,6 +509,18 @@ export class ToolGuard extends BaseGuard {
     private static MAX_ARGS_SCAN_NODES = 10_000;
     private static MAX_ARGS_SCAN_CHARS = 100_000;
 
+    private static scalarToText(value: unknown): string | null {
+        if (typeof value === 'string') return value;
+        if (value === null) return 'null';
+        if (typeof value === 'boolean') return value ? 'true' : 'false';
+        if (typeof value === 'number') {
+            // String() matches Python's canonical numeric text; non-finite
+            // numbers use the JSON null spelling in both runtimes.
+            return Number.isFinite(value) ? String(value) : 'null';
+        }
+        return null;
+    }
+
     private static *stringLeaves(value: unknown): IterableIterator<string> {
         type Frame = [unknown, number, boolean];
         const stack: Frame[] = [[value, 0, true]];
@@ -525,12 +537,13 @@ export class ToolGuard extends BaseGuard {
             if (scannedNodes > ToolGuard.MAX_ARGS_SCAN_NODES) {
                 throw new Error('Tool arguments exceed the node inspection limit');
             }
-            if (typeof node === 'string') {
-                scannedChars += node.length;
+            const scalarText = ToolGuard.scalarToText(node);
+            if (scalarText !== null) {
+                scannedChars += scalarText.length;
                 if (scannedChars > ToolGuard.MAX_ARGS_SCAN_CHARS) {
                     throw new Error('Tool arguments exceed the character inspection limit');
                 }
-                yield node;
+                yield scalarText;
                 continue;
             }
             if (node === null || typeof node !== 'object') continue;

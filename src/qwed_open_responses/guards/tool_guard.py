@@ -7,6 +7,7 @@ Blocks dangerous tools and validates tool arguments.
 from typing import Any, Dict, Optional, List, Set, Callable, Iterator, Tuple
 from .base import BaseGuard, GuardResult
 import json
+import math
 import re
 import string
 
@@ -303,7 +304,7 @@ class ToolGuard(BaseGuard):
 
         # Extract tool calls
         try:
-            tool_calls = self._extract_tool_calls(response)
+            tool_calls = self.normalize_tool_calls(response)
         except Exception:
             return self.fail_result(
                 "BLOCKED: Tool calls could not be inspected safely."
@@ -458,8 +459,9 @@ class ToolGuard(BaseGuard):
             details={"tools_checked": [c.get("tool_name") for c in tool_calls]},
         )
 
-    def _extract_tool_calls(self, response: Dict[str, Any]) -> List[Dict]:
-        """Extract tool calls from various response formats.
+    @classmethod
+    def normalize_tool_calls(cls, response: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract and normalize tool calls from supported response formats.
 
         Also detects tool-ish content in unrecognized envelope shapes (#28):
         if the response contains keys that suggest a tool call but none of the
@@ -472,21 +474,20 @@ class ToolGuard(BaseGuard):
         ``tool_name``/``arguments`` regardless of envelope. Unparseable calls
         become fail-closed sentinels.
         """
-        resp_type = str(response.get("type", "")).lower()
+        resp_type = cls._normalized_type(response.get("type", ""))
 
         calls: List[Dict] = []
-        calls.extend(self._extract_known_shapes(response))
+        calls.extend(cls._extract_known_shapes(response))
 
-        # Responses API direct function_call items (#33 review). Only when the
-        # known shapes yielded nothing — a hybrid response carrying both
-        # a type="function_call" item and a tool_calls array must not double-count.
+        # Add direct Responses API function_call items only when no other
+        # shape matched, so hybrid tool_calls arrays are not double-counted.
         if not calls and resp_type == "function_call":
             calls.append(response)
 
-        calls = self._normalize_calls(calls)
+        calls = cls._normalize_calls(calls)
 
         if not calls:
-            if self._looks_like_unrecognized_tool_content(response, resp_type):
+            if cls._looks_like_unrecognized_tool_content(response, resp_type):
                 calls.append(
                     {"type": "__unrecognized__", "tool_name": None, "arguments": {}}
                 )
@@ -507,8 +508,59 @@ class ToolGuard(BaseGuard):
         return ()
 
     @staticmethod
+    def _number_to_text(value: Any) -> str:
+        """Return stable JSON-number text shared with the TypeScript guard."""
+        if isinstance(value, int):
+            return str(value)
+        if not math.isfinite(value):
+            return "null"
+        if value == 0:
+            return "0"
+
+        text = str(value)
+        if value.is_integer() and abs(value) < 1e21:
+            return str(int(value))
+        if "e" not in text.lower():
+            return text
+
+        mantissa, exponent = re.split("[eE]", text)
+        exponent_value = int(exponent)
+        if -6 <= exponent_value < 21:
+            sign = ""
+            if mantissa.startswith("-"):
+                sign, mantissa = "-", mantissa[1:]
+            whole, _, fraction = mantissa.partition(".")
+            digits = whole + fraction
+            decimal_index = len(whole) + exponent_value
+            if decimal_index <= 0:
+                normalized = "0." + ("0" * -decimal_index) + digits
+            elif decimal_index >= len(digits):
+                normalized = digits + ("0" * (decimal_index - len(digits)))
+            else:
+                normalized = digits[:decimal_index] + "." + digits[decimal_index:]
+            if "." in normalized:
+                normalized = normalized.rstrip("0").rstrip(".")
+            return sign + normalized
+        return f"{mantissa}e{exponent_value:+d}"
+
+    @staticmethod
+    def _scalar_to_text(value: Any) -> Optional[str]:
+        """Return JSON-style text for scalar values and dictionary keys."""
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return "null"
+        # bool is an int subclass in Python; check it before numeric values so
+        # both runtimes use the same JSON spelling instead of True/False.
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return ToolGuard._number_to_text(value)
+        return None
+
+    @staticmethod
     def _iter_string_leaves(value: Any) -> Iterator[str]:
-        """Yield bounded parsed string keys and values without serialization."""
+        """Yield bounded parsed scalar keys and values as matching text."""
         stack: List[Tuple[Any, int, bool]] = [(value, 0, True)]
         on_path: Set[int] = set()
         scanned_nodes = 0
@@ -521,13 +573,14 @@ class ToolGuard(BaseGuard):
             scanned_nodes += 1
             if scanned_nodes > ToolGuard._MAX_ARGS_SCAN_NODES:
                 raise ValueError("Tool arguments exceed the node inspection limit")
-            if isinstance(node, str):
-                scanned_chars += len(node)
+            scalar_text = ToolGuard._scalar_to_text(node)
+            if scalar_text is not None:
+                scanned_chars += len(scalar_text)
                 if scanned_chars > ToolGuard._MAX_ARGS_SCAN_CHARS:
                     raise ValueError(
                         "Tool arguments exceed the character inspection limit"
                     )
-                yield node
+                yield scalar_text
             elif isinstance(node, dict):
                 if depth >= ToolGuard._MAX_ARGS_JSON_DEPTH:
                     raise ValueError("Tool arguments exceed the depth inspection limit")
@@ -536,9 +589,10 @@ class ToolGuard(BaseGuard):
                     raise ValueError("Tool arguments contain a cycle")
                 on_path.add(marker)
                 stack.append((node, depth, False))
-                entries: List[Tuple[Any, Any]] = []
+                entries: List[Tuple[Optional[str], Any]] = []
                 for key, child in node.items():
-                    key_count = int(isinstance(key, str))
+                    key_text = ToolGuard._scalar_to_text(key)
+                    key_count = int(key_text is not None)
                     if (
                         scanned_nodes + len(stack) + len(entries) * 2 + 1 + key_count
                         > ToolGuard._MAX_ARGS_SCAN_NODES
@@ -546,11 +600,11 @@ class ToolGuard(BaseGuard):
                         raise ValueError(
                             "Tool arguments exceed the node inspection limit"
                         )
-                    entries.append((key, child))
-                for key, child in reversed(entries):
+                    entries.append((key_text, child))
+                for key_text, child in reversed(entries):
                     stack.append((child, depth + 1, True))
-                    if isinstance(key, str):
-                        stack.append((key, depth + 1, True))
+                    if key_text is not None:
+                        stack.append((key_text, depth + 1, True))
             elif isinstance(node, list):
                 if depth >= ToolGuard._MAX_ARGS_JSON_DEPTH:
                     raise ValueError("Tool arguments exceed the depth inspection limit")
@@ -640,6 +694,11 @@ class ToolGuard(BaseGuard):
         return False, None
 
     @staticmethod
+    def _normalized_type(value: Any) -> str:
+        """Normalize protocol type markers without changing the payload."""
+        return value.strip().casefold() if isinstance(value, str) else ""
+
+    @staticmethod
     def _unrecognized_sentinel(name: Any = None) -> Dict[str, Any]:
         """Fail-closed sentinel for calls whose arguments cannot be parsed."""
         return {
@@ -659,6 +718,44 @@ class ToolGuard(BaseGuard):
         """
         if call.get("type") in ("__unrecognized__", "__malformed__"):
             return call
+
+        tool_call = call.get("tool_call")
+        function_call = call.get("function_call")
+        function = call.get("function")
+        has_function_wrapper = isinstance(function, dict) and any(
+            key in function for key in ("name", "arguments")
+        )
+        has_root_call_fields = any(
+            key in call for key in ("tool_name", "name", "arguments")
+        )
+        if has_function_wrapper and (
+            tool_call is not None or function_call is not None or has_root_call_fields
+        ):
+            return ToolGuard._ambiguous_hybrid_sentinel()
+        if tool_call is not None and function_call is not None:
+            return ToolGuard._ambiguous_hybrid_sentinel()
+        nested_call = tool_call if tool_call is not None else function_call
+        if nested_call is not None:
+            if not isinstance(nested_call, dict):
+                return cls._unrecognized_sentinel(None)
+            if nested_call is call or any(
+                key in nested_call for key in ("tool_call", "function_call")
+            ):
+                return cls._unrecognized_sentinel(None)
+            if any(key in call for key in ("tool_name", "name", "arguments")):
+                return ToolGuard._ambiguous_hybrid_sentinel()
+            call = nested_call
+
+            # A nested direct call must not hide a conflicting function
+            # wrapper. Validate the complete envelope instead of allowing the
+            # wrapper's name to replace the name exposed to consumers.
+            nested_function = call.get("function")
+            if (
+                isinstance(nested_function, dict)
+                and any(key in nested_function for key in ("name", "arguments"))
+                and any(key in call for key in ("tool_name", "name", "arguments"))
+            ):
+                return ToolGuard._ambiguous_hybrid_sentinel()
 
         # OpenAI function wrapper: {function: {name, arguments-as-JSON-string}}.
         resolved = cls._normalize_function_wrapper(call)
@@ -711,9 +808,14 @@ class ToolGuard(BaseGuard):
 
         Returns None when the call is not such an item.
         """
-        if str(call.get("type", "")).lower() != "function_call":
+        if cls._normalized_type(call.get("type", "")) != "function_call":
             return None
         name = call.get("name")
+        if not cls._valid_tool_name(name):
+            # Some Open Responses producers use the canonical tool_name field
+            # on a function_call item. Use it when name is missing or invalid,
+            # while still rejecting calls without a usable name.
+            name = call.get("tool_name")
         if not cls._valid_tool_name(name):
             return cls._unrecognized_sentinel(None)
         ok, args = cls._parse_tool_arguments(call.get("arguments", {}))
@@ -809,7 +911,7 @@ class ToolGuard(BaseGuard):
                 # direct tool_use block is a tool call; tool shapes nested
                 # inside a dict are an ambiguous laundering vector and become
                 # malformed; benign dicts carry no tools (Sentry HIGH).
-                if str(blocks.get("type", "")).lower() == "tool_use":
+                if ToolGuard._normalized_type(blocks.get("type", "")) == "tool_use":
                     return [
                         {
                             "type": "tool_call",
@@ -828,7 +930,7 @@ class ToolGuard(BaseGuard):
             # unrecognized envelope (Sentry HIGH).
             if (
                 isinstance(block, dict)
-                and str(block.get("type", "")).lower() == "tool_use"
+                and ToolGuard._normalized_type(block.get("type", "")) == "tool_use"
             ):
                 calls.append(
                     {
@@ -865,7 +967,7 @@ class ToolGuard(BaseGuard):
         ambiguous hybrid (direct call + sibling collection) is rejected.
         """
         calls: List[Dict] = []
-        resp_type = str(response.get("type", "")).lower()
+        resp_type = ToolGuard._normalized_type(response.get("type", ""))
 
         # Ambiguous hybrid envelope: a direct tool-call object that ALSO
         # carries a sibling collection. Reject instead of choosing one
@@ -909,25 +1011,37 @@ class ToolGuard(BaseGuard):
         tool-shaped (an object carrying name/arguments), so ordinary fields
         like ``function: "parse_csv"`` on a structured response still pass.
         """
-        # Tool-shaped objects under recognizable hint keys.
-        for key in ("tool_use", "function_call", "function"):
+        # Tool-shaped objects under recognizable hint keys. Result envelopes
+        # may repeat the root ``function``/``tool_name`` fields for
+        # correlation, but explicit nested call envelopes remain suspicious.
+        hint_keys: Tuple[str, ...] = ("tool_use", "tool_call", "function_call")
+        if resp_type not in {"tool_result", "function_call_output"}:
+            hint_keys += ("function",)
+        for key in hint_keys:
             value = response.get(key)
             if isinstance(value, dict) and ("name" in value or "arguments" in value):
                 return True
-
-        # tool_name + arguments together is a tool call in all but name.
-        if response.get("tool_name") is not None and "arguments" in response:
-            return True
 
         content_blocks = response.get("content")
         if not isinstance(content_blocks, list):
             content_blocks = []
         nested_types = {
-            str(block.get("type", "")).lower()
+            ToolGuard._normalized_type(block.get("type", ""))
             for block in content_blocks
             if isinstance(block, dict)
         }
         if nested_types & {"tool_use", "function_call"}:
+            return True
+
+        if resp_type in {"tool_result", "function_call_output"}:
+            # Results are data returned by an already executed call, not a new
+            # invocation to verify in the streaming path. Correlation metadata
+            # such as root-level tool_name/arguments is exempt, but explicit
+            # nested call shapes above still fail closed.
+            return False
+
+        # tool_name + arguments together is a tool call in all but name.
+        if response.get("tool_name") is not None and "arguments" in response:
             return True
 
         declared_benign = {"text", "message", "structured_output"}
@@ -949,7 +1063,7 @@ class ToolGuard(BaseGuard):
     def _is_tool_shaped_dict(value: Any) -> bool:
         if not isinstance(value, dict):
             return False
-        t = str(value.get("type", "")).lower()
+        t = ToolGuard._normalized_type(value.get("type", ""))
         if t in ("tool_use", "function_call", "tool_call"):
             return True
         return "tool_name" in value or ("name" in value and "arguments" in value)

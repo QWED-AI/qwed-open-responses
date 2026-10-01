@@ -68,6 +68,54 @@ def test_custom_patterns_scan_raw_string_leaves():
     assert result.passed is False
 
 
+@pytest.mark.parametrize(
+    ("arguments", "pattern"),
+    [
+        ({"port": 666}, r"^666$"),
+        ({"port": 1.0}, r"^1$"),
+        ({"amount": 666.5}, r"^666\.5$"),
+        ({666: "numeric key"}, r"^666$"),
+    ],
+)
+def test_custom_patterns_scan_numeric_values_and_keys(arguments, pattern):
+    guard = ToolGuard(
+        use_default_patterns=False,
+        dangerous_patterns=[pattern],
+    )
+
+    result = guard.check(
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "arguments": arguments,
+        }
+    )
+
+    assert result.passed is False
+
+
+def test_boolean_leaves_use_json_text_without_matching_python_repr():
+    guard = ToolGuard(
+        use_default_patterns=False,
+        dangerous_patterns=[r"(?-i:^true$)"],
+    )
+
+    assert guard.check(
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "arguments": {"enabled": True},
+        }
+    ).passed is False
+    assert guard.check(
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "arguments": {"enabled": "True"},
+        }
+    ).passed is True
+
+
 def test_benign_string_values_pass():
     result = ToolGuard().check(
         {

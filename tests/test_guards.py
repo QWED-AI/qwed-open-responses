@@ -94,6 +94,59 @@ class TestToolGuard:
 
         assert result.passed is True
 
+    def test_function_call_output_correlation_fields_are_not_tool_calls(self):
+        guard = ToolGuard()
+        result = guard.check(
+            {
+                "type": "function_call_output",
+                "tool_name": "process_payroll",
+                "arguments": {"gross_ytd": 1000},
+                "function": {
+                    "name": "process_payroll",
+                    "arguments": {"gross_ytd": 1000},
+                },
+                "output": {"status": "ok"},
+            }
+        )
+
+        assert result.passed is True
+
+    def test_function_call_uses_tool_name_when_name_is_invalid(self):
+        result = ToolGuard().check(
+            {
+                "type": "function_call",
+                "name": " ",
+                "tool_name": "process_payroll",
+                "arguments": {"gross_ytd": 1000},
+            }
+        )
+
+        assert result.passed is True
+
+    def test_empty_tool_calls_collection_skips_argument_validation(self):
+        result = ArgumentGuard(
+            rules={"amount": {"type": "number", "min": 0, "max": 100}}
+        ).check({"tool_calls": [], "arguments": {"amount": 500}})
+
+        assert result.passed is True
+
+    def test_empty_nested_choice_tool_calls_skip_argument_validation(self):
+        result = ArgumentGuard(
+            rules={"amount": {"type": "number", "required": True}}
+        ).check(
+            {
+                "choices": [{"message": {"tool_calls": []}}],
+                "arguments": {},
+            }
+        )
+
+        assert result.passed is True
+
+    def test_explicit_tool_call_with_empty_collection_fails_closed(self):
+        result = ArgumentGuard().check({"type": "tool_call", "tool_calls": []})
+
+        assert result.passed is False
+
 
 class TestMathGuard:
     """Test MathGuard class."""
@@ -179,6 +232,78 @@ class TestStateGuard:
 
 class TestArgumentGuard:
     """Test ArgumentGuard class."""
+
+    def test_non_tool_metadata_with_nested_hint_is_ignored(self):
+        guard = ArgumentGuard(rules={"amount": {"type": "number", "max": 100}})
+
+        result = guard.check({"type": "metadata", "tool_call": {"source": "sdk"}})
+
+        assert result.passed is True
+
+    def test_unknown_type_with_tool_shaped_nested_call_fails_closed(self):
+        guard = ArgumentGuard(rules={"amount": {"type": "number", "max": 100}})
+
+        result = guard.check(
+            {
+                "type": "metadata",
+                "tool_call": {
+                    "name": "transfer_money",
+                    "arguments": {"amount": 101},
+                },
+            }
+        )
+
+        assert result.passed is False
+
+    def test_batch_uses_tool_specific_argument_rules(self):
+        guard = ArgumentGuard(
+            tool_rules={
+                "Search": {"query": {"type": "string", "required": True}},
+                "Notify": {"email": {"type": "email", "required": True}},
+            }
+        )
+        response = {
+            "tool_calls": [
+                {"tool_name": "SEARCH", "arguments": {"query": "weather"}},
+                {"tool_name": "notify", "arguments": {"email": "a@example.com"}},
+            ]
+        }
+
+        result = guard.check(response)
+
+        assert result.passed is True
+
+        response["tool_calls"][1]["arguments"] = {"email": "not-an-email"}
+        result = guard.check(response)
+
+        assert result.passed is False
+        assert "invalid email format" in str(result.details).lower()
+
+    def test_nested_choice_uses_name_for_tool_specific_rules(self):
+        guard = ArgumentGuard(
+            tool_rules={"Notify": {"email": {"type": "email", "required": True}}}
+        )
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [{"name": "notify", "arguments": {}}]
+                    }
+                }
+            ]
+        }
+
+        result = guard.check(response)
+
+        assert result.passed is False
+        assert "missing required argument: email" in str(result.details).lower()
+
+    def test_ordinary_choices_are_not_treated_as_tool_calls(self):
+        result = ArgumentGuard().check(
+            {"type": "structured_output", "choices": ["red", "blue"]}
+        )
+
+        assert result.passed is True
 
     def test_valid_number(self):
         """Valid number argument."""
@@ -381,6 +506,57 @@ class TestTaxGuard:
         result = guard.check({"tool_name": "unknown_tool", "arguments": {}})
         assert result.passed is False
         assert "No tax guard for tool" in result.message
+
+    def test_non_tool_metadata_with_nested_hint_is_ignored(self):
+        guard = TaxGuard()
+        with patch.object(guard, "verify_tool_call") as verify_tool_call:
+            result = guard.check({"type": "metadata", "tool_call": {"source": "sdk"}})
+
+        assert result.passed is True
+        verify_tool_call.assert_not_called()
+
+    def test_batched_tool_calls_are_verified(self):
+        guard = TaxGuard()
+        payroll_arguments = {"gross_ytd": 50000, "claimed_tax": 8000}
+        wire_arguments = {"amount_usd": 5000, "purpose": "services"}
+        with patch.object(
+            guard, "verify_tool_call", return_value=guard.pass_result()
+        ) as verify_tool_call:
+            result = guard.check(
+                {
+                    "tool_calls": [
+                        {
+                            "tool_name": "process_payroll",
+                            "arguments": payroll_arguments,
+                        },
+                        {
+                            "tool_name": "send_international_wire",
+                            "arguments": wire_arguments,
+                        },
+                    ]
+                }
+            )
+
+        assert result.passed is True
+        assert verify_tool_call.call_count == 2
+        verify_tool_call.assert_any_call("process_payroll", payroll_arguments)
+        verify_tool_call.assert_any_call("send_international_wire", wire_arguments)
+
+    def test_unknown_type_with_tool_shaped_nested_call_fails_closed(self):
+        guard = TaxGuard()
+
+        result = guard.check(
+            {
+                "type": "metadata",
+                "tool_call": {
+                    "name": "send_international_wire",
+                    "arguments": {"amount_usd": 10},
+                },
+            }
+        )
+
+        assert result.passed is False
+        assert "Invalid or ambiguous tool-call payload" in result.message
 
     def test_missing_payroll_fields_returns_false(self):
         """Missing required payroll fields returns verified=False."""
@@ -1516,4 +1692,3 @@ class TestCrossLanguageParity30:
         verifier = ResponseVerifier()
         with pytest.raises((ValueError, TypeError)):
             verifier.verify(12345)
-
