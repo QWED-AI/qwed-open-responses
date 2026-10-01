@@ -210,12 +210,11 @@ class OpenResponsesMiddleware:
                     )
                 node_envelope_keys = envelope_keys
                 if node is item and root_type in result_item_types:
-                    # Root correlation fields are not a new invocation. A
-                    # function wrapper is exempt only when it mirrors the
-                    # correlated call metadata; otherwise it remains a call.
-                    node_envelope_keys = envelope_keys - {"tool_name"}
-                    if OpenResponsesMiddleware._is_result_function_metadata(item):
-                        node_envelope_keys = node_envelope_keys - {"function"}
+                    # Root correlation fields are not a new invocation, but a
+                    # function wrapper can still contain an executable call.
+                    node_envelope_keys = envelope_keys - {"tool_name", "function"}
+                    if OpenResponsesMiddleware._has_result_function_call(item):
+                        return True
                 if node_envelope_keys.intersection(node):
                     return bool(ToolGuard.normalize_tool_calls(node)) or bool(
                         OpenResponsesMiddleware._has_tool_hint(node)
@@ -292,51 +291,27 @@ class OpenResponsesMiddleware:
         return False
 
     @staticmethod
-    def _is_result_function_metadata(item: Dict[str, Any]) -> bool:
-        """Recognize a function wrapper echoed as correlated result metadata."""
+    def _has_result_function_call(item: Dict[str, Any]) -> bool:
+        """Detect executable function shapes inside a result envelope."""
         result_type = ToolGuard._normalized_type(item.get("type", ""))
         if result_type not in {"tool_result", "function_call_output"}:
             return False
 
-        correlation_ids = (item.get("tool_use_id"), item.get("call_id"))
-        if not any(
-            isinstance(value, str) and value.strip() for value in correlation_ids
-        ):
-            return False
-
-        tool_name = item.get("tool_name")
         function = item.get("function")
-        if (
-            not isinstance(function, dict)
-            or not isinstance(tool_name, str)
-            or not tool_name.strip()
-        ):
+        if not isinstance(function, (dict, list)):
             return False
-        function_name = function.get("name")
-        if (
-            not isinstance(function_name, str)
-            or not function_name.strip()
-            or function_name.casefold() != tool_name.casefold()
+
+        has_tool_hint = OpenResponsesMiddleware._has_tool_hint(function)
+        if not has_tool_hint and not (
+            isinstance(function, dict)
+            and any(key in function for key in ("name", "arguments"))
         ):
             return False
 
-        if "arguments" not in item or "arguments" not in function:
-            return False
-        root_arguments = item["arguments"]
-        function_arguments = function["arguments"]
-        if not isinstance(root_arguments, dict) or not isinstance(
-            function_arguments, dict
-        ):
-            return False
-        if any(
-            depth < 0 or depth > ToolGuard._MAX_ARGS_JSON_DEPTH
-            for depth in (
-                ToolGuard._arguments_depth(root_arguments),
-                ToolGuard._arguments_depth(function_arguments),
-            )
-        ):
-            return False
-        return root_arguments == function_arguments
+        normalized = ToolGuard.normalize_tool_calls(
+            {"type": "function_call", "function": function}
+        )
+        return bool(normalized) or has_tool_hint
 
     @staticmethod
     def _scan_tool_hint(
