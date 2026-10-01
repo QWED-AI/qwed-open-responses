@@ -410,7 +410,7 @@ class ResponseVerifier:
             VerificationResult with verification status and details
         """
         guards_to_use = guards if guards is not None else self.default_guards
-        context = context or {}
+        context = context if isinstance(context, dict) else {}
 
         # Parse response if needed. Resource-limit failures are verdicts,
         # while ordinary unsupported input types retain the existing exception.

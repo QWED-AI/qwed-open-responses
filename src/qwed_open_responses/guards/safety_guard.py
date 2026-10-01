@@ -97,7 +97,7 @@ class SafetyGuard(BaseGuard):
     )
 
     _JSON_CREDENTIAL_RE = re.compile(
-        r"""["'](password|api[_-]?key|secret|private[\s_-]?key)["']\s*:\s*["']([^"']*)["']""",
+        r"""["'](password|api[_-]?key|secret|private[\s_-]?key)["']\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')""",
         re.IGNORECASE,
     )
 
@@ -176,7 +176,12 @@ class SafetyGuard(BaseGuard):
     ) -> GuardResult:
         """Run all safety checks."""
 
-        content, leaf_strings, limit_error = self._collect_bounded_content(response)
+        (
+            content,
+            leaf_strings,
+            injection_parts,
+            limit_error,
+        ) = self._collect_bounded_content(response)
         if limit_error is not None:
             return self.fail_result(
                 "Safety check failed: response exceeds inspection limits",
@@ -201,7 +206,7 @@ class SafetyGuard(BaseGuard):
 
         # Injection check
         if self.check_injection:
-            injections = self._check_injection(content)
+            injections = self._check_injection(injection_parts)
             if injections:
                 issues.append(
                     {
@@ -278,10 +283,11 @@ class SafetyGuard(BaseGuard):
 
     def _collect_bounded_content(
         self, response: Any
-    ) -> Tuple[str, List[str], Optional[str]]:
+    ) -> Tuple[str, List[str], List[str], Optional[str]]:
         """Collect scan text and credential leaves within fixed resource caps."""
         content_parts: List[str] = []
         label_parts: List[str] = []
+        injection_parts: List[str] = []
         leaf_strings: List[str] = []
         active: Set[int] = set()
         node_count = 0
@@ -331,6 +337,7 @@ class SafetyGuard(BaseGuard):
                 leaf_strings.append(value)
                 if field_name is not None:
                     leaf_strings.append(f"{field_name}={value}")
+                    injection_parts.append(f"{field_name} {value}")
                 leaf_chars += leaf_cost
                 return
 
@@ -353,6 +360,7 @@ class SafetyGuard(BaseGuard):
                     # them in the scan corpus without consuming the value
                     # character budget, preserving the documented value cap.
                     label_parts.append(key)
+                    injection_parts.append(key)
                     if stringify_content:
                         node_count += 1
                         if node_count > self._MAX_CONTENT_NODES:
@@ -410,7 +418,12 @@ class SafetyGuard(BaseGuard):
                 limit_error = "response contains a non-JSON value"
 
         collect(response, 0)
-        return " ".join(content_parts + label_parts), leaf_strings, limit_error
+        return (
+            " ".join(content_parts + label_parts),
+            leaf_strings,
+            content_parts + injection_parts,
+            limit_error,
+        )
 
     def _check_pii(self, content: str) -> List[str]:
         """Check for PII in content."""
@@ -476,12 +489,12 @@ class SafetyGuard(BaseGuard):
                 return True
             cursor = max(cursor, pos)
 
-    def _check_injection(self, content: str) -> List[str]:
-        """Check for prompt injection patterns."""
+    def _check_injection(self, parts: List[str]) -> List[str]:
+        """Check prompt injection per value and field name."""
         found = []
 
         for pattern in self.INJECTION_PATTERNS:
-            if re.search(pattern, content, re.I):
+            if any(re.search(pattern, part, re.I) for part in parts):
                 found.append(pattern)
 
         return found
@@ -583,11 +596,10 @@ class SafetyGuard(BaseGuard):
         found = []
         for part in parts:
             scan_parts = [part]
-            normalized = self._JSON_CREDENTIAL_RE.sub(
-                lambda match: f"{match.group(1)}={match.group(2)}", part
+            scan_parts.extend(
+                f"{match.group(1)}={match.group(2)[1:-1]}"
+                for match in self._JSON_CREDENTIAL_RE.finditer(part)
             )
-            if normalized != part:
-                scan_parts.append(normalized)
             for scan_part in scan_parts:
                 if self._is_guidance_prose(scan_part):
                     continue

@@ -9,6 +9,7 @@ Source: Open Responses interoperable LLM interface.
 """
 
 import logging
+import math
 from typing import Any, AsyncGenerator, Callable, Dict, Iterable, List, Optional, Tuple
 
 from ..core import ResponseVerifier, VerificationResult
@@ -110,6 +111,8 @@ class OpenResponsesMiddleware:
         Yields:
             Verified (or replaced) items from the stream.
         """
+        running_context = dict(context) if isinstance(context, dict) else {}
+
         async for item in response_stream:
             self._stats["total"] += 1
 
@@ -119,16 +122,19 @@ class OpenResponsesMiddleware:
             )
 
             if normalized_type in self.VERIFIABLE_ITEM_TYPES:
-                verified_item = self._verify_tool_call(item, context=context)
-                if verified_item is not None:
-                    yield verified_item
+                verified_item = self._verify_tool_call(item, context=running_context)
             elif self._is_tool_shaped_item(item):
-                blocked_item = self._block_unrecognized_tool_item(item, context=context)
-                if blocked_item is not None:
-                    yield blocked_item
+                verified_item = self._block_unrecognized_tool_item(
+                    item, context=running_context
+                )
             else:
                 # Non-tool items (text, metadata, etc.) pass through
                 yield item
+                continue
+
+            self._accumulate_usage(item, running_context)
+            if verified_item is not None:
+                yield verified_item
 
     def get_stats(self) -> Dict[str, int]:
         """Return running totals of items processed."""
@@ -141,6 +147,36 @@ class OpenResponsesMiddleware:
     # ------------------------------------------------------------------ #
     #  Internals                                                           #
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _is_usable_usage_amount(value: Any) -> bool:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value >= 0
+            and (not isinstance(value, float) or math.isfinite(value))
+        )
+
+    @classmethod
+    def _accumulate_usage(cls, item: Dict[str, Any], context: Dict[str, Any]) -> None:
+        """Carry per-item usage into this stream's next verification context."""
+        usage = item.get("usage")
+        if not isinstance(usage, dict):
+            return
+
+        for context_key, usage_key in (
+            ("total_cost", "cost"),
+            ("total_tokens", "total_tokens"),
+        ):
+            reported = usage.get(usage_key)
+            if not cls._is_usable_usage_amount(reported):
+                continue
+
+            current = context.get(context_key, 0)
+            if current is None:
+                current = 0
+            if cls._is_usable_usage_amount(current):
+                context[context_key] = current + reported
 
     @staticmethod
     def _is_tool_shaped_item(item: Dict[str, Any]) -> bool:
