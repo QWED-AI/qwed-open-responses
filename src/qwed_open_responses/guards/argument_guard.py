@@ -127,7 +127,7 @@ class ArgumentGuard(BaseGuard):
                 return self.fail_result("Invalid or ambiguous tool-call arguments")
             argument_sets = []
             for call in calls:
-                tool_name = call.get("tool_name")
+                tool_name = call.get("tool_name") or call.get("name")
                 rules = self.rules
                 if self.tool_rules is not None and isinstance(tool_name, str):
                     rules = self.tool_rules.get(tool_name.casefold(), self.rules)

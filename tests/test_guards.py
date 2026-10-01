@@ -279,6 +279,25 @@ class TestArgumentGuard:
         assert result.passed is False
         assert "invalid email format" in str(result.details).lower()
 
+    def test_nested_choice_uses_name_for_tool_specific_rules(self):
+        guard = ArgumentGuard(
+            tool_rules={"Notify": {"email": {"type": "email", "required": True}}}
+        )
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [{"name": "notify", "arguments": {}}]
+                    }
+                }
+            ]
+        }
+
+        result = guard.check(response)
+
+        assert result.passed is False
+        assert "missing required argument: email" in str(result.details).lower()
+
     def test_ordinary_choices_are_not_treated_as_tool_calls(self):
         result = ArgumentGuard().check(
             {"type": "structured_output", "choices": ["red", "blue"]}

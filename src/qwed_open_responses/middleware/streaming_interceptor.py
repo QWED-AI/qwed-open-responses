@@ -214,10 +214,11 @@ class OpenResponsesMiddleware:
                 node_envelope_keys = envelope_keys
                 if node is item and root_type in result_item_types:
                     # Root correlation fields are not a new invocation, but a
-                    # function wrapper can still contain an executable call.
-                    node_envelope_keys = envelope_keys - {"tool_name", "function"}
-                    if OpenResponsesMiddleware._has_result_function_call(item):
-                        return True
+                    # function wrapper is exempt only after its call is
+                    # normalized and matched to the correlated root metadata.
+                    node_envelope_keys = envelope_keys - {"tool_name"}
+                    if OpenResponsesMiddleware._is_result_function_metadata(item):
+                        node_envelope_keys = node_envelope_keys - {"function"}
                 if node_envelope_keys.intersection(node):
                     return bool(ToolGuard.normalize_tool_calls(node)) or bool(
                         OpenResponsesMiddleware._has_tool_hint(node)
@@ -294,27 +295,79 @@ class OpenResponsesMiddleware:
         return False
 
     @staticmethod
-    def _has_result_function_call(item: Dict[str, Any]) -> bool:
-        """Detect executable function shapes inside a result envelope."""
+    def _is_result_function_metadata(item: Dict[str, Any]) -> bool:
+        """Recognize a normalized function echo tied to a completed result."""
         result_type = ToolGuard._normalized_type(item.get("type", ""))
         if result_type not in {"tool_result", "function_call_output"}:
             return False
 
-        function = item.get("function")
-        if not isinstance(function, (dict, list)):
-            return False
-
-        has_tool_hint = OpenResponsesMiddleware._has_tool_hint(function)
-        if not has_tool_hint and not (
-            isinstance(function, dict)
-            and any(key in function for key in ("name", "arguments"))
+        correlation_ids = (item.get("tool_use_id"), item.get("call_id"))
+        if not any(
+            isinstance(value, str) and value.strip() for value in correlation_ids
         ):
             return False
 
-        normalized = ToolGuard.normalize_tool_calls(
+        function = item.get("function")
+        tool_name = item.get("tool_name")
+        if (
+            not isinstance(function, dict)
+            or not isinstance(tool_name, str)
+            or not tool_name.strip()
+            or "name" not in function
+            or "arguments" not in function
+        ):
+            return False
+
+        nested_call_keys = {
+            "tool_name",
+            "tool_call",
+            "tool_calls",
+            "function_call",
+            "function",
+            "tool_use",
+        }
+        if nested_call_keys.intersection(function):
+            return False
+        function_type = ToolGuard._normalized_type(function.get("type", ""))
+        if function_type.startswith(("tool_call", "function_call", "tool_use")) or (
+            "tool" in function_type
+        ):
+            return False
+
+        root_arguments = item.get("arguments")
+        function_name = function.get("name")
+        function_arguments = function.get("arguments")
+        if (
+            not isinstance(root_arguments, dict)
+            or not isinstance(function_name, str)
+            or not function_name.strip()
+            or not isinstance(function_arguments, dict)
+        ):
+            return False
+
+        if any(
+            depth < 0 or depth > ToolGuard._MAX_ARGS_JSON_DEPTH
+            for depth in (
+                ToolGuard._arguments_depth(root_arguments),
+                ToolGuard._arguments_depth(function_arguments),
+            )
+        ):
+            return False
+
+        normalized_calls = ToolGuard.normalize_tool_calls(
             {"type": "function_call", "function": function}
         )
-        return bool(normalized) or has_tool_hint
+        if len(normalized_calls) != 1:
+            return False
+        normalized_call = normalized_calls[0]
+        normalized_name = normalized_call.get("tool_name")
+        return (
+            normalized_call.get("type") == "tool_call"
+            and isinstance(normalized_name, str)
+            and normalized_name.casefold() == tool_name.casefold()
+            and normalized_call.get("arguments") == root_arguments
+            and function_arguments == root_arguments
+        )
 
     @staticmethod
     def _scan_tool_hint(

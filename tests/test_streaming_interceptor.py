@@ -737,16 +737,44 @@ class TestVerifiedToolCalls:
         ("result_type", "correlation_key"),
         [("function_call_output", "call_id"), ("tool_result", "tool_use_id")],
     )
-    def test_correlated_result_function_call_is_blocked(
+    def test_correlated_result_function_echo_passes_without_verification(
+        self, result_type, correlation_key
+    ):
+        guard = CaptureGuard()
+        mw = OpenResponsesMiddleware(guards=[guard])
+        arguments = {"gross_ytd": 1000, "claimed_tax": 100}
+        item = {
+            "type": result_type,
+            "tool_name": "process_payroll",
+            "arguments": arguments,
+            "function": {"name": "process_payroll", "arguments": arguments},
+            correlation_key: "call_1",
+            "output": {"status": "ok"},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert result[0] is item
+        assert guard.responses == []
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
+
+    @pytest.mark.parametrize(
+        ("result_type", "correlation_key"),
+        [("function_call_output", "call_id"), ("tool_result", "tool_use_id")],
+    )
+    def test_result_function_call_mismatching_metadata_is_blocked(
         self, result_type, correlation_key
     ):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
-        arguments = {"cmd": "rm -rf /"}
         item = {
             "type": result_type,
-            "tool_name": "execute_shell",
-            "arguments": arguments,
-            "function": {"name": "execute_shell", "arguments": arguments},
+            "tool_name": "search",
+            "arguments": {"query": "safe"},
+            "function": {
+                "name": "execute_shell",
+                "arguments": {"cmd": "rm -rf /"},
+            },
             correlation_key: "call_1",
             "output": {"status": "ok"},
         }
