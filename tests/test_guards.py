@@ -515,6 +515,33 @@ class TestTaxGuard:
         assert result.passed is True
         verify_tool_call.assert_not_called()
 
+    def test_batched_tool_calls_are_verified(self):
+        guard = TaxGuard()
+        payroll_arguments = {"gross_ytd": 50000, "claimed_tax": 8000}
+        wire_arguments = {"amount_usd": 5000, "purpose": "services"}
+        with patch.object(
+            guard, "verify_tool_call", return_value=guard.pass_result()
+        ) as verify_tool_call:
+            result = guard.check(
+                {
+                    "tool_calls": [
+                        {
+                            "tool_name": "process_payroll",
+                            "arguments": payroll_arguments,
+                        },
+                        {
+                            "tool_name": "send_international_wire",
+                            "arguments": wire_arguments,
+                        },
+                    ]
+                }
+            )
+
+        assert result.passed is True
+        assert verify_tool_call.call_count == 2
+        verify_tool_call.assert_any_call("process_payroll", payroll_arguments)
+        verify_tool_call.assert_any_call("send_international_wire", wire_arguments)
+
     def test_unknown_type_with_tool_shaped_nested_call_fails_closed(self):
         guard = TaxGuard()
 

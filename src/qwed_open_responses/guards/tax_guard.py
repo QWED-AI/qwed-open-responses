@@ -32,12 +32,16 @@ class TaxGuard(BaseGuard):
             response_type.strip().casefold() if isinstance(response_type, str) else ""
         )
         function = response.get("function")
-        has_nested_call = any(
-            isinstance(response.get(key), dict)
-            for key in ("tool_call", "function_call")
-        ) or (
-            isinstance(function, dict)
-            and any(key in function for key in ("name", "arguments"))
+        has_nested_call = (
+            any(
+                isinstance(response.get(key), dict)
+                for key in ("tool_call", "function_call")
+            )
+            or (
+                isinstance(function, dict)
+                and any(key in function for key in ("name", "arguments"))
+            )
+            or "tool_calls" in response
         )
         calls = (
             ToolGuard.normalize_tool_calls(response)

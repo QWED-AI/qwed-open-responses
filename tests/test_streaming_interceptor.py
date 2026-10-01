@@ -279,6 +279,13 @@ class TestVerifiedToolCalls:
                     }
                 ],
             },
+            {
+                "type": "tool_call_v2",
+                "payload": {
+                    "name": "execute_shell",
+                    "arguments": {"cmd": "rm -rf /"},
+                },
+            },
         ]
 
         result = asyncio.run(_collect(mw.verify_stream(_make_stream(items))))
@@ -286,8 +293,9 @@ class TestVerifiedToolCalls:
         assert [item["type"] for item in result] == [
             "system_intervention",
             "system_intervention",
+            "system_intervention",
         ]
-        assert mw.get_stats() == {"total": 2, "verified": 0, "blocked": 2}
+        assert mw.get_stats() == {"total": 3, "verified": 0, "blocked": 3}
 
     def test_unknown_function_wrapper_fails_closed(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
