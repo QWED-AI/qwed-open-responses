@@ -1309,19 +1309,34 @@ export class SafetyGuard extends BaseGuard {
         return tail.length >= 2;
     }
 
+    private static normalizePiiType(type: string): string {
+        return type
+            .replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)
+            .replace(/[\s-]+/g, '_');
+    }
+
     private checkPii: boolean;
     private checkInjection: boolean;
     private checkHarmful: boolean;
+    private piiAllowList: Set<string>;
+    private customPatterns: RegExp[];
 
     constructor(options: {
         checkPii?: boolean;
         checkInjection?: boolean;
         checkHarmful?: boolean;
+        piiAllowList?: readonly string[];
+        customPatterns?: readonly string[];
     } = {}) {
         super();
         this.checkPii = options.checkPii ?? true;
         this.checkInjection = options.checkInjection ?? true;
         this.checkHarmful = options.checkHarmful ?? true;
+        this.piiAllowList = new Set(
+            (options.piiAllowList ?? []).map(SafetyGuard.normalizePiiType),
+        );
+        this.customPatterns = (options.customPatterns ?? [])
+            .map((pattern) => new RegExp(pattern, 'i'));
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
@@ -1360,8 +1375,11 @@ export class SafetyGuard extends BaseGuard {
             // Python parity: one {type:'pii', severity:'warning'} entry whose
             // details carry the matched PII types (email, phone, ...).
             const piiTypes: string[] = [];
-            if (SafetyGuard.containsEmail(content)) piiTypes.push('email');
+            if (!this.piiAllowList.has('email') && SafetyGuard.containsEmail(content)) {
+                piiTypes.push('email');
+            }
             for (const [type, pattern] of Object.entries(SafetyGuard.PII_PATTERNS)) {
+                if (this.piiAllowList.has(SafetyGuard.normalizePiiType(type))) continue;
                 if (pattern.test(content)) {
                     piiTypes.push(type);
                 }
@@ -1405,6 +1423,18 @@ export class SafetyGuard extends BaseGuard {
             }
             if (harmful.length > 0) {
                 const entry = { type: 'harmful', severity: 'error', details: harmful };
+                issues.push(entry);
+                errorIssues.push(entry);
+            }
+        }
+
+        for (const pattern of this.customPatterns) {
+            if (pattern.test(content)) {
+                const entry = {
+                    type: 'custom_pattern',
+                    severity: 'error',
+                    details: [pattern.source],
+                };
                 issues.push(entry);
                 errorIssues.push(entry);
             }

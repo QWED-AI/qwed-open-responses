@@ -61,6 +61,9 @@ Detects PII and prompt injection.
 const guard = new SafetyGuard({
   checkPii: true,
   checkInjection: true,
+  checkHarmful: true,
+  piiAllowList: ['email'],
+  customPatterns: ['internal\\s+marker'],
 });
 ```
 
