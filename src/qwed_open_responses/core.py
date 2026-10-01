@@ -585,6 +585,7 @@ class ResponseVerifier:
         tool_name: str,
         arguments: Dict[str, Any],
         guards: Optional[List["BaseGuard"]] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> VerificationResult:
         """
         Convenience method to verify a tool call.
@@ -602,13 +603,14 @@ class ResponseVerifier:
             "tool_name": tool_name,
             "arguments": arguments,
         }
-        return self.verify(tool_call, guards)
+        return self.verify(tool_call, guards, context=context)
 
     def verify_structured_output(
         self,
         output: Dict[str, Any],
         schema: Optional[Dict[str, Any]] = None,
         guards: Optional[List["BaseGuard"]] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> VerificationResult:
         """
         Convenience method to verify a structured output.
@@ -646,7 +648,7 @@ class ResponseVerifier:
             "type": "structured_output",
             "output": output,
         }
-        return self.verify(structured, guards_list)
+        return self.verify(structured, guards_list, context=context)
 
     @staticmethod
     def _json_scalar_type_name(parsed: Any) -> str:

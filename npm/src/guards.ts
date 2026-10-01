@@ -1247,6 +1247,9 @@ export class SafetyGuard extends BaseGuard {
         /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
     ];
 
+    private static JSON_CREDENTIAL_RE =
+        /["'](password|api[_-]?key|secret|private[\s_-]?key)["']\s*:\s*["']([^"']*)["']/gi;
+
     private static HARMFUL_PATTERNS = [
         ...SafetyGuard.CREDENTIAL_PATTERNS,
         // Dashed PEM header only: without the leading dashes the
@@ -1395,11 +1398,21 @@ export class SafetyGuard extends BaseGuard {
             // the credential patterns, never PEM (Sentry/Greptile P1).
             const harmful: string[] = [];
             for (const leaf of leaves) {
-                if (SafetyGuard.isGuidanceProse(leaf)) continue;
-                if (SafetyGuard.placeholderTailAllows(leaf)) continue;
-                for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
-                    if (pattern.test(leaf) && !harmful.includes(pattern.source)) {
-                        harmful.push(pattern.source);
+                const scanValues = [leaf];
+                const normalized = leaf
+                    .replace(
+                        SafetyGuard.JSON_CREDENTIAL_RE,
+                        (_match, label: string, value: string) => `${label}=${value}`,
+                    )
+                    .replace(/[{}[\]]/g, ' ');
+                if (normalized !== leaf) scanValues.push(normalized);
+                for (const scanValue of scanValues) {
+                    if (SafetyGuard.isGuidanceProse(scanValue)) continue;
+                    if (SafetyGuard.placeholderTailAllows(scanValue)) continue;
+                    for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
+                        if (pattern.test(scanValue) && !harmful.includes(pattern.source)) {
+                            harmful.push(pattern.source);
+                        }
                     }
                 }
             }
@@ -1492,6 +1505,7 @@ export class SafetyGuard extends BaseGuard {
         const MAX_FIELD_LABEL_CHARS = 10_000;
         const MAX_CREDENTIAL_SCAN_CHARS = 2 * MAX_CHARS + MAX_FIELD_LABEL_CHARS;
         const parts: string[] = [];
+        const labelParts: string[] = [];
         const leaves: string[] = [];
         const active = new WeakSet<object>();
         let nodeCount = 0;
@@ -1589,16 +1603,19 @@ export class SafetyGuard extends BaseGuard {
                         break;
                     }
                     labelChars += labelCost;
-                    const includeContent = stringifyContent
-                        || (depth === 0 && (key === 'output' || key === 'arguments'));
+                    // Field names are attacker-controlled input too. Include
+                    // them in the scan corpus without consuming the value
+                    // character budget, preserving the documented value cap.
+                    labelParts.push(key);
                     if (stringifyContent) {
                         nodeCount++;
                         if (nodeCount > MAX_NODES) {
                             limitError = 'response node count exceeds the inspection limit';
                             break;
                         }
-                        if (!addContent(key)) break;
                     }
+                    const includeContent = stringifyContent
+                        || (depth === 0 && (key === 'output' || key === 'arguments'));
                     visit(
                         child,
                         depth + 1,
@@ -1612,7 +1629,7 @@ export class SafetyGuard extends BaseGuard {
         };
 
         visit(response, 0);
-        return { content: parts.join(' '), leaves, limitError };
+        return { content: parts.concat(labelParts).join(' '), leaves, limitError };
     }
 
     private extractLeafStrings(response: ParsedResponse): string[] {

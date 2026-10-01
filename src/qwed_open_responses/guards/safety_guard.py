@@ -80,9 +80,9 @@ class SafetyGuard(BaseGuard):
     _CREDENTIAL_EXEMPTION = (
         r"(?!(?:required|optional|none|null|redacted|omitted|placeholder|"
         r"invalid|expired|not[_\s]?(?:set|provided)|n/?a)"
-        r"(?=[\s.,;:!?)\]]*$)"
-        r"|\*{3,}(?=[\s.,;:!?)\]]*$)"
-        r"|x{3,}(?=[\s.,;:!?)\]]*$))\S+"
+        r"(?=[\s.,;:!?)}\]]*$)"
+        r"|\*{3,}(?=[\s.,;:!?)}\]]*$)"
+        r"|x{3,}(?=[\s.,;:!?)}\]]*$))\S+"
     )
 
     _CREDENTIAL_PATTERNS = (
@@ -94,6 +94,11 @@ class SafetyGuard(BaseGuard):
         # "private_key: not set" (Greptile P1, PR #34). The [\s_-]? class
         # also catches the spaced "private key: <value>" form.
         r"private[\s_-]?key\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
+    )
+
+    _JSON_CREDENTIAL_RE = re.compile(
+        r"""["'](password|api[_-]?key|secret|private[\s_-]?key)["']\s*:\s*["']([^"']*)["']""",
+        re.IGNORECASE,
     )
 
     # Credential-shaped tail tokens for guidance-prose detection below.
@@ -276,6 +281,7 @@ class SafetyGuard(BaseGuard):
     ) -> Tuple[str, List[str], Optional[str]]:
         """Collect scan text and credential leaves within fixed resource caps."""
         content_parts: List[str] = []
+        label_parts: List[str] = []
         leaf_strings: List[str] = []
         active: Set[int] = set()
         node_count = 0
@@ -343,9 +349,10 @@ class SafetyGuard(BaseGuard):
                         limit_error = "field labels exceed the inspection limit"
                         break
                     label_chars += label_cost
-                    include_content = stringify_content or (
-                        depth == 0 and key in ("output", "arguments")
-                    )
+                    # Field names are attacker-controlled input too. Include
+                    # them in the scan corpus without consuming the value
+                    # character budget, preserving the documented value cap.
+                    label_parts.append(key)
                     if stringify_content:
                         node_count += 1
                         if node_count > self._MAX_CONTENT_NODES:
@@ -353,8 +360,9 @@ class SafetyGuard(BaseGuard):
                                 "response node count exceeds the inspection limit"
                             )
                             break
-                        if not add_content(key):
-                            break
+                    include_content = stringify_content or (
+                        depth == 0 and key in ("output", "arguments")
+                    )
                     child_field = key if isinstance(child, str) else None
                     collect(child, depth + 1, child_field, include_content)
                     if limit_error is not None:
@@ -402,7 +410,7 @@ class SafetyGuard(BaseGuard):
                 limit_error = "response contains a non-JSON value"
 
         collect(response, 0)
-        return " ".join(content_parts), leaf_strings, limit_error
+        return " ".join(content_parts + label_parts), leaf_strings, limit_error
 
     def _check_pii(self, content: str) -> List[str]:
         """Check for PII in content."""
@@ -574,13 +582,20 @@ class SafetyGuard(BaseGuard):
         """Match harmful patterns against each collected string separately."""
         found = []
         for part in parts:
-            if self._is_guidance_prose(part):
-                continue
-            if self._placeholder_tail_allows(part):
-                continue
-            for pattern in self.HARMFUL_PATTERNS:
-                if re.search(pattern, part, re.I) and pattern not in found:
-                    found.append(pattern)
+            scan_parts = [part]
+            normalized = self._JSON_CREDENTIAL_RE.sub(
+                lambda match: f"{match.group(1)}={match.group(2)}", part
+            )
+            if normalized != part:
+                scan_parts.append(normalized)
+            for scan_part in scan_parts:
+                if self._is_guidance_prose(scan_part):
+                    continue
+                if self._placeholder_tail_allows(scan_part):
+                    continue
+                for pattern in self.HARMFUL_PATTERNS:
+                    if re.search(pattern, scan_part, re.I) and pattern not in found:
+                        found.append(pattern)
         return found
 
     @staticmethod

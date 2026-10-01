@@ -84,7 +84,11 @@ class VerifiedOpenAI:
         self.chat = VerifiedChat(self)
         self.responses = VerifiedResponses(self)
 
-    def verify(self, response: Any) -> VerificationResult:
+    def verify(
+        self,
+        response: Any,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> VerificationResult:
         """Verify a response."""
         # Convert OpenAI response to dict
         if hasattr(response, "model_dump"):
@@ -97,7 +101,7 @@ class VerifiedOpenAI:
                 "Expected Pydantic model (OpenAI response object)."
             )
 
-        return self._verifier.verify(response_dict)
+        return self._verifier.verify(response_dict, context=context)
 
 
 class VerifiedChat:
@@ -116,9 +120,12 @@ class VerifiedCompletions:
 
     def create(self, **kwargs) -> Any:
         """Create chat completion with verification."""
+        # Keep trusted accounting out of the upstream API request. Callers
+        # may provide it as verification_context for configured budget caps.
+        verification_context = kwargs.pop("verification_context", None)
         response = self._parent._client.chat.completions.create(**kwargs)
 
-        result = self._parent.verify(response)
+        result = self._parent.verify(response, context=verification_context)
 
         if not result.verified and self._parent._block_on_failure:
             raise ResponseBlocked(
@@ -140,6 +147,9 @@ class VerifiedResponses:
 
     def create(self, **kwargs) -> Any:
         """Create response with verification."""
+        # Keep trusted accounting out of the upstream API request. Callers
+        # may provide it as verification_context for configured budget caps.
+        verification_context = kwargs.pop("verification_context", None)
         # Note: This is for the new Responses API when available
         # For now, falls back to chat completions
         if hasattr(self._parent._client, "responses"):
@@ -153,7 +163,7 @@ class VerifiedResponses:
             )
             response = self._parent._client.chat.completions.create(**kwargs)
 
-        result = self._parent.verify(response)
+        result = self._parent.verify(response, context=verification_context)
 
         if not result.verified and self._parent._block_on_failure:
             raise ResponseBlocked(

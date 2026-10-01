@@ -99,6 +99,7 @@ class OpenResponsesMiddleware:
     async def verify_stream(
         self,
         response_stream: AsyncGenerator[Dict[str, Any], None],
+        context: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Monitor the stream for tool-call items, verifying each before yield.
@@ -118,11 +119,11 @@ class OpenResponsesMiddleware:
             )
 
             if normalized_type in self.VERIFIABLE_ITEM_TYPES:
-                verified_item = self._verify_tool_call(item)
+                verified_item = self._verify_tool_call(item, context=context)
                 if verified_item is not None:
                     yield verified_item
             elif self._is_tool_shaped_item(item):
-                blocked_item = self._block_unrecognized_tool_item(item)
+                blocked_item = self._block_unrecognized_tool_item(item, context=context)
                 if blocked_item is not None:
                     yield blocked_item
             else:
@@ -440,6 +441,7 @@ class OpenResponsesMiddleware:
     def _verify_tool_call(
         self,
         item: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Run a single tool-call item through the guard stack.
@@ -449,12 +451,13 @@ class OpenResponsesMiddleware:
         original item unmodified (when ``block_on_failure`` is False).
         """
         tool_name = self._tool_name(item)
-        result: VerificationResult = self._verifier.verify(item)
+        result: VerificationResult = self._verifier.verify(item, context=context)
         return self._handle_tool_call_result(item, tool_name, result)
 
     def _block_unrecognized_tool_item(
         self,
         item: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Fail closed when a tool-shaped item declares an unknown type."""
         reason = f"Unrecognized tool-call item type: {item.get('type')!r}"
@@ -464,6 +467,7 @@ class OpenResponsesMiddleware:
                 *self._verifier.default_guards,
                 _UnrecognizedToolItemGuard(reason),
             ],
+            context=context,
         )
         return self._handle_tool_call_result(item, self._tool_name(item), result)
 
