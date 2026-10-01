@@ -350,6 +350,35 @@ class TestVerifiedToolCalls:
         assert result[0] is item
         assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
 
+    def test_nested_tool_schema_metadata_passes_through(self):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        item = {
+            "type": "structured_output",
+            "payload": {"type": "tool_schema"},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result == [item]
+        assert result[0] is item
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
+
+    def test_nested_custom_tool_call_still_fails_closed(self):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        item = {
+            "type": "structured_output",
+            "payload": {
+                "type": "custom_tool",
+                "name": "execute_shell",
+                "arguments": {"cmd": "id"},
+            },
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
     def test_choices_tool_calls_are_blocked_as_unknown_envelope(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
         item = {

@@ -202,7 +202,10 @@ class OpenResponsesMiddleware:
                 normalized_type = ToolGuard._normalized_type(node.get("type", ""))
                 is_tool_type = normalized_type not in passthrough_on_scan_limit and (
                     normalized_type.startswith(tool_type_prefixes)
-                    or "tool" in normalized_type
+                    or (
+                        "tool" in normalized_type
+                        and ToolGuard._is_tool_shaped_dict(node)
+                    )
                 )
                 if is_tool_type:
                     return bool(ToolGuard.normalize_tool_calls(node)) or bool(

@@ -119,11 +119,7 @@ class ArgumentGuard(BaseGuard):
             if normalized_type in {"tool_call", "function_call"} or has_nested_call
             else []
         )
-        if (
-            normalized_type in {"tool_call", "function_call"}
-            or has_tool_call_collection
-            or calls
-        ):
+        if normalized_type in {"tool_call", "function_call"} or calls:
             if not calls or any(
                 call.get("type") in {"__malformed__", "__unrecognized__"}
                 for call in calls
@@ -136,6 +132,8 @@ class ArgumentGuard(BaseGuard):
                 if self.tool_rules is not None and isinstance(tool_name, str):
                     rules = self.tool_rules.get(tool_name.casefold(), self.rules)
                 argument_sets.append((call.get("arguments", {}), rules))
+        elif has_tool_call_collection:
+            argument_sets = []
         else:
             arguments = response.get("arguments", {})
             if not arguments and "output" in response:
