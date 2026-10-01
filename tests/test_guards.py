@@ -123,6 +123,24 @@ class TestToolGuard:
 
         assert result.passed is True
 
+    def test_empty_tool_calls_collection_fails_argument_validation(self):
+        result = ArgumentGuard(
+            rules={"amount": {"type": "number", "min": 0, "max": 100}}
+        ).check({"tool_calls": [], "arguments": {"amount": 50}})
+
+        assert result.passed is False
+        assert "invalid or ambiguous" in result.message.lower()
+
+    def test_empty_nested_choice_tool_calls_fail_argument_validation(self):
+        result = ArgumentGuard().check(
+            {
+                "choices": [{"message": {"tool_calls": []}}],
+                "arguments": {},
+            }
+        )
+
+        assert result.passed is False
+
 
 class TestMathGuard:
     """Test MathGuard class."""

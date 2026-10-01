@@ -1,6 +1,7 @@
 """Tests for OpenResponsesMiddleware — Streaming Interceptor."""
 
 import asyncio
+import pytest
 
 from qwed_open_responses.core import GuardResult, VerificationResult
 from qwed_open_responses.guards.argument_guard import ArgumentGuard
@@ -228,6 +229,21 @@ class TestVerifiedToolCalls:
         assert result[0]["type"] == "system_intervention"
         assert "Unrecognized tool-call item type" in result[0]["reason"]
         assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
+    def test_nested_tool_type_is_normalized_at_the_matching_node(self, monkeypatch):
+        nested = {"type": "tool_call", "tool_name": "search", "arguments": {}}
+        item = {"type": "structured_output", "payload": nested}
+        normalized = []
+        normalize_tool_calls = ToolGuard.normalize_tool_calls
+
+        def capture(response):
+            normalized.append(response)
+            return normalize_tool_calls(response)
+
+        monkeypatch.setattr(ToolGuard, "normalize_tool_calls", capture)
+
+        assert OpenResponsesMiddleware._is_tool_shaped_item(item) is True
+        assert normalized == [nested]
 
     def test_unknown_tool_named_type_fails_closed(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])
@@ -664,20 +680,24 @@ class TestVerifiedToolCalls:
         assert guard.responses == []
         assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
 
-    def test_function_call_output_correlation_fields_pass_through_without_verification(
-        self,
+    @pytest.mark.parametrize(
+        ("result_type", "correlation_key"),
+        [("function_call_output", "call_id"), ("tool_result", "tool_use_id")],
+    )
+    def test_result_function_correlation_fields_pass_through_without_verification(
+        self, result_type, correlation_key
     ):
         guard = CaptureGuard()
         mw = OpenResponsesMiddleware(guards=[guard])
         item = {
-            "type": "function_call_output",
+            "type": result_type,
             "tool_name": "process_payroll",
             "arguments": {"gross_ytd": 1000, "claimed_tax": 100},
             "function": {
                 "name": "process_payroll",
                 "arguments": {"gross_ytd": 1000, "claimed_tax": 100},
             },
-            "call_id": "call_1",
+            correlation_key: "call_1",
             "output": {"status": "ok"},
         }
 
@@ -687,6 +707,48 @@ class TestVerifiedToolCalls:
         assert result[0] is item
         assert guard.responses == []
         assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 0}
+
+    @pytest.mark.parametrize("result_type", ["function_call_output", "tool_result"])
+    def test_result_function_wrapper_without_matching_correlation_is_blocked(
+        self, result_type
+    ):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        item = {
+            "type": result_type,
+            "function": {
+                "name": "execute_shell",
+                "arguments": {"cmd": "rm -rf /"},
+            },
+            "output": {"status": "ok"},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
+
+    def test_correlated_result_metadata_does_not_hide_nested_function_call(self):
+        mw = OpenResponsesMiddleware(guards=[PassGuard()])
+        item = {
+            "type": "function_call_output",
+            "tool_name": "execute_shell",
+            "arguments": {"cmd": "rm -rf /"},
+            "function": {
+                "name": "execute_shell",
+                "arguments": {"cmd": "rm -rf /"},
+                "tool_call": {
+                    "name": "execute_shell",
+                    "arguments": {"cmd": "rm -rf /"},
+                },
+            },
+            "call_id": "call_1",
+            "output": {"status": "ok"},
+        }
+
+        result = asyncio.run(_collect(mw.verify_stream(_make_stream([item]))))
+
+        assert result[0]["type"] == "system_intervention"
+        assert mw.get_stats() == {"total": 1, "verified": 0, "blocked": 1}
 
     def test_tool_result_nested_tool_use_is_blocked(self):
         mw = OpenResponsesMiddleware(guards=[PassGuard()])

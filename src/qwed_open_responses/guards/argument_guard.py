@@ -86,6 +86,7 @@ class ArgumentGuard(BaseGuard):
             and "tool_calls" in choice["message"]
             for choice in choices
         )
+        has_tool_call_collection = "tool_calls" in response or has_choice_tool_calls
         content = response.get("content")
         has_content_tool_calls = (
             isinstance(content, dict)
@@ -118,7 +119,11 @@ class ArgumentGuard(BaseGuard):
             if normalized_type in {"tool_call", "function_call"} or has_nested_call
             else []
         )
-        if normalized_type in {"tool_call", "function_call"} or calls:
+        if (
+            normalized_type in {"tool_call", "function_call"}
+            or has_tool_call_collection
+            or calls
+        ):
             if not calls or any(
                 call.get("type") in {"__malformed__", "__unrecognized__"}
                 for call in calls
