@@ -473,8 +473,11 @@ export class ToolGuard extends BaseGuard {
                     tool_name: content.name || '',
                     arguments: content.input || {},
                 });
-            } else if (this.containsNestedToolShape(content, 0)) {
-                calls.push(ToolGuard.malformedEntry());
+            } else {
+                const nestedScan = this.scanNestedToolShape(content, 0);
+                if (nestedScan.found || nestedScan.limited) {
+                    calls.push(ToolGuard.malformedEntry());
+                }
             }
         } else if (content !== null && content !== undefined) {
             calls.push(ToolGuard.malformedEntry());
@@ -495,7 +498,8 @@ export class ToolGuard extends BaseGuard {
         if (normalized.length === 0) {
             // Bounded recursive scan (#33 review): tool-shaped objects nested
             // inside wrappers/arrays must not slip through as "no tool calls".
-            if (this.containsNestedToolShape(response, 0)) {
+            const nestedScan = this.scanNestedToolShape(response, 0);
+            if (nestedScan.found || nestedScan.limited) {
                 normalized.push({
                     type: '__unrecognized__',
                     tool_name: undefined,
@@ -713,14 +717,28 @@ export class ToolGuard extends BaseGuard {
     }
 
     containsNestedToolShape(value: any, depth: number): boolean {
-        /** Bounded recursive scan for tool-shaped objects (#33 review). */
-        if (depth > 12) return false;
-        if (value === null || typeof value !== 'object') return false;
-        if (this.isToolShapedDict(value)) return true;
-        for (const v of Object.values(value)) {
-            if (this.containsNestedToolShape(v, depth + 1)) return true;
+        return this.scanNestedToolShape(value, depth).found;
+    }
+
+    private scanNestedToolShape(
+        value: any,
+        depth: number,
+    ): { found: boolean; limited: boolean } {
+        /**
+         * A bounded scan cannot establish that a skipped subtree is tool-free.
+         * Report truncation so callers fail closed instead of returning a
+         * clean "No tool calls" result (#41).
+         */
+        if (depth > 12) return { found: false, limited: true };
+        if (value === null || typeof value !== 'object') {
+            return { found: false, limited: false };
         }
-        return false;
+        if (this.isToolShapedDict(value)) return { found: true, limited: false };
+        for (const child of Object.values(value)) {
+            const result = this.scanNestedToolShape(child, depth + 1);
+            if (result.found || result.limited) return result;
+        }
+        return { found: false, limited: false };
     }
 
     private isToolShapedDict(value: any): boolean {
@@ -739,10 +757,31 @@ export class ToolGuard extends BaseGuard {
         });
 
         const out: any[] = [];
-        for (const call of calls) {
+        for (const originalCall of calls) {
+            let call = originalCall;
             if (call.type === '__unrecognized__' || call.type === '__malformed__') {
                 out.push(call);
                 continue;
+            }
+
+            const rootCallFields = ['toolName', 'tool_name', 'name', 'arguments'];
+            const hasRootCallFields = rootCallFields.some((key) => key in call);
+            const nestedCall = call.tool_call ?? call.toolCall ?? call.function_call;
+            const hasNestedCall =
+                'tool_call' in call || 'toolCall' in call || 'function_call' in call;
+
+            if (hasNestedCall) {
+                if (
+                    nestedCall === null ||
+                    typeof nestedCall !== 'object' ||
+                    Array.isArray(nestedCall) ||
+                    nestedCall === call ||
+                    hasRootCallFields
+                ) {
+                    out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
+                    continue;
+                }
+                call = nestedCall;
             }
 
             // OpenAI function wrapper: {type?, function: {name, arguments}}.
@@ -751,6 +790,13 @@ export class ToolGuard extends BaseGuard {
             if ('function' in call) {
                 const fn = call.function;
                 if (fn !== null && typeof fn === 'object' && !Array.isArray(fn)) {
+                    const hasFunctionFields = 'name' in fn || 'arguments' in fn;
+                    const hasNestedFunctionCall =
+                        'tool_call' in call || 'toolCall' in call || 'function_call' in call;
+                    if (hasFunctionFields && (hasNestedFunctionCall || rootCallFields.some((key) => key in call))) {
+                        out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
+                        continue;
+                    }
                     const n = fn.name;
                     if (!ToolGuard.validToolName(n)) {
                         out.push(sentinel(call.toolName || call.name || n));
