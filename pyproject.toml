@@ -31,7 +31,8 @@ keywords = [
 ]
 dependencies = [
     "pydantic>=2.0",
-    "jsonschema[format]>=4.17.0"
+    "jsonschema>=4.17.0", # no [format] extra: all formats SchemaGuard asserts (email, uuid, date-time, uri, ipv4) are hand-rolled or stdlib; the extra only adds unused GPL-licensed helpers (rfc3987)
+    "fqdn>=1.5.1", # hostname checker for caller-supplied schemas (MPL-2.0, no GPL in tree)
 ]
 
 [project.optional-dependencies]
