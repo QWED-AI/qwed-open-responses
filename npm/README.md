@@ -61,8 +61,18 @@ Detects PII and prompt injection.
 const guard = new SafetyGuard({
   checkPii: true,
   checkInjection: true,
+  checkHarmful: true,
+  piiAllowList: ['email'],
+  customPatterns: ['internal\\s+marker'],
 });
 ```
+
+`piiAllowList` accepts both camelCase and snake_case names, such as `ipAddress`
+and `ip_address`. Custom patterns are case-insensitive JavaScript regular
+expressions; invalid patterns throw during construction. Each pattern has a
+25 ms execution limit, and a timeout fails the safety check closed. Avoid
+nested or overlapping quantifiers such as `(a+)+$`, which can cause catastrophic
+backtracking.
 
 ### SchemaGuard
 
