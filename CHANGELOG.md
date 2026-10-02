@@ -49,9 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `blockOnFailure: false`. Register a body parser (e.g. `express.json()`)
   before the middleware.
 - **SafetyGuard field scanning and context propagation** (#57, #58) —
-  strict required fields, three-way `contract_type` classification, no
-  `proof_ref` without a deterministic step, and npm/Python configuration
-  parity (subset patterns, escaped stringify, string-args asymmetry).
+  field names are scanned for injection and PII while sibling fields stay
+  isolated; split output values scan as one text sequence; deep nesting
+  fails closed at the boundary; budget caps fail closed without trusted
+  usage context; JSON-text credential forms are blocked; and npm/Python
+  configuration parity (subset patterns, escaped stringify, string-args
+  asymmetry).
 
 ### Changed
 
