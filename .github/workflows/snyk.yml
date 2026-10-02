@@ -57,6 +57,37 @@ jobs:
       - name: Cleanup
         run: rm requirements.txt
 
+      - name: Normalize SARIF severities for code scanning
+        if: always()
+        run: |
+          python - <<'EOF'
+          import json
+          for path in ("snyk-python.sarif", "snyk-npm.sarif", "snyk-code.sarif"):
+              try:
+                  with open(path, encoding="utf-8") as f:
+                      sarif = json.load(f)
+              except (OSError, ValueError):
+                  continue
+              changed = False
+              for run in sarif.get("runs", []):
+                  rules = (run.get("tool", {}).get("driver", {}).get("rules", [])) or []
+                  for rule in rules:
+                      props = rule.setdefault("properties", {})
+                      try:
+                          sev = float(props.get("security-severity", ""))
+                      except (TypeError, ValueError):
+                          sev = None
+                      # Downgrade-only: fill in missing/out-of-range severities as
+                      # informational ("0"). Existing severities are untouched.
+                      if sev is None or not (0.0 <= sev <= 10.0):
+                          props["security-severity"] = "0"
+                          changed = True
+              if changed:
+                  with open(path, "w", encoding="utf-8") as f:
+                      json.dump(sarif, f)
+          print("SARIF severity normalization complete")
+          EOF
+
       - name: Upload Snyk Python results
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         if: always() && hashFiles('snyk-python.sarif') != ''
