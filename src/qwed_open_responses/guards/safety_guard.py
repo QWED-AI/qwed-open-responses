@@ -366,7 +366,7 @@ class SafetyGuard(BaseGuard):
                         limit_error = "response contains a non-string object key"
                         break
                     is_text_field = key.casefold() in self._INJECTION_TEXT_FIELDS
-                    if object_sequence is not None and (has_field or not is_text_field):
+                    if object_sequence is not None and not is_text_field:
                         object_sequence.append([])
                     has_field = True
                     last_field_is_text = is_text_field

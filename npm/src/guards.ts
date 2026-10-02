@@ -1680,7 +1680,7 @@ export class SafetyGuard extends BaseGuard {
                     const isTextField = SafetyGuard.INJECTION_TEXT_FIELDS.has(
                         key.toLowerCase(),
                     );
-                    if (ownSequence !== undefined && (hasField || !isTextField)) {
+                    if (ownSequence !== undefined && !isTextField) {
                         ownSequence.push([]);
                     }
                     hasField = true;
