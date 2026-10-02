@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — fail-closed hardening batch (#48, #49, #50, #51, #52, #55, #57, #58, #59)
+
+- **BREAKING: SchemaGuard rejects undeclared root fields by default** (#48)
+  — when your schema does not set `additionalProperties`, SchemaGuard adds
+  `additionalProperties: false` to the root object, so responses with
+  undeclared top-level fields now fail instead of passing silently. Declare
+  the fields, set `additionalProperties` explicitly, or opt out with
+  `allow_additional_properties=True` (Python) /
+  `{ allowAdditionalProperties: true }` (TypeScript).
+- **SchemaGuard cross-language format parity** (#48) — `format` validation
+  for `email`, `uuid`, `date-time`, `uri`, and `ipv4` now matches across the
+  Python and npm packages.
+- **SchemaGuard reports the first error only** (#48) — failed results carry
+  a single error with the total count reported as unknown
+  (`total_errors=None`, `errors_truncated=True`); fix and re-verify to
+  surface the next one.
+- **Resource-bounded verification** (#49) — JSON responses over 100,000
+  characters or 100 nesting levels, and responses with oversized integers,
+  return a failed verdict instead of raising. SafetyGuard scanning fails
+  closed above 10,000 nodes, 100,000 characters, or 12 nesting levels.
+- **ToolGuard name and command normalization** (#55) — blocked tool names
+  are normalized for case, surrounding whitespace, dashes, underscores, and
+  camelCase. The default blocklist adds `run_command`, `execute_command`,
+  `command_line`, and `terminal`. Allowlist entries still require the exact
+  configured separators.
+- **ToolGuard raw argument scanning** (#50) — dangerous patterns run on the
+  raw parsed argument strings, including nested values and JSON-encoded
+  calls. Cyclic or too-deep arguments fail closed.
+- **ToolGuard envelope paths fail closed** (#59) — dual-identity items,
+  structured-output exemptions, string-leaf blindness, and the depth cutoff
+  no longer admit unverified tool calls.
+- **Streaming tool-call verification** (#52) — `verify_stream` verifies each
+  tool item in its original shape before yielding it. Unknown, ambiguous, or
+  nested tool-shaped items are blocked; `tool_result` and
+  `function_call_output` items pass through (their correlation metadata is
+  not validated). ArgumentGuard and TaxGuard cover batched and nested calls.
+- **Express middleware fails closed on unparsed bodies** (#51) — the npm
+  `verifyRequestBody` middleware returns HTTP 422 (`QWED_REQUEST_BLOCKED`)
+  when a request declares a body but has no parsed body, even with
+  `blockOnFailure: false`. Register a body parser (e.g. `express.json()`)
+  before the middleware.
+- **SafetyGuard field scanning and context propagation** (#57, #58) —
+  field names are scanned for injection and PII while sibling fields stay
+  isolated; split output values scan as one text sequence; deep nesting
+  fails closed at the boundary; budget caps fail closed without trusted
+  usage context; JSON-text credential forms are blocked; and npm/Python
+  configuration parity (subset patterns, escaped stringify, string-args
+  asymmetry).
+
+### Changed
+
+- **Dropped the `jsonschema[format]` extra** (#61) — plain `jsonschema`
+  plus a direct `fqdn` dependency for `hostname` schemas. Removes the
+  GPL-3.0 licensed `rfc3987` (flagged high by Snyk) with no behavior change:
+  every asserted format is hand-rolled or stdlib-backed.
+- Dependency bumps: `fast-uri` 3.1.7 → 3.1.8, `brace-expansion` 5.0.9 →
+  5.0.12, `js-yaml` 3.15.1 → 3.15.2 (#53, #54, #38).
+- CI: npm publish workflow token scoped to `contents: read` (#56).
+
 ## [0.5.0] - 2026-09-08
 
 ### Security — dependency CVE fixes (#26)
