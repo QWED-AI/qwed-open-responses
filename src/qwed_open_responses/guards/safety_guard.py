@@ -360,6 +360,7 @@ class SafetyGuard(BaseGuard):
                     [[]] if owns_object_sequence else injection_sequence
                 )
                 has_field = False
+                last_field_is_text = False
                 for key, child in value.items():
                     if not isinstance(key, str):
                         limit_error = "response contains a non-string object key"
@@ -368,6 +369,7 @@ class SafetyGuard(BaseGuard):
                     if object_sequence is not None and (has_field or not is_text_field):
                         object_sequence.append([])
                     has_field = True
+                    last_field_is_text = is_text_field
                     label_cost = len(key) + 1
                     if label_chars + label_cost > self._MAX_FIELD_LABEL_CHARS:
                         limit_error = "field labels exceed the inspection limit"
@@ -399,9 +401,9 @@ class SafetyGuard(BaseGuard):
                     if limit_error is not None:
                         break
                 active.remove(identity)
-                if injection_sequence is not None:
-                    # Keep this object's nested text together, but close its
-                    # sequence so sibling objects cannot form one directive.
+                if injection_sequence is not None and (
+                    not has_field or not last_field_is_text
+                ):
                     injection_sequence.append([])
                 if owns_object_sequence and object_sequence is not None:
                     injection_parts.extend(
@@ -421,7 +423,13 @@ class SafetyGuard(BaseGuard):
                 own_sequence: Optional[List[List[str]]] = (
                     [[]] if owns_sequence else injection_sequence
                 )
+                previous_child_was_object = False
                 for child in value:
+                    child_is_object = isinstance(child, dict)
+                    if own_sequence is not None and (
+                        previous_child_was_object and child_is_object
+                    ):
+                        own_sequence.append([])
                     collect(
                         child,
                         depth + 1,
@@ -430,6 +438,7 @@ class SafetyGuard(BaseGuard):
                     )
                     if limit_error is not None:
                         break
+                    previous_child_was_object = child_is_object
                 active.remove(identity)
                 if owns_sequence and own_sequence is not None:
                     injection_parts.extend(

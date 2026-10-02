@@ -1650,9 +1650,17 @@ export class SafetyGuard extends BaseGuard {
             if (Array.isArray(value)) {
                 const ownsSequence = stringifyContent && injectionSequence === undefined;
                 const ownSequence = ownsSequence ? [[]] : injectionSequence;
+                let previousChildWasObject = false;
                 for (const child of value) {
+                    const childIsObject = child !== null
+                        && typeof child === 'object'
+                        && !Array.isArray(child);
+                    if (ownSequence !== undefined && previousChildWasObject && childIsObject) {
+                        ownSequence.push([]);
+                    }
                     visit(child, depth + 1, undefined, stringifyContent, ownSequence);
                     if (limitError) break;
+                    previousChildWasObject = childIsObject;
                 }
                 if (ownsSequence && ownSequence !== undefined) {
                     injectionParts.push(
@@ -1665,6 +1673,7 @@ export class SafetyGuard extends BaseGuard {
                 const ownsSequence = stringifyContent && injectionSequence === undefined;
                 const ownSequence = ownsSequence ? [[]] : injectionSequence;
                 let hasField = false;
+                let lastFieldIsText = false;
                 for (const key in record) {
                     if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
                     const child = record[key];
@@ -1675,6 +1684,7 @@ export class SafetyGuard extends BaseGuard {
                         ownSequence.push([]);
                     }
                     hasField = true;
+                    lastFieldIsText = isTextField;
                     const labelCost = countCodePoints(key) + 1;
                     if (labelChars + labelCost > MAX_FIELD_LABEL_CHARS) {
                         limitError = 'field labels exceed the inspection limit';
@@ -1704,9 +1714,7 @@ export class SafetyGuard extends BaseGuard {
                     );
                     if (limitError) break;
                 }
-                if (injectionSequence !== undefined) {
-                    // Keep this object's nested text together, but close its
-                    // sequence so sibling objects cannot form one directive.
+                if (injectionSequence !== undefined && (!hasField || !lastFieldIsText)) {
                     injectionSequence.push([]);
                 }
                 if (ownsSequence && ownSequence !== undefined) {
