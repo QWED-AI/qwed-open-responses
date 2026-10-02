@@ -313,7 +313,7 @@ class SafetyGuard(BaseGuard):
             depth: int,
             field_name: Optional[str] = None,
             stringify_content: bool = False,
-            injection_sequence: Optional[List[str]] = None,
+            injection_sequence: Optional[List[List[str]]] = None,
         ) -> None:
             nonlocal node_count, leaf_chars, label_chars, limit_error
             if limit_error is not None:
@@ -342,7 +342,7 @@ class SafetyGuard(BaseGuard):
                     leaf_strings.append(f"{field_name}={value}")
                     injection_parts.append(f"{field_name} {value}")
                 if stringify_content and injection_sequence is not None:
-                    injection_sequence.append(value)
+                    injection_sequence[-1].append(value)
                 leaf_chars += leaf_cost
                 return
 
@@ -352,6 +352,8 @@ class SafetyGuard(BaseGuard):
                     limit_error = "response contains a cycle"
                     return
                 active.add(identity)
+                if injection_sequence is not None:
+                    injection_sequence.append([])
                 for key, child in value.items():
                     if not isinstance(key, str):
                         limit_error = "response contains a non-string object key"
@@ -387,6 +389,8 @@ class SafetyGuard(BaseGuard):
                     if limit_error is not None:
                         break
                 active.remove(identity)
+                if injection_sequence is not None:
+                    injection_sequence.append([])
                 return
 
             if isinstance(value, list):
@@ -395,7 +399,10 @@ class SafetyGuard(BaseGuard):
                     limit_error = "response contains a cycle"
                     return
                 active.add(identity)
-                own_sequence: Optional[List[str]] = [] if stringify_content else None
+                owns_sequence = stringify_content and injection_sequence is None
+                own_sequence: Optional[List[List[str]]] = (
+                    [[]] if owns_sequence else injection_sequence
+                )
                 for child in value:
                     collect(
                         child,
@@ -406,9 +413,12 @@ class SafetyGuard(BaseGuard):
                     if limit_error is not None:
                         break
                 active.remove(identity)
-                if own_sequence is not None and own_sequence is not injection_sequence:
-                    if len(own_sequence) > 1:
-                        injection_parts.append(" ".join(own_sequence))
+                if owns_sequence and own_sequence is not None:
+                    injection_parts.extend(
+                        " ".join(sequence)
+                        for sequence in own_sequence
+                        if len(sequence) > 1
+                    )
                 return
 
             if isinstance(value, int) and not isinstance(value, bool):

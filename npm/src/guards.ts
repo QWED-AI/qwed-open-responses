@@ -1251,6 +1251,7 @@ export class SafetyGuard extends BaseGuard {
         /["'](password|api[_-]?key|secret|private[\s_-]?key)["']\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi;
 
     private static decodeJsonCredentialValue(raw: string): string {
+        const allowHexEscape = raw.startsWith("'");
         if (raw.startsWith('"')) {
             try {
                 const decoded: unknown = JSON.parse(raw);
@@ -1274,7 +1275,7 @@ export class SafetyGuard extends BaseGuard {
                 index += 4;
                 continue;
             }
-            if (escaped === 'x' && /^[0-9a-f]{2}$/i.test(inner.slice(index + 1, index + 3))) {
+            if (allowHexEscape && escaped === 'x' && /^[0-9a-f]{2}$/i.test(inner.slice(index + 1, index + 3))) {
                 decoded += String.fromCharCode(parseInt(inner.slice(index + 1, index + 3), 16));
                 index += 2;
                 continue;
@@ -1578,7 +1579,7 @@ export class SafetyGuard extends BaseGuard {
             depth: number,
             fieldName?: string,
             stringifyContent: boolean = false,
-            injectionSequence?: string[],
+            injectionSequence?: string[][],
         ): void => {
             if (limitError) return;
             nodeCount++;
@@ -1610,7 +1611,7 @@ export class SafetyGuard extends BaseGuard {
                     injectionParts.push(fieldName + ' ' + value);
                 }
                 if (stringifyContent && injectionSequence !== undefined) {
-                    injectionSequence.push(value);
+                    injectionSequence[injectionSequence.length - 1].push(value);
                 }
                 leafChars += leafCost;
                 return;
@@ -1642,16 +1643,21 @@ export class SafetyGuard extends BaseGuard {
             active.add(value);
 
             if (Array.isArray(value)) {
-                const ownSequence = stringifyContent ? [] : undefined;
+                const ownsSequence = stringifyContent && injectionSequence === undefined;
+                const ownSequence = ownsSequence ? [[]] : injectionSequence;
                 for (const child of value) {
                     visit(child, depth + 1, undefined, stringifyContent, ownSequence);
                     if (limitError) break;
                 }
-                if (ownSequence !== undefined && ownSequence !== injectionSequence && ownSequence.length > 1) {
-                    injectionParts.push(ownSequence.join(' '));
+                if (ownsSequence && ownSequence !== undefined) {
+                    injectionParts.push(
+                        ...ownSequence.filter((sequence) => sequence.length > 1)
+                            .map((sequence) => sequence.join(' ')),
+                    );
                 }
             } else {
                 const record = value as Record<string, unknown>;
+                if (injectionSequence !== undefined) injectionSequence.push([]);
                 for (const key in record) {
                     if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
                     const child = record[key];
@@ -1684,6 +1690,7 @@ export class SafetyGuard extends BaseGuard {
                     );
                     if (limitError) break;
                 }
+                if (injectionSequence !== undefined) injectionSequence.push([]);
             }
             active.delete(value);
         };
