@@ -4,6 +4,8 @@ Safety Guard - Comprehensive safety checks for AI responses.
 Combines multiple safety checks into a single guard.
 """
 
+import ast
+import json
 from typing import Any, Callable, Dict, Optional, List, Set, Tuple
 from .base import BaseGuard, GuardResult
 import math
@@ -311,6 +313,7 @@ class SafetyGuard(BaseGuard):
             depth: int,
             field_name: Optional[str] = None,
             stringify_content: bool = False,
+            injection_sequence: Optional[List[str]] = None,
         ) -> None:
             nonlocal node_count, leaf_chars, label_chars, limit_error
             if limit_error is not None:
@@ -338,6 +341,8 @@ class SafetyGuard(BaseGuard):
                 if field_name is not None:
                     leaf_strings.append(f"{field_name}={value}")
                     injection_parts.append(f"{field_name} {value}")
+                if stringify_content and injection_sequence is not None:
+                    injection_sequence.append(value)
                 leaf_chars += leaf_cost
                 return
 
@@ -347,6 +352,11 @@ class SafetyGuard(BaseGuard):
                     limit_error = "response contains a cycle"
                     return
                 active.add(identity)
+                own_sequence = (
+                    []
+                    if stringify_content and injection_sequence is None
+                    else injection_sequence
+                )
                 for key, child in value.items():
                     if not isinstance(key, str):
                         limit_error = "response contains a non-string object key"
@@ -372,10 +382,19 @@ class SafetyGuard(BaseGuard):
                         depth == 0 and key in ("output", "arguments")
                     )
                     child_field = key if isinstance(child, str) else None
-                    collect(child, depth + 1, child_field, include_content)
+                    collect(
+                        child,
+                        depth + 1,
+                        child_field,
+                        include_content,
+                        own_sequence if include_content else injection_sequence,
+                    )
                     if limit_error is not None:
                         break
                 active.remove(identity)
+                if own_sequence is not None and own_sequence is not injection_sequence:
+                    if len(own_sequence) > 1:
+                        injection_parts.append(" ".join(own_sequence))
                 return
 
             if isinstance(value, list):
@@ -384,11 +403,24 @@ class SafetyGuard(BaseGuard):
                     limit_error = "response contains a cycle"
                     return
                 active.add(identity)
+                own_sequence = (
+                    []
+                    if stringify_content and injection_sequence is None
+                    else injection_sequence
+                )
                 for child in value:
-                    collect(child, depth + 1, stringify_content=stringify_content)
+                    collect(
+                        child,
+                        depth + 1,
+                        stringify_content=stringify_content,
+                        injection_sequence=own_sequence,
+                    )
                     if limit_error is not None:
                         break
                 active.remove(identity)
+                if own_sequence is not None and own_sequence is not injection_sequence:
+                    if len(own_sequence) > 1:
+                        injection_parts.append(" ".join(own_sequence))
                 return
 
             if isinstance(value, int) and not isinstance(value, bool):
@@ -591,13 +623,24 @@ class SafetyGuard(BaseGuard):
             return False
         return len(tail) >= 2
 
+    @staticmethod
+    def _decode_json_credential_value(raw: str) -> str:
+        """Decode JSON or JSON-like quoted values before placeholder checks."""
+        try:
+            decoded = json.loads(raw) if raw.startswith('"') else ast.literal_eval(raw)
+            if isinstance(decoded, str):
+                return decoded
+        except (ValueError, SyntaxError, TypeError):
+            pass
+        return raw[1:-1]
+
     def _check_harmful_parts(self, parts: List[str]) -> List[str]:
         """Match harmful patterns against each collected string separately."""
         found = []
         for part in parts:
             scan_parts = [part]
             scan_parts.extend(
-                f"{match.group(1)}={match.group(2)[1:-1]}"
+                f"{match.group(1)}={self._decode_json_credential_value(match.group(2))}"
                 for match in self._JSON_CREDENTIAL_RE.finditer(part)
             )
             for scan_part in scan_parts:

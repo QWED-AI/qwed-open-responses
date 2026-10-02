@@ -129,6 +129,7 @@ class OpenResponsesMiddleware:
                 )
             else:
                 # Non-tool items (text, metadata, etc.) pass through
+                self._accumulate_usage(item, running_context)
                 yield item
                 continue
 

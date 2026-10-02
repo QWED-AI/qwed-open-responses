@@ -5,7 +5,7 @@ The ResponseVerifier is the main entry point for verifying AI responses.
 It orchestrates multiple guards to ensure responses are safe and correct.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -396,7 +396,7 @@ class ResponseVerifier:
         self,
         response: Any,
         guards: Optional[List["BaseGuard"]] = None,
-        context: Optional[Dict[str, Any]] = None,
+        context: Optional[Union[Dict[str, Any], str]] = None,
     ) -> VerificationResult:
         """
         Verify an AI response against a set of guards.
@@ -410,7 +410,13 @@ class ResponseVerifier:
             VerificationResult with verification status and details
         """
         guards_to_use = guards if guards is not None else self.default_guards
-        context = context if isinstance(context, dict) else {}
+        if isinstance(context, dict):
+            context_for_guards = context
+        elif isinstance(context, str):
+            context_for_guards = {"context": context}
+        else:
+            context_for_guards = {}
+        request_id = context.get("request_id") if isinstance(context, dict) else None
 
         # Parse response if needed. Resource-limit failures are verdicts,
         # while ordinary unsupported input types retain the existing exception.
@@ -434,7 +440,7 @@ class ResponseVerifier:
                 ],
                 blocked=self.strict_mode,
                 block_reason=message if self.strict_mode else None,
-                request_id=context.get("request_id"),
+                request_id=request_id,
             )
 
         def _safe_binding(resp: Any, names: List[str]) -> Optional[Dict[str, Any]]:
@@ -458,7 +464,7 @@ class ResponseVerifier:
             return VerificationResult(
                 verified=False,
                 response=parsed_response,
-                request_id=(context or {}).get("request_id"),
+                request_id=request_id,
                 guards_passed=0,
                 guards_failed=0,
                 guard_results=[
@@ -484,7 +490,7 @@ class ResponseVerifier:
 
         for guard in guards_to_use:
             try:
-                result = guard.check(parsed_response, context)
+                result = guard.check(parsed_response, context_for_guards)
                 guard_results.append(result)
 
                 # #31 semantics: a warning PASSES the guard (see
@@ -551,7 +557,7 @@ class ResponseVerifier:
             return VerificationResult(
                 verified=False,
                 response=parsed_response,
-                request_id=(context or {}).get("request_id"),
+                request_id=request_id,
                 guards_passed=guards_passed,
                 guards_failed=guards_failed + 1,
                 guard_results=guard_results,
@@ -567,7 +573,7 @@ class ResponseVerifier:
         return VerificationResult(
             verified=verified,
             response=parsed_response,
-            request_id=(context or {}).get("request_id"),
+            request_id=request_id,
             guards_passed=guards_passed,
             guards_failed=guards_failed,
             guard_results=guard_results,
@@ -585,7 +591,7 @@ class ResponseVerifier:
         tool_name: str,
         arguments: Dict[str, Any],
         guards: Optional[List["BaseGuard"]] = None,
-        context: Optional[Dict[str, Any]] = None,
+        context: Optional[Union[Dict[str, Any], str]] = None,
     ) -> VerificationResult:
         """
         Convenience method to verify a tool call.
@@ -610,7 +616,7 @@ class ResponseVerifier:
         output: Dict[str, Any],
         schema: Optional[Dict[str, Any]] = None,
         guards: Optional[List["BaseGuard"]] = None,
-        context: Optional[Dict[str, Any]] = None,
+        context: Optional[Union[Dict[str, Any], str]] = None,
     ) -> VerificationResult:
         """
         Convenience method to verify a structured output.
