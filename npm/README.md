@@ -131,6 +131,10 @@ app.post('/api/execute',
 );
 ```
 
+Register a body parser (e.g. `express.json()`) before the middleware: a
+request that declares a body but arrives unparsed gets HTTP 422
+(`QWED_REQUEST_BLOCKED`), even with `blockOnFailure: false`.
+
 ## Direct Verification
 
 ```typescript

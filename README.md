@@ -132,11 +132,10 @@ Yes — `OpenResponsesMiddleware` verifies tool-call items as they arrive in the
 - [x] `SafetyGuard` - PII and injection checks
 - [x] `StateGuard` - Finite state machine validation
 - [x] `ArgumentGuard` - Type and range checking
-- [x] Integrations: OpenAI, LangChain
+- [x] Integrations: OpenAI, LangChain, LlamaIndex
+- [x] **Streaming Verification** - Verify tool-call items in real-time
 
 ### 🚧 In Progress
-- [ ] **LlamaIndex Integration** - First-class support
-- [ ] **Streaming Verification** - Verify chunks in real-time
 - [ ] **Auto-Fix** - Deterministic correction of JSON errors
 
 ### 🔮 Planned
@@ -299,6 +298,10 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
   separate warning state (`VerificationResult.warnings`); they do not fail
   `verified` or block unless you create the verifier with
   `allow_warnings=False`.
+- **SchemaGuard rejects undeclared root fields (v0.6.0 breaking change).**
+  When your schema does not set `additionalProperties`, undeclared top-level
+  fields fail validation. Declare them, set `additionalProperties`
+  explicitly, or opt out with `allow_additional_properties=True`.
 - **Verification resource limits fail closed.** JSON text longer than
   100,000 characters or nesting deeper than 100 levels receives a failed
   verdict. SafetyGuard also rejects content deeper than 12 levels, wider than
