@@ -88,7 +88,9 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
         }
 
         # Verify
-        result = self.verifier.verify(tool_call)
+        result = self.verifier.verify(
+            tool_call, context=kwargs.get("verification_context")
+        )
         self.verification_history.append(result)
 
         if self.verbose:
@@ -123,7 +125,9 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
             "arguments": {"input": input_str},
         }
 
-        result = self.verifier.verify(tool_call)
+        result = self.verifier.verify(
+            tool_call, context=kwargs.get("verification_context")
+        )
 
         if self.verbose:
             print(f"[QWED] Tool start: {tool_name} -> {result}")
@@ -148,7 +152,9 @@ class QWEDCallbackHandler(BaseCallbackHandler if HAS_LANGCHAIN else object):
             "output": finish.return_values,
         }
 
-        result = self.verifier.verify(output)
+        result = self.verifier.verify(
+            output, context=kwargs.get("verification_context")
+        )
         self.verification_history.append(result)
 
         if self.verbose:

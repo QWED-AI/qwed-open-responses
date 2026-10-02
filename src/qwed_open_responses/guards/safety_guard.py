@@ -4,6 +4,8 @@ Safety Guard - Comprehensive safety checks for AI responses.
 Combines multiple safety checks into a single guard.
 """
 
+import ast
+import json
 from typing import Any, Callable, Dict, Optional, List, Set, Tuple
 from .base import BaseGuard, GuardResult
 import math
@@ -30,6 +32,9 @@ class SafetyGuard(BaseGuard):
 
     name = "SafetyGuard"
     description = "Comprehensive safety checks"
+    _INJECTION_TEXT_FIELDS = frozenset(
+        {"text", "content", "message", "output_text", "output", "arguments"}
+    )
 
     # PII patterns
     PII_PATTERNS = {
@@ -80,9 +85,9 @@ class SafetyGuard(BaseGuard):
     _CREDENTIAL_EXEMPTION = (
         r"(?!(?:required|optional|none|null|redacted|omitted|placeholder|"
         r"invalid|expired|not[_\s]?(?:set|provided)|n/?a)"
-        r"(?=[\s.,;:!?)\]]*$)"
-        r"|\*{3,}(?=[\s.,;:!?)\]]*$)"
-        r"|x{3,}(?=[\s.,;:!?)\]]*$))\S+"
+        r"(?=[\s.,;:!?)}\]]*$)"
+        r"|\*{3,}(?=[\s.,;:!?)}\]]*$)"
+        r"|x{3,}(?=[\s.,;:!?)}\]]*$))\S+"
     )
 
     _CREDENTIAL_PATTERNS = (
@@ -94,6 +99,11 @@ class SafetyGuard(BaseGuard):
         # "private_key: not set" (Greptile P1, PR #34). The [\s_-]? class
         # also catches the spaced "private key: <value>" form.
         r"private[\s_-]?key\s*[=:]\s*" + _CREDENTIAL_EXEMPTION,
+    )
+
+    _JSON_CREDENTIAL_RE = re.compile(
+        r"""["'](password|api[_-]?key|secret|private[\s_-]?key)["']\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')""",
+        re.IGNORECASE,
     )
 
     # Credential-shaped tail tokens for guidance-prose detection below.
@@ -171,7 +181,12 @@ class SafetyGuard(BaseGuard):
     ) -> GuardResult:
         """Run all safety checks."""
 
-        content, leaf_strings, limit_error = self._collect_bounded_content(response)
+        (
+            content,
+            leaf_strings,
+            injection_parts,
+            limit_error,
+        ) = self._collect_bounded_content(response)
         if limit_error is not None:
             return self.fail_result(
                 "Safety check failed: response exceeds inspection limits",
@@ -196,7 +211,7 @@ class SafetyGuard(BaseGuard):
 
         # Injection check
         if self.check_injection:
-            injections = self._check_injection(content)
+            injections = self._check_injection(injection_parts)
             if injections:
                 issues.append(
                     {
@@ -273,9 +288,11 @@ class SafetyGuard(BaseGuard):
 
     def _collect_bounded_content(
         self, response: Any
-    ) -> Tuple[str, List[str], Optional[str]]:
+    ) -> Tuple[str, List[str], List[str], Optional[str]]:
         """Collect scan text and credential leaves within fixed resource caps."""
         content_parts: List[str] = []
+        label_parts: List[str] = []
+        injection_parts: List[str] = []
         leaf_strings: List[str] = []
         active: Set[int] = set()
         node_count = 0
@@ -299,6 +316,7 @@ class SafetyGuard(BaseGuard):
             depth: int,
             field_name: Optional[str] = None,
             stringify_content: bool = False,
+            injection_sequence: Optional[List[List[str]]] = None,
         ) -> None:
             nonlocal node_count, leaf_chars, label_chars, limit_error
             if limit_error is not None:
@@ -325,6 +343,9 @@ class SafetyGuard(BaseGuard):
                 leaf_strings.append(value)
                 if field_name is not None:
                     leaf_strings.append(f"{field_name}={value}")
+                    injection_parts.append(f"{field_name} {value}")
+                if stringify_content and injection_sequence is not None:
+                    injection_sequence[-1].append(value)
                 leaf_chars += leaf_cost
                 return
 
@@ -334,18 +355,31 @@ class SafetyGuard(BaseGuard):
                     limit_error = "response contains a cycle"
                     return
                 active.add(identity)
+                owns_object_sequence = stringify_content and injection_sequence is None
+                object_sequence: Optional[List[List[str]]] = (
+                    [[]] if owns_object_sequence else injection_sequence
+                )
+                has_field = False
+                last_field_is_text = False
                 for key, child in value.items():
                     if not isinstance(key, str):
                         limit_error = "response contains a non-string object key"
                         break
+                    is_text_field = key.casefold() in self._INJECTION_TEXT_FIELDS
+                    if object_sequence is not None and not is_text_field:
+                        object_sequence.append([])
+                    has_field = True
+                    last_field_is_text = is_text_field
                     label_cost = len(key) + 1
                     if label_chars + label_cost > self._MAX_FIELD_LABEL_CHARS:
                         limit_error = "field labels exceed the inspection limit"
                         break
                     label_chars += label_cost
-                    include_content = stringify_content or (
-                        depth == 0 and key in ("output", "arguments")
-                    )
+                    # Field names are attacker-controlled input too. Include
+                    # them in the scan corpus without consuming the value
+                    # character budget, preserving the documented value cap.
+                    label_parts.append(key)
+                    injection_parts.append(key)
                     if stringify_content:
                         node_count += 1
                         if node_count > self._MAX_CONTENT_NODES:
@@ -353,13 +387,30 @@ class SafetyGuard(BaseGuard):
                                 "response node count exceeds the inspection limit"
                             )
                             break
-                        if not add_content(key):
-                            break
+                    include_content = stringify_content or (
+                        depth == 0 and key in ("output", "arguments")
+                    )
                     child_field = key if isinstance(child, str) else None
-                    collect(child, depth + 1, child_field, include_content)
+                    collect(
+                        child,
+                        depth + 1,
+                        child_field,
+                        include_content,
+                        object_sequence if is_text_field else None,
+                    )
                     if limit_error is not None:
                         break
                 active.remove(identity)
+                if injection_sequence is not None and (
+                    not has_field or not last_field_is_text
+                ):
+                    injection_sequence.append([])
+                if owns_object_sequence and object_sequence is not None:
+                    injection_parts.extend(
+                        " ".join(sequence)
+                        for sequence in object_sequence
+                        if len(sequence) > 1
+                    )
                 return
 
             if isinstance(value, list):
@@ -368,11 +419,36 @@ class SafetyGuard(BaseGuard):
                     limit_error = "response contains a cycle"
                     return
                 active.add(identity)
+                owns_sequence = stringify_content and injection_sequence is None
+                own_sequence: Optional[List[List[str]]] = (
+                    [[]] if owns_sequence else injection_sequence
+                )
+                seen_object_child = False
                 for child in value:
-                    collect(child, depth + 1, stringify_content=stringify_content)
+                    child_is_object = isinstance(child, dict)
+                    if (
+                        own_sequence is not None
+                        and seen_object_child
+                        and child_is_object
+                    ):
+                        own_sequence.append([])
+                    collect(
+                        child,
+                        depth + 1,
+                        stringify_content=stringify_content,
+                        injection_sequence=own_sequence,
+                    )
                     if limit_error is not None:
                         break
+                    if child_is_object:
+                        seen_object_child = True
                 active.remove(identity)
+                if owns_sequence and own_sequence is not None:
+                    injection_parts.extend(
+                        " ".join(sequence)
+                        for sequence in own_sequence
+                        if len(sequence) > 1
+                    )
                 return
 
             if isinstance(value, int) and not isinstance(value, bool):
@@ -402,7 +478,12 @@ class SafetyGuard(BaseGuard):
                 limit_error = "response contains a non-JSON value"
 
         collect(response, 0)
-        return " ".join(content_parts), leaf_strings, limit_error
+        return (
+            " ".join(content_parts + label_parts),
+            leaf_strings,
+            content_parts + injection_parts,
+            limit_error,
+        )
 
     def _check_pii(self, content: str) -> List[str]:
         """Check for PII in content."""
@@ -468,12 +549,12 @@ class SafetyGuard(BaseGuard):
                 return True
             cursor = max(cursor, pos)
 
-    def _check_injection(self, content: str) -> List[str]:
-        """Check for prompt injection patterns."""
+    def _check_injection(self, parts: List[str]) -> List[str]:
+        """Check prompt injection per value and field name."""
         found = []
 
         for pattern in self.INJECTION_PATTERNS:
-            if re.search(pattern, content, re.I):
+            if any(re.search(pattern, part, re.I) for part in parts):
                 found.append(pattern)
 
         return found
@@ -570,17 +651,34 @@ class SafetyGuard(BaseGuard):
             return False
         return len(tail) >= 2
 
+    @staticmethod
+    def _decode_json_credential_value(raw: str) -> str:
+        """Decode JSON or JSON-like quoted values before placeholder checks."""
+        try:
+            decoded = json.loads(raw) if raw.startswith('"') else ast.literal_eval(raw)
+            if isinstance(decoded, str):
+                return decoded
+        except (ValueError, SyntaxError, TypeError):
+            pass
+        return raw[1:-1]
+
     def _check_harmful_parts(self, parts: List[str]) -> List[str]:
         """Match harmful patterns against each collected string separately."""
         found = []
         for part in parts:
-            if self._is_guidance_prose(part):
-                continue
-            if self._placeholder_tail_allows(part):
-                continue
-            for pattern in self.HARMFUL_PATTERNS:
-                if re.search(pattern, part, re.I) and pattern not in found:
-                    found.append(pattern)
+            scan_parts = [part]
+            scan_parts.extend(
+                f"{match.group(1)}={self._decode_json_credential_value(match.group(2))}"
+                for match in self._JSON_CREDENTIAL_RE.finditer(part)
+            )
+            for scan_part in scan_parts:
+                if self._is_guidance_prose(scan_part):
+                    continue
+                if self._placeholder_tail_allows(scan_part):
+                    continue
+                for pattern in self.HARMFUL_PATTERNS:
+                    if re.search(pattern, scan_part, re.I) and pattern not in found:
+                        found.append(pattern)
         return found
 
     @staticmethod

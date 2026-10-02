@@ -97,25 +97,33 @@ class QWEDLlamaIndexHandler(BaseCallbackHandler if HAS_LLAMAINDEX else object):
         if payload is None:
             return
 
+        verification_context = kwargs.get("verification_context")
+        if verification_context is None:
+            verification_context = payload.get("verification_context")
+
         # Verify retrieval
         if self.verify_retrieval and event_type == CBEventType.RETRIEVE:
             nodes = payload.get(EventPayload.NODES, [])
             for node in nodes:
-                self._verify_node(node)
+                self._verify_node(node, verification_context)
 
         # Verify synthesis/LLM response
         if self.verify_synthesis and event_type == CBEventType.SYNTHESIZE:
             response = payload.get(EventPayload.RESPONSE)
             if response:
-                self._verify_response(response)
+                self._verify_response(response, verification_context)
 
         # Verify function/tool calls
         if event_type == CBEventType.FUNCTION_CALL:
             function_call = payload.get(EventPayload.FUNCTION_CALL)
             if function_call:
-                self._verify_function_call(function_call)
+                self._verify_function_call(function_call, verification_context)
 
-    def _verify_node(self, node: Any) -> None:
+    def _verify_node(
+        self,
+        node: Any,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Verify a retrieved node."""
         node_dict = {
             "type": "retrieval_node",
@@ -123,7 +131,7 @@ class QWEDLlamaIndexHandler(BaseCallbackHandler if HAS_LLAMAINDEX else object):
             "metadata": getattr(node, "metadata", {}),
         }
 
-        result = self.verifier.verify(node_dict)
+        result = self.verifier.verify(node_dict, context=context)
         self.verification_history.append(result)
 
         if self.verbose:
@@ -136,14 +144,18 @@ class QWEDLlamaIndexHandler(BaseCallbackHandler if HAS_LLAMAINDEX else object):
                 result=result,
             )
 
-    def _verify_response(self, response: Any) -> None:
+    def _verify_response(
+        self,
+        response: Any,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Verify a synthesized response."""
         response_dict = {
             "type": "synthesis_response",
             "content": str(response),
         }
 
-        result = self.verifier.verify(response_dict)
+        result = self.verifier.verify(response_dict, context=context)
         self.verification_history.append(result)
 
         if self.verbose:
@@ -156,7 +168,11 @@ class QWEDLlamaIndexHandler(BaseCallbackHandler if HAS_LLAMAINDEX else object):
                 result=result,
             )
 
-    def _verify_function_call(self, function_call: Dict) -> None:
+    def _verify_function_call(
+        self,
+        function_call: Dict,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Verify a function/tool call."""
         call_dict = {
             "type": "tool_call",
@@ -164,7 +180,7 @@ class QWEDLlamaIndexHandler(BaseCallbackHandler if HAS_LLAMAINDEX else object):
             "arguments": function_call.get("arguments", {}),
         }
 
-        result = self.verifier.verify(call_dict)
+        result = self.verifier.verify(call_dict, context=context)
         self.verification_history.append(result)
 
         if self.verbose:

@@ -1275,6 +1275,11 @@ export class SafetyGuard extends BaseGuard {
         ipAddress: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/,
     };
 
+    // Text-bearing object fields remain in their enclosing output sequence.
+    private static INJECTION_TEXT_FIELDS = new Set([
+        'text', 'content', 'message', 'output_text', 'output', 'arguments',
+    ]);
+
     // #30 parity: mirrors Python INJECTION_PATTERNS — the missing five
     // patterns let injection payloads pass on npm while Python blocked them.
     private static INJECTION_PATTERNS = [
@@ -1319,6 +1324,48 @@ export class SafetyGuard extends BaseGuard {
         // the spaced "private key: <value>" form. Mirrors safety_guard.py.
         /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
     ];
+
+    private static JSON_CREDENTIAL_RE =
+        /["'](password|api[_-]?key|secret|private[\s_-]?key)["']\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi;
+
+    private static decodeJsonCredentialValue(raw: string): string {
+        const allowHexEscape = raw.startsWith("'");
+        if (raw.startsWith('"')) {
+            try {
+                const decoded: unknown = JSON.parse(raw);
+                if (typeof decoded === 'string') return decoded;
+            } catch {
+                // Fall through to the conservative unescape below.
+            }
+        }
+
+        const inner = raw.slice(1, -1);
+        let decoded = '';
+        for (let index = 0; index < inner.length; index += 1) {
+            const char = inner[index];
+            if (char !== '\\' || index + 1 >= inner.length) {
+                decoded += char;
+                continue;
+            }
+            const escaped = inner[++index];
+            if (escaped === 'u' && /^[0-9a-f]{4}$/i.test(inner.slice(index + 1, index + 5))) {
+                decoded += String.fromCharCode(parseInt(inner.slice(index + 1, index + 5), 16));
+                index += 4;
+                continue;
+            }
+            if (allowHexEscape && escaped === 'x' && /^[0-9a-f]{2}$/i.test(inner.slice(index + 1, index + 3))) {
+                decoded += String.fromCharCode(parseInt(inner.slice(index + 1, index + 3), 16));
+                index += 2;
+                continue;
+            }
+            const replacements: Record<string, string> = {
+                'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t',
+                '"': '"', "'": "'", '\\': '\\', '/': '/',
+            };
+            decoded += replacements[escaped] ?? `\\${escaped}`;
+        }
+        return decoded;
+    }
 
     private static HARMFUL_PATTERNS = [
         ...SafetyGuard.CREDENTIAL_PATTERNS,
@@ -1419,7 +1466,12 @@ export class SafetyGuard extends BaseGuard {
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
-        let collected: { content: string; leaves: string[]; limitError?: string };
+        let collected: {
+            content: string;
+            leaves: string[];
+            injectionParts: string[];
+            limitError?: string;
+        };
         try {
             collected = this.collectBoundedContent(response);
         } catch {
@@ -1437,7 +1489,7 @@ export class SafetyGuard extends BaseGuard {
                 { resourceLimit: collected.limitError },
             );
         }
-        const { content, leaves } = collected;
+        const { content, leaves, injectionParts } = collected;
         // Python parity: issues is a uniform array of
         // {type, severity, details} objects for BOTH paths — the error path
         // (all issues, errors AND warnings) and the warning-only path
@@ -1471,7 +1523,7 @@ export class SafetyGuard extends BaseGuard {
         if (this.checkInjection) {
             const injections: string[] = [];
             for (const pattern of SafetyGuard.INJECTION_PATTERNS) {
-                if (pattern.test(content)) {
+                if (injectionParts.some((part) => pattern.test(part))) {
                     injections.push(pattern.source);
                 }
             }
@@ -1492,11 +1544,23 @@ export class SafetyGuard extends BaseGuard {
             // the credential patterns, never PEM (Sentry/Greptile P1).
             const harmful: string[] = [];
             for (const leaf of leaves) {
-                if (SafetyGuard.isGuidanceProse(leaf)) continue;
-                if (SafetyGuard.placeholderTailAllows(leaf)) continue;
-                for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
-                    if (pattern.test(leaf) && !harmful.includes(pattern.source)) {
-                        harmful.push(pattern.source);
+                const scanValues = [leaf];
+                leaf.replace(
+                    SafetyGuard.JSON_CREDENTIAL_RE,
+                    (match, label: string, value: string) => {
+                        scanValues.push(
+                            `${label}=${SafetyGuard.decodeJsonCredentialValue(value)}`,
+                        );
+                        return match;
+                    },
+                );
+                for (const scanValue of scanValues) {
+                    if (SafetyGuard.isGuidanceProse(scanValue)) continue;
+                    if (SafetyGuard.placeholderTailAllows(scanValue)) continue;
+                    for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
+                        if (pattern.test(scanValue) && !harmful.includes(pattern.source)) {
+                            harmful.push(pattern.source);
+                        }
                     }
                 }
             }
@@ -1621,6 +1685,7 @@ export class SafetyGuard extends BaseGuard {
     private collectBoundedContent(response: unknown): {
         content: string;
         leaves: string[];
+        injectionParts: string[];
         limitError?: string;
     } {
         const MAX_DEPTH = 12;
@@ -1629,6 +1694,8 @@ export class SafetyGuard extends BaseGuard {
         const MAX_FIELD_LABEL_CHARS = 10_000;
         const MAX_CREDENTIAL_SCAN_CHARS = 2 * MAX_CHARS + MAX_FIELD_LABEL_CHARS;
         const parts: string[] = [];
+        const labelParts: string[] = [];
+        const injectionParts: string[] = [];
         const leaves: string[] = [];
         const active = new WeakSet<object>();
         let nodeCount = 0;
@@ -1653,7 +1720,8 @@ export class SafetyGuard extends BaseGuard {
             value: unknown,
             depth: number,
             fieldName?: string,
-            stringifyContent: boolean = false
+            stringifyContent: boolean = false,
+            injectionSequence?: string[][],
         ): void => {
             if (limitError) return;
             nodeCount++;
@@ -1680,7 +1748,13 @@ export class SafetyGuard extends BaseGuard {
                 if (!addContent(value)) return;
 
                 leaves.push(value);
-                if (fieldName !== undefined) leaves.push(fieldName + '=' + value);
+                if (fieldName !== undefined) {
+                    leaves.push(fieldName + '=' + value);
+                    injectionParts.push(fieldName + ' ' + value);
+                }
+                if (stringifyContent && injectionSequence !== undefined) {
+                    injectionSequence[injectionSequence.length - 1].push(value);
+                }
                 leafChars += leafCost;
                 return;
             }
@@ -1711,45 +1785,92 @@ export class SafetyGuard extends BaseGuard {
             active.add(value);
 
             if (Array.isArray(value)) {
+                const ownsSequence = stringifyContent && injectionSequence === undefined;
+                const ownSequence = ownsSequence ? [[]] : injectionSequence;
+                let seenObjectChild = false;
                 for (const child of value) {
-                    visit(child, depth + 1, undefined, stringifyContent);
+                    const childIsObject = child !== null
+                        && typeof child === 'object'
+                        && !Array.isArray(child);
+                    if (ownSequence !== undefined && seenObjectChild && childIsObject) {
+                        ownSequence.push([]);
+                    }
+                    visit(child, depth + 1, undefined, stringifyContent, ownSequence);
                     if (limitError) break;
+                    if (childIsObject) seenObjectChild = true;
+                }
+                if (ownsSequence && ownSequence !== undefined) {
+                    injectionParts.push(
+                        ...ownSequence.filter((sequence) => sequence.length > 1)
+                            .map((sequence) => sequence.join(' ')),
+                    );
                 }
             } else {
                 const record = value as Record<string, unknown>;
+                const ownsSequence = stringifyContent && injectionSequence === undefined;
+                const ownSequence = ownsSequence ? [[]] : injectionSequence;
+                let hasField = false;
+                let lastFieldIsText = false;
                 for (const key in record) {
                     if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
                     const child = record[key];
+                    const isTextField = SafetyGuard.INJECTION_TEXT_FIELDS.has(
+                        key.toLowerCase(),
+                    );
+                    if (ownSequence !== undefined && !isTextField) {
+                        ownSequence.push([]);
+                    }
+                    hasField = true;
+                    lastFieldIsText = isTextField;
                     const labelCost = countCodePoints(key) + 1;
                     if (labelChars + labelCost > MAX_FIELD_LABEL_CHARS) {
                         limitError = 'field labels exceed the inspection limit';
                         break;
                     }
                     labelChars += labelCost;
-                    const includeContent = stringifyContent
-                        || (depth === 0 && (key === 'output' || key === 'arguments'));
+                    // Field names are attacker-controlled input too. Include
+                    // them in the scan corpus without consuming the value
+                    // character budget, preserving the documented value cap.
+                    labelParts.push(key);
+                    injectionParts.push(key);
                     if (stringifyContent) {
                         nodeCount++;
                         if (nodeCount > MAX_NODES) {
                             limitError = 'response node count exceeds the inspection limit';
                             break;
                         }
-                        if (!addContent(key)) break;
                     }
+                    const includeContent = stringifyContent
+                        || (depth === 0 && (key === 'output' || key === 'arguments'));
                     visit(
                         child,
                         depth + 1,
                         typeof child === 'string' ? key : undefined,
                         includeContent,
+                        isTextField ? ownSequence : undefined,
                     );
                     if (limitError) break;
+                }
+                if (injectionSequence !== undefined && (!hasField || !lastFieldIsText)) {
+                    injectionSequence.push([]);
+                }
+                if (ownsSequence && ownSequence !== undefined) {
+                    injectionParts.push(
+                        ...ownSequence.filter((sequence) => sequence.length > 1)
+                            .map((sequence) => sequence.join(' ')),
+                    );
                 }
             }
             active.delete(value);
         };
 
         visit(response, 0);
-        return { content: parts.join(' '), leaves, limitError };
+        return {
+            content: parts.concat(labelParts).join(' '),
+            leaves,
+            injectionParts: parts.concat(injectionParts),
+            limitError,
+        };
     }
 
     private extractLeafStrings(response: ParsedResponse): string[] {
