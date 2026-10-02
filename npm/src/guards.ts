@@ -766,13 +766,28 @@ export class ToolGuard extends BaseGuard {
 
             const rootCallFields = ['toolName', 'tool_name', 'name', 'arguments'];
             const hasRootCallFields = rootCallFields.some((key) => key in call);
-            const nestedCall = call.tool_call ?? call.toolCall ?? call.function_call;
-            const hasNestedCall =
-                'tool_call' in call || 'toolCall' in call || 'function_call' in call;
+            const nestedCalls = ['tool_call', 'toolCall', 'function_call']
+                .map((key) => call[key])
+                .filter((value) => value !== null && value !== undefined);
+            const nestedCall = nestedCalls[0];
+            const hasNestedCall = nestedCalls.length > 0;
+            const functionWrapper = call.function;
+            const hasFunctionWrapper =
+                functionWrapper !== null &&
+                typeof functionWrapper === 'object' &&
+                !Array.isArray(functionWrapper) &&
+                ('name' in functionWrapper || 'arguments' in functionWrapper);
+
+            if (
+                nestedCalls.length > 1 ||
+                (hasFunctionWrapper && (hasNestedCall || hasRootCallFields))
+            ) {
+                out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
+                continue;
+            }
 
             if (hasNestedCall) {
                 if (
-                    nestedCall === null ||
                     typeof nestedCall !== 'object' ||
                     Array.isArray(nestedCall) ||
                     nestedCall === call ||
@@ -791,8 +806,8 @@ export class ToolGuard extends BaseGuard {
                 const fn = call.function;
                 if (fn !== null && typeof fn === 'object' && !Array.isArray(fn)) {
                     const hasFunctionFields = 'name' in fn || 'arguments' in fn;
-                    const hasNestedFunctionCall =
-                        'tool_call' in call || 'toolCall' in call || 'function_call' in call;
+                    const hasNestedFunctionCall = ['tool_call', 'toolCall', 'function_call']
+                        .some((key) => call[key] !== null && call[key] !== undefined);
                     if (hasFunctionFields && (hasNestedFunctionCall || rootCallFields.some((key) => key in call))) {
                         out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
                         continue;
