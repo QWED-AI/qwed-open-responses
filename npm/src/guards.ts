@@ -4,6 +4,7 @@
 
 import Ajv, { ValidateFunction, ErrorObject } from 'ajv';
 import addFormats from 'ajv-formats';
+import { Script } from 'node:vm';
 import { GuardResult, ParsedResponse } from './types';
 
 const EMAIL_ATOM = "[a-z0-9!#$%&'*+/=?^_`{|}~-]+";
@@ -13,6 +14,17 @@ const EMAIL_FORMAT = new RegExp(
     `^${EMAIL_LOCAL_PART}@(?:${EMAIL_DOMAIN_LABEL}\\.)*${EMAIL_DOMAIN_LABEL}(?![\\s\\S])`,
     'i',
 );
+const CUSTOM_PATTERN_TIMEOUT_MS = 25;
+const CUSTOM_PATTERN_TEST_SCRIPT = new Script('pattern.test(content)');
+
+type CompiledCustomPattern = { source: string; regex: RegExp };
+type SafetyIssue = {
+    type: string;
+    severity: string;
+    details?: string[];
+    pattern?: string;
+    error?: string;
+};
 
 function countCodePoints(text: string): number {
     let count = 0;
@@ -1319,7 +1331,7 @@ export class SafetyGuard extends BaseGuard {
     private checkInjection: boolean;
     private checkHarmful: boolean;
     private piiAllowList: Set<string>;
-    private customPatterns: RegExp[];
+    private customPatterns: CompiledCustomPattern[];
 
     constructor(options: {
         checkPii?: boolean;
@@ -1335,8 +1347,14 @@ export class SafetyGuard extends BaseGuard {
         this.piiAllowList = new Set(
             (options.piiAllowList ?? []).map(SafetyGuard.normalizePiiType),
         );
-        this.customPatterns = (options.customPatterns ?? [])
-            .map((pattern) => new RegExp(pattern, 'i'));
+        this.customPatterns = (options.customPatterns ?? []).map((source, index) => {
+            try {
+                return { source, regex: new RegExp(source, 'i') };
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : String(error);
+                throw new Error(`Invalid custom safety pattern at index ${index}: ${reason}`);
+            }
+        });
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
@@ -1364,12 +1382,12 @@ export class SafetyGuard extends BaseGuard {
         // (all issues, errors AND warnings) and the warning-only path
         // (Sentry, PR #34: PII used to be plain strings here and verbose
         // {type: 'PII detected: email', details: []} objects there).
-        const issues: Array<{ type: string; severity: string; details: string[] }> = [];
+        const issues: SafetyIssue[] = [];
         // Error-severity issues are COLLECTED across checks — matching
         // Python, which appends injection and harmful findings together and
         // reports the total (CodeAnt nitpick, PR #34: returning on the first
         // harmful pattern discarded PII and other diagnostics).
-        const errorIssues: Array<{ type: string; severity: string; details: string[] }> = [];
+        const errorIssues: SafetyIssue[] = [];
 
         if (this.checkPii) {
             // Python parity: one {type:'pii', severity:'warning'} entry whose
@@ -1428,12 +1446,40 @@ export class SafetyGuard extends BaseGuard {
             }
         }
 
-        for (const pattern of this.customPatterns) {
-            if (pattern.test(content)) {
+        for (const { source, regex } of this.customPatterns) {
+            let matches: boolean;
+            try {
+                matches = CUSTOM_PATTERN_TEST_SCRIPT.runInNewContext(
+                    { pattern: regex, content },
+                    { timeout: CUSTOM_PATTERN_TIMEOUT_MS },
+                ) === true;
+            } catch (error) {
+                if (
+                    typeof error === 'object' &&
+                    error !== null &&
+                    'code' in error &&
+                    error.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT'
+                ) {
+                    const entry = {
+                        type: 'custom_pattern',
+                        severity: 'error',
+                        pattern: source,
+                        error: 'execution timed out',
+                    };
+                    issues.push(entry);
+                    return this.failResult(
+                        'Safety check failed: custom pattern exceeded the execution time limit',
+                        { issues },
+                    );
+                }
+                throw error;
+            }
+
+            if (matches) {
                 const entry = {
                     type: 'custom_pattern',
                     severity: 'error',
-                    details: [pattern.source],
+                    pattern: source,
                 };
                 issues.push(entry);
                 errorIssues.push(entry);

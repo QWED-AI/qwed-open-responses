@@ -11,14 +11,38 @@ describe('SafetyGuard issue #47 cross-language configuration parity', () => {
             {
                 type: 'custom_pattern',
                 severity: 'error',
-                details: ['internal\\s+marker'],
+                pattern: 'internal\\s+marker',
             },
             {
                 type: 'custom_pattern',
                 severity: 'error',
-                details: ['blocked\\s+term'],
+                pattern: 'blocked\\s+term',
             },
         ]);
+    });
+
+    test('reports invalid custom patterns with their index and parser error', () => {
+        expect(() => new SafetyGuard({ customPatterns: ['['] })).toThrow(
+            /Invalid custom safety pattern at index 0: .+/
+        );
+    });
+
+    test('fails closed when a custom pattern exceeds its execution limit', () => {
+        const result = new SafetyGuard({
+            checkPii: false,
+            checkInjection: false,
+            checkHarmful: false,
+            customPatterns: ['(a+)+$'],
+        }).check({ content: `${'a'.repeat(50000)}!` });
+
+        expect(result.passed).toBe(false);
+        expect(result.message).toContain('custom pattern exceeded the execution time limit');
+        expect(result.details.issues).toContainEqual({
+            type: 'custom_pattern',
+            severity: 'error',
+            pattern: '(a+)+$',
+            error: 'execution timed out',
+        });
     });
 
     test('accepts Python-style snake_case PII allow-list names', () => {
