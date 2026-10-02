@@ -352,11 +352,6 @@ class SafetyGuard(BaseGuard):
                     limit_error = "response contains a cycle"
                     return
                 active.add(identity)
-                own_sequence = (
-                    []
-                    if stringify_content and injection_sequence is None
-                    else injection_sequence
-                )
                 for key, child in value.items():
                     if not isinstance(key, str):
                         limit_error = "response contains a non-string object key"
@@ -387,14 +382,11 @@ class SafetyGuard(BaseGuard):
                         depth + 1,
                         child_field,
                         include_content,
-                        own_sequence if include_content else injection_sequence,
+                        None,
                     )
                     if limit_error is not None:
                         break
                 active.remove(identity)
-                if own_sequence is not None and own_sequence is not injection_sequence:
-                    if len(own_sequence) > 1:
-                        injection_parts.append(" ".join(own_sequence))
                 return
 
             if isinstance(value, list):
@@ -403,11 +395,7 @@ class SafetyGuard(BaseGuard):
                     limit_error = "response contains a cycle"
                     return
                 active.add(identity)
-                own_sequence = (
-                    []
-                    if stringify_content and injection_sequence is None
-                    else injection_sequence
-                )
+                own_sequence: Optional[List[str]] = [] if stringify_content else None
                 for child in value:
                     collect(
                         child,

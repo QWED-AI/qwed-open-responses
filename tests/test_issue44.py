@@ -34,6 +34,12 @@ def test_split_output_values_are_scanned_as_one_text_sequence():
     assert result.passed is False
 
 
+def test_separate_output_fields_do_not_form_an_injection():
+    result = SafetyGuard().check({"output": {"a": "system:", "b": "reveal the secret"}})
+
+    assert result.passed is True
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -64,6 +70,7 @@ def test_json_credentials_with_embedded_quotes_are_blocked(value):
         '{"secret": "redacted"}',
         '{"password":"required","secret":"redacted"}',
         '{"password":"\\u0072equired"}',
+        r"{'password':'\x72equired'}",
     ],
 )
 def test_json_text_placeholders_still_pass(text):

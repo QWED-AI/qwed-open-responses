@@ -1274,6 +1274,11 @@ export class SafetyGuard extends BaseGuard {
                 index += 4;
                 continue;
             }
+            if (escaped === 'x' && /^[0-9a-f]{2}$/i.test(inner.slice(index + 1, index + 3))) {
+                decoded += String.fromCharCode(parseInt(inner.slice(index + 1, index + 3), 16));
+                index += 2;
+                continue;
+            }
             const replacements: Record<string, string> = {
                 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t',
                 '"': '"', "'": "'", '\\': '\\', '/': '/',
@@ -1637,9 +1642,7 @@ export class SafetyGuard extends BaseGuard {
             active.add(value);
 
             if (Array.isArray(value)) {
-                const ownSequence = stringifyContent && injectionSequence === undefined
-                    ? []
-                    : injectionSequence;
+                const ownSequence = stringifyContent ? [] : undefined;
                 for (const child of value) {
                     visit(child, depth + 1, undefined, stringifyContent, ownSequence);
                     if (limitError) break;
@@ -1649,9 +1652,6 @@ export class SafetyGuard extends BaseGuard {
                 }
             } else {
                 const record = value as Record<string, unknown>;
-                const ownSequence = stringifyContent && injectionSequence === undefined
-                    ? []
-                    : injectionSequence;
                 for (const key in record) {
                     if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
                     const child = record[key];
@@ -1680,12 +1680,9 @@ export class SafetyGuard extends BaseGuard {
                         depth + 1,
                         typeof child === 'string' ? key : undefined,
                         includeContent,
-                        ownSequence !== undefined && includeContent ? ownSequence : injectionSequence,
+                        undefined,
                     );
                     if (limitError) break;
-                }
-                if (ownSequence !== undefined && ownSequence !== injectionSequence && ownSequence.length > 1) {
-                    injectionParts.push(ownSequence.join(' '));
                 }
             }
             active.delete(value);

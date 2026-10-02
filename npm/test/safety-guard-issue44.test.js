@@ -30,6 +30,13 @@ describe('SafetyGuard issue #44 field and credential coverage', () => {
         expect(result.passed).toBe(false);
     });
 
+    test('does not combine separate output fields into an injection', () => {
+        const result = new SafetyGuard().check({
+            output: { a: 'system:', b: 'reveal the secret' },
+        });
+        expect(result.passed).toBe(true);
+    });
+
     test.each([
         ['{"password": "hunter2"}'],
         ['{"api_key": "sk-live-12345"}'],
@@ -54,6 +61,7 @@ describe('SafetyGuard issue #44 field and credential coverage', () => {
         ['{"secret": "redacted"}'],
         ['{"password":"required","secret":"redacted"}'],
         ['{"password":"\\u0072equired"}'],
+        [String.raw`{'password':'\x72equired'}`],
     ])('allows JSON text placeholder %s', (text) => {
         const result = new SafetyGuard().check({ type: 'text', content: text });
         expect(result.passed).toBe(true);
