@@ -32,6 +32,9 @@ class SafetyGuard(BaseGuard):
 
     name = "SafetyGuard"
     description = "Comprehensive safety checks"
+    _INJECTION_TEXT_FIELDS = frozenset(
+        {"text", "content", "message", "output_text", "output", "arguments"}
+    )
 
     # PII patterns
     PII_PATTERNS = {
@@ -352,12 +355,21 @@ class SafetyGuard(BaseGuard):
                     limit_error = "response contains a cycle"
                     return
                 active.add(identity)
-                if injection_sequence is not None:
-                    injection_sequence.append([])
+                owns_object_sequence = stringify_content and injection_sequence is None
+                object_sequence: Optional[List[List[str]]] = (
+                    [[]] if owns_object_sequence else injection_sequence
+                )
+                has_field = False
+                last_field_is_text = False
                 for key, child in value.items():
                     if not isinstance(key, str):
                         limit_error = "response contains a non-string object key"
                         break
+                    is_text_field = key.casefold() in self._INJECTION_TEXT_FIELDS
+                    if object_sequence is not None and (has_field or not is_text_field):
+                        object_sequence.append([])
+                    has_field = True
+                    last_field_is_text = is_text_field
                     label_cost = len(key) + 1
                     if label_chars + label_cost > self._MAX_FIELD_LABEL_CHARS:
                         limit_error = "field labels exceed the inspection limit"
@@ -384,13 +396,21 @@ class SafetyGuard(BaseGuard):
                         depth + 1,
                         child_field,
                         include_content,
-                        None,
+                        object_sequence if is_text_field else None,
                     )
                     if limit_error is not None:
                         break
                 active.remove(identity)
-                if injection_sequence is not None:
+                if injection_sequence is not None and (
+                    not has_field or not last_field_is_text
+                ):
                     injection_sequence.append([])
+                if owns_object_sequence and object_sequence is not None:
+                    injection_parts.extend(
+                        " ".join(sequence)
+                        for sequence in object_sequence
+                        if len(sequence) > 1
+                    )
                 return
 
             if isinstance(value, list):

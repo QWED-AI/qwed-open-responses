@@ -1202,6 +1202,11 @@ export class SafetyGuard extends BaseGuard {
         ipAddress: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/,
     };
 
+    // Text-bearing object fields remain in their enclosing output sequence.
+    private static INJECTION_TEXT_FIELDS = new Set([
+        'text', 'content', 'message', 'output_text', 'output', 'arguments',
+    ]);
+
     // #30 parity: mirrors Python INJECTION_PATTERNS — the missing five
     // patterns let injection payloads pass on npm while Python blocked them.
     private static INJECTION_PATTERNS = [
@@ -1657,10 +1662,21 @@ export class SafetyGuard extends BaseGuard {
                 }
             } else {
                 const record = value as Record<string, unknown>;
-                if (injectionSequence !== undefined) injectionSequence.push([]);
+                const ownsSequence = stringifyContent && injectionSequence === undefined;
+                const ownSequence = ownsSequence ? [[]] : injectionSequence;
+                let hasField = false;
+                let lastFieldIsText = false;
                 for (const key in record) {
                     if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
                     const child = record[key];
+                    const isTextField = SafetyGuard.INJECTION_TEXT_FIELDS.has(
+                        key.toLowerCase(),
+                    );
+                    if (ownSequence !== undefined && (hasField || !isTextField)) {
+                        ownSequence.push([]);
+                    }
+                    hasField = true;
+                    lastFieldIsText = isTextField;
                     const labelCost = countCodePoints(key) + 1;
                     if (labelChars + labelCost > MAX_FIELD_LABEL_CHARS) {
                         limitError = 'field labels exceed the inspection limit';
@@ -1686,11 +1702,19 @@ export class SafetyGuard extends BaseGuard {
                         depth + 1,
                         typeof child === 'string' ? key : undefined,
                         includeContent,
-                        undefined,
+                        isTextField ? ownSequence : undefined,
                     );
                     if (limitError) break;
                 }
-                if (injectionSequence !== undefined) injectionSequence.push([]);
+                if (injectionSequence !== undefined && (!hasField || !lastFieldIsText)) {
+                    injectionSequence.push([]);
+                }
+                if (ownsSequence && ownSequence !== undefined) {
+                    injectionParts.push(
+                        ...ownSequence.filter((sequence) => sequence.length > 1)
+                            .map((sequence) => sequence.join(' ')),
+                    );
+                }
             }
             active.delete(value);
         };
