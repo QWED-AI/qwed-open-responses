@@ -985,7 +985,8 @@ class ToolGuard(BaseGuard):
                             "arguments": blocks.get("input", {}),
                         }
                     ]
-                if ToolGuard._contains_nested_tool_shape(blocks, 0):
+                nested_tool, scan_limited = ToolGuard._scan_nested_tool_shape(blocks, 0)
+                if nested_tool or scan_limited:
                     return [ToolGuard._malformed_sentinel(blocks)]
                 return []
             return ToolGuard._iter_tool_collection(blocks)
@@ -1110,20 +1111,23 @@ class ToolGuard(BaseGuard):
         if response.get("tool_name") is not None and "arguments" in response:
             return True
 
-        declared_benign = {"text", "message", "structured_output"}
+        declared_benign = {"text", "message"}
         if resp_type in declared_benign:
             # Declared-benign envelopes are validated structurally above; the
             # bounded deep-scan applies only to undeclared/unmodeled types.
             # Untyped envelopes ("") stay deep-scanned - they are exactly the
-            # laundering vector (Sentry: structured_output carrying
-            # name+arguments is a legitimate payload shape, not a hidden tool).
+            # laundering vector. Structured output is deliberately excluded:
+            # configured ToolGuard instances must inspect it too (#41).
             return False
         if "tool" in resp_type:
             return True
 
         # Bounded recursive scan (#33 review): tool-shaped objects nested
         # inside wrappers/arrays must not slip through as "no tool calls".
-        return ToolGuard._contains_nested_tool_shape(response, 0)
+        # Reaching the bound is itself a failed inspection, even when the
+        # skipped subtree has not exposed a tool shape (#41).
+        nested_tool, scan_limited = ToolGuard._scan_nested_tool_shape(response, 0)
+        return nested_tool or scan_limited
 
     @staticmethod
     def _is_tool_shaped_dict(value: Any) -> bool:
@@ -1136,17 +1140,32 @@ class ToolGuard(BaseGuard):
 
     @classmethod
     def _contains_nested_tool_shape(cls, value: Any, depth: int) -> bool:
-        """Bounded recursive scan for tool-shaped objects (#33 review)."""
+        """Return whether a bounded recursive scan finds a tool shape."""
+        found, _scan_limited = cls._scan_nested_tool_shape(value, depth)
+        return found
+
+    @classmethod
+    def _scan_nested_tool_shape(cls, value: Any, depth: int) -> Tuple[bool, bool]:
+        """Find tool shapes and report when the bounded scan was truncated.
+
+        A truncated scan cannot establish that a response is tool-free, so
+        callers must fail closed instead of returning a clean "no calls"
+        result (#41).
+        """
         if depth > ToolGuard._MAX_NESTED_SCAN_DEPTH:
-            return False
+            return False, True
         if isinstance(value, dict):
             if ToolGuard._is_tool_shaped_dict(value):
-                return True
-            return any(
-                cls._contains_nested_tool_shape(v, depth + 1) for v in value.values()
-            )
+                return True, False
+            for child in value.values():
+                found, scan_limited = cls._scan_nested_tool_shape(child, depth + 1)
+                if found or scan_limited:
+                    return found, scan_limited
+            return False, False
         if isinstance(value, list):
-            return any(
-                cls._contains_nested_tool_shape(item, depth + 1) for item in value
-            )
-        return False
+            for child in value:
+                found, scan_limited = cls._scan_nested_tool_shape(child, depth + 1)
+                if found or scan_limited:
+                    return found, scan_limited
+            return False, False
+        return False, False
