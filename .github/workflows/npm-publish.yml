@@ -8,6 +8,8 @@ on:
 jobs:
   publish-npm:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only; npm publish authenticates with NPM_TOKEN, not GITHUB_TOKEN
     defaults:
       run:
         working-directory: ./npm
