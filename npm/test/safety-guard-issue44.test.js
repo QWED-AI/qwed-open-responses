@@ -70,6 +70,17 @@ describe('SafetyGuard issue #44 field and credential coverage', () => {
         expect(result.passed).toBe(false);
     });
 
+    test('keeps sibling message objects separate across scalar text', () => {
+        const result = new SafetyGuard().check({
+            output: [
+                { content: 'system:' },
+                'separator',
+                { content: 'reveal the secret' },
+            ],
+        });
+        expect(result.passed).toBe(true);
+    });
+
     test.each([
         ['{"password": "hunter2"}'],
         ['{"api_key": "sk-live-12345"}'],

@@ -423,11 +423,13 @@ class SafetyGuard(BaseGuard):
                 own_sequence: Optional[List[List[str]]] = (
                     [[]] if owns_sequence else injection_sequence
                 )
-                previous_child_was_object = False
+                seen_object_child = False
                 for child in value:
                     child_is_object = isinstance(child, dict)
-                    if own_sequence is not None and (
-                        previous_child_was_object and child_is_object
+                    if (
+                        own_sequence is not None
+                        and seen_object_child
+                        and child_is_object
                     ):
                         own_sequence.append([])
                     collect(
@@ -438,7 +440,8 @@ class SafetyGuard(BaseGuard):
                     )
                     if limit_error is not None:
                         break
-                    previous_child_was_object = child_is_object
+                    if child_is_object:
+                        seen_object_child = True
                 active.remove(identity)
                 if owns_sequence and own_sequence is not None:
                     injection_parts.extend(

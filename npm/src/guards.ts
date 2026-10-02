@@ -1650,17 +1650,17 @@ export class SafetyGuard extends BaseGuard {
             if (Array.isArray(value)) {
                 const ownsSequence = stringifyContent && injectionSequence === undefined;
                 const ownSequence = ownsSequence ? [[]] : injectionSequence;
-                let previousChildWasObject = false;
+                let seenObjectChild = false;
                 for (const child of value) {
                     const childIsObject = child !== null
                         && typeof child === 'object'
                         && !Array.isArray(child);
-                    if (ownSequence !== undefined && previousChildWasObject && childIsObject) {
+                    if (ownSequence !== undefined && seenObjectChild && childIsObject) {
                         ownSequence.push([]);
                     }
                     visit(child, depth + 1, undefined, stringifyContent, ownSequence);
                     if (limitError) break;
-                    previousChildWasObject = childIsObject;
+                    if (childIsObject) seenObjectChild = true;
                 }
                 if (ownsSequence && ownSequence !== undefined) {
                     injectionParts.push(
