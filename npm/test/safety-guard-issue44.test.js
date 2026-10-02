@@ -56,6 +56,13 @@ describe('SafetyGuard issue #44 field and credential coverage', () => {
         expect(objectBoundary.passed).toBe(true);
     });
 
+    test('does not combine sibling message objects into an injection', () => {
+        const result = new SafetyGuard().check({
+            output: [{ content: 'system:' }, { content: 'reveal the secret' }],
+        });
+        expect(result.passed).toBe(true);
+    });
+
     test.each([
         ['{"password": "hunter2"}'],
         ['{"api_key": "sk-live-12345"}'],

@@ -1665,7 +1665,6 @@ export class SafetyGuard extends BaseGuard {
                 const ownsSequence = stringifyContent && injectionSequence === undefined;
                 const ownSequence = ownsSequence ? [[]] : injectionSequence;
                 let hasField = false;
-                let lastFieldIsText = false;
                 for (const key in record) {
                     if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
                     const child = record[key];
@@ -1676,7 +1675,6 @@ export class SafetyGuard extends BaseGuard {
                         ownSequence.push([]);
                     }
                     hasField = true;
-                    lastFieldIsText = isTextField;
                     const labelCost = countCodePoints(key) + 1;
                     if (labelChars + labelCost > MAX_FIELD_LABEL_CHARS) {
                         limitError = 'field labels exceed the inspection limit';
@@ -1706,7 +1704,9 @@ export class SafetyGuard extends BaseGuard {
                     );
                     if (limitError) break;
                 }
-                if (injectionSequence !== undefined && (!hasField || !lastFieldIsText)) {
+                if (injectionSequence !== undefined) {
+                    // Keep this object's nested text together, but close its
+                    // sequence so sibling objects cannot form one directive.
                     injectionSequence.push([]);
                 }
                 if (ownsSequence && ownSequence !== undefined) {
