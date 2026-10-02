@@ -9,6 +9,7 @@ Source: Open Responses interoperable LLM interface.
 """
 
 import logging
+import math
 from typing import Any, AsyncGenerator, Callable, Dict, Iterable, List, Optional, Tuple
 
 from ..core import ResponseVerifier, VerificationResult
@@ -99,6 +100,7 @@ class OpenResponsesMiddleware:
     async def verify_stream(
         self,
         response_stream: AsyncGenerator[Dict[str, Any], None],
+        context: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Monitor the stream for tool-call items, verifying each before yield.
@@ -109,6 +111,8 @@ class OpenResponsesMiddleware:
         Yields:
             Verified (or replaced) items from the stream.
         """
+        running_context = dict(context) if isinstance(context, dict) else {}
+
         async for item in response_stream:
             self._stats["total"] += 1
 
@@ -118,16 +122,20 @@ class OpenResponsesMiddleware:
             )
 
             if normalized_type in self.VERIFIABLE_ITEM_TYPES:
-                verified_item = self._verify_tool_call(item)
-                if verified_item is not None:
-                    yield verified_item
+                verified_item = self._verify_tool_call(item, context=running_context)
             elif self._is_tool_shaped_item(item):
-                blocked_item = self._block_unrecognized_tool_item(item)
-                if blocked_item is not None:
-                    yield blocked_item
+                verified_item = self._block_unrecognized_tool_item(
+                    item, context=running_context
+                )
             else:
                 # Non-tool items (text, metadata, etc.) pass through
+                self._accumulate_usage(item, running_context)
                 yield item
+                continue
+
+            self._accumulate_usage(item, running_context)
+            if verified_item is not None:
+                yield verified_item
 
     def get_stats(self) -> Dict[str, int]:
         """Return running totals of items processed."""
@@ -140,6 +148,36 @@ class OpenResponsesMiddleware:
     # ------------------------------------------------------------------ #
     #  Internals                                                           #
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _is_usable_usage_amount(value: Any) -> bool:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value >= 0
+            and (not isinstance(value, float) or math.isfinite(value))
+        )
+
+    @classmethod
+    def _accumulate_usage(cls, item: Dict[str, Any], context: Dict[str, Any]) -> None:
+        """Carry per-item usage into this stream's next verification context."""
+        usage = item.get("usage")
+        if not isinstance(usage, dict):
+            return
+
+        for context_key, usage_key in (
+            ("total_cost", "cost"),
+            ("total_tokens", "total_tokens"),
+        ):
+            reported = usage.get(usage_key)
+            if not cls._is_usable_usage_amount(reported):
+                continue
+
+            current = context.get(context_key, 0)
+            if current is None:
+                current = 0
+            if cls._is_usable_usage_amount(current):
+                context[context_key] = current + reported
 
     @staticmethod
     def _is_tool_shaped_item(item: Dict[str, Any]) -> bool:
@@ -440,6 +478,7 @@ class OpenResponsesMiddleware:
     def _verify_tool_call(
         self,
         item: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Run a single tool-call item through the guard stack.
@@ -449,12 +488,13 @@ class OpenResponsesMiddleware:
         original item unmodified (when ``block_on_failure`` is False).
         """
         tool_name = self._tool_name(item)
-        result: VerificationResult = self._verifier.verify(item)
+        result: VerificationResult = self._verifier.verify(item, context=context)
         return self._handle_tool_call_result(item, tool_name, result)
 
     def _block_unrecognized_tool_item(
         self,
         item: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Fail closed when a tool-shaped item declares an unknown type."""
         reason = f"Unrecognized tool-call item type: {item.get('type')!r}"
@@ -464,6 +504,7 @@ class OpenResponsesMiddleware:
                 *self._verifier.default_guards,
                 _UnrecognizedToolItemGuard(reason),
             ],
+            context=context,
         )
         return self._handle_tool_call_result(item, self._tool_name(item), result)
 

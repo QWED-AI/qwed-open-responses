@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 from .base import BaseGuard, GuardResult
 
 NPV_VERIFICATION_FAILED = "NPV verification failed"
@@ -22,7 +22,9 @@ class FinanceGuard(BaseGuard):
             ) from err
 
     def check(
-        self, response: Dict[str, Any], context: dict[str, Any] | None = None
+        self,
+        response: Dict[str, Any],
+        context: Optional[Union[Dict[str, Any], str]] = None,
     ) -> GuardResult:
         if not isinstance(response, dict):
             return self.fail_result(
@@ -40,13 +42,17 @@ class FinanceGuard(BaseGuard):
             return context
         if isinstance(context, dict):
             ctx = context.get("context", context.get("type", ""))
-            if ctx:
+            if isinstance(ctx, str) and ctx:
                 return ctx
-        return content.get("context") or content.get("type") or ""
+        response_context = content.get("context") or content.get("type")
+        if isinstance(response_context, str):
+            return str(response_context)
+        return ""
 
     def _build_npv_failure_message(self, result: Any) -> str:
-        if hasattr(result, "message") and result.message is not None:
-            return result.message
+        message = getattr(result, "message", None)
+        if isinstance(message, str):
+            return message
         parts = []
         for attr, label in [
             ("difference", "difference"),

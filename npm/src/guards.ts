@@ -4,6 +4,7 @@
 
 import Ajv, { ValidateFunction, ErrorObject } from 'ajv';
 import addFormats from 'ajv-formats';
+import { Script } from 'node:vm';
 import { GuardResult, ParsedResponse } from './types';
 
 const EMAIL_ATOM = "[a-z0-9!#$%&'*+/=?^_`{|}~-]+";
@@ -13,6 +14,17 @@ const EMAIL_FORMAT = new RegExp(
     `^${EMAIL_LOCAL_PART}@(?:${EMAIL_DOMAIN_LABEL}\\.)*${EMAIL_DOMAIN_LABEL}(?![\\s\\S])`,
     'i',
 );
+const CUSTOM_PATTERN_TIMEOUT_MS = 25;
+const CUSTOM_PATTERN_TEST_SCRIPT = new Script('pattern.test(content)');
+
+type CompiledCustomPattern = { source: string; regex: RegExp };
+type SafetyIssue = {
+    type: string;
+    severity: string;
+    details?: string[];
+    pattern?: string;
+    error?: string;
+};
 
 function countCodePoints(text: string): number {
     let count = 0;
@@ -473,8 +485,11 @@ export class ToolGuard extends BaseGuard {
                     tool_name: content.name || '',
                     arguments: content.input || {},
                 });
-            } else if (this.containsNestedToolShape(content, 0)) {
-                calls.push(ToolGuard.malformedEntry());
+            } else {
+                const nestedScan = this.scanNestedToolShape(content, 0);
+                if (nestedScan.found || nestedScan.limited) {
+                    calls.push(ToolGuard.malformedEntry());
+                }
             }
         } else if (content !== null && content !== undefined) {
             calls.push(ToolGuard.malformedEntry());
@@ -495,7 +510,8 @@ export class ToolGuard extends BaseGuard {
         if (normalized.length === 0) {
             // Bounded recursive scan (#33 review): tool-shaped objects nested
             // inside wrappers/arrays must not slip through as "no tool calls".
-            if (this.containsNestedToolShape(response, 0)) {
+            const nestedScan = this.scanNestedToolShape(response, 0);
+            if (nestedScan.found || nestedScan.limited) {
                 normalized.push({
                     type: '__unrecognized__',
                     tool_name: undefined,
@@ -713,14 +729,28 @@ export class ToolGuard extends BaseGuard {
     }
 
     containsNestedToolShape(value: any, depth: number): boolean {
-        /** Bounded recursive scan for tool-shaped objects (#33 review). */
-        if (depth > 12) return false;
-        if (value === null || typeof value !== 'object') return false;
-        if (this.isToolShapedDict(value)) return true;
-        for (const v of Object.values(value)) {
-            if (this.containsNestedToolShape(v, depth + 1)) return true;
+        return this.scanNestedToolShape(value, depth).found;
+    }
+
+    private scanNestedToolShape(
+        value: any,
+        depth: number,
+    ): { found: boolean; limited: boolean } {
+        /**
+         * A bounded scan cannot establish that a skipped subtree is tool-free.
+         * Report truncation so callers fail closed instead of returning a
+         * clean "No tool calls" result (#41).
+         */
+        if (depth > 12) return { found: false, limited: true };
+        if (value === null || typeof value !== 'object') {
+            return { found: false, limited: false };
         }
-        return false;
+        if (this.isToolShapedDict(value)) return { found: true, limited: false };
+        for (const child of Object.values(value)) {
+            const result = this.scanNestedToolShape(child, depth + 1);
+            if (result.found || result.limited) return result;
+        }
+        return { found: false, limited: false };
     }
 
     private isToolShapedDict(value: any): boolean {
@@ -739,10 +769,46 @@ export class ToolGuard extends BaseGuard {
         });
 
         const out: any[] = [];
-        for (const call of calls) {
+        for (const originalCall of calls) {
+            let call = originalCall;
             if (call.type === '__unrecognized__' || call.type === '__malformed__') {
                 out.push(call);
                 continue;
+            }
+
+            const rootCallFields = ['toolName', 'tool_name', 'name', 'arguments'];
+            const hasRootCallFields = rootCallFields.some((key) => key in call);
+            const nestedCalls = ['tool_call', 'toolCall', 'function_call']
+                .map((key) => call[key])
+                .filter((value) => value !== null && value !== undefined);
+            const nestedCall = nestedCalls[0];
+            const hasNestedCall = nestedCalls.length > 0;
+            const functionWrapper = call.function;
+            const hasFunctionWrapper =
+                functionWrapper !== null &&
+                typeof functionWrapper === 'object' &&
+                !Array.isArray(functionWrapper) &&
+                ('name' in functionWrapper || 'arguments' in functionWrapper);
+
+            if (
+                nestedCalls.length > 1 ||
+                (hasFunctionWrapper && (hasNestedCall || hasRootCallFields))
+            ) {
+                out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
+                continue;
+            }
+
+            if (hasNestedCall) {
+                if (
+                    typeof nestedCall !== 'object' ||
+                    Array.isArray(nestedCall) ||
+                    nestedCall === call ||
+                    hasRootCallFields
+                ) {
+                    out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
+                    continue;
+                }
+                call = nestedCall;
             }
 
             // OpenAI function wrapper: {type?, function: {name, arguments}}.
@@ -751,6 +817,13 @@ export class ToolGuard extends BaseGuard {
             if ('function' in call) {
                 const fn = call.function;
                 if (fn !== null && typeof fn === 'object' && !Array.isArray(fn)) {
+                    const hasFunctionFields = 'name' in fn || 'arguments' in fn;
+                    const hasNestedFunctionCall = ['tool_call', 'toolCall', 'function_call']
+                        .some((key) => call[key] !== null && call[key] !== undefined);
+                    if (hasFunctionFields && (hasNestedFunctionCall || rootCallFields.some((key) => key in call))) {
+                        out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
+                        continue;
+                    }
                     const n = fn.name;
                     if (!ToolGuard.validToolName(n)) {
                         out.push(sentinel(call.toolName || call.name || n));
@@ -1202,6 +1275,11 @@ export class SafetyGuard extends BaseGuard {
         ipAddress: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/,
     };
 
+    // Text-bearing object fields remain in their enclosing output sequence.
+    private static INJECTION_TEXT_FIELDS = new Set([
+        'text', 'content', 'message', 'output_text', 'output', 'arguments',
+    ]);
+
     // #30 parity: mirrors Python INJECTION_PATTERNS — the missing five
     // patterns let injection payloads pass on npm while Python blocked them.
     private static INJECTION_PATTERNS = [
@@ -1246,6 +1324,48 @@ export class SafetyGuard extends BaseGuard {
         // the spaced "private key: <value>" form. Mirrors safety_guard.py.
         /private[\s_-]?key\s*[=:]\s*(?!(?:required|optional|none|null|redacted|omitted|placeholder|invalid|expired|not[_\s]?(?:set|provided)|n\/?a)(?=[\s.,;:!?)\]]*$)|\*{3,}(?=[\s.,;:!?)\]]*$)|x{3,}(?=[\s.,;:!?)\]]*$))\S+/i,
     ];
+
+    private static JSON_CREDENTIAL_RE =
+        /["'](password|api[_-]?key|secret|private[\s_-]?key)["']\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi;
+
+    private static decodeJsonCredentialValue(raw: string): string {
+        const allowHexEscape = raw.startsWith("'");
+        if (raw.startsWith('"')) {
+            try {
+                const decoded: unknown = JSON.parse(raw);
+                if (typeof decoded === 'string') return decoded;
+            } catch {
+                // Fall through to the conservative unescape below.
+            }
+        }
+
+        const inner = raw.slice(1, -1);
+        let decoded = '';
+        for (let index = 0; index < inner.length; index += 1) {
+            const char = inner[index];
+            if (char !== '\\' || index + 1 >= inner.length) {
+                decoded += char;
+                continue;
+            }
+            const escaped = inner[++index];
+            if (escaped === 'u' && /^[0-9a-f]{4}$/i.test(inner.slice(index + 1, index + 5))) {
+                decoded += String.fromCharCode(parseInt(inner.slice(index + 1, index + 5), 16));
+                index += 4;
+                continue;
+            }
+            if (allowHexEscape && escaped === 'x' && /^[0-9a-f]{2}$/i.test(inner.slice(index + 1, index + 3))) {
+                decoded += String.fromCharCode(parseInt(inner.slice(index + 1, index + 3), 16));
+                index += 2;
+                continue;
+            }
+            const replacements: Record<string, string> = {
+                'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t',
+                '"': '"', "'": "'", '\\': '\\', '/': '/',
+            };
+            decoded += replacements[escaped] ?? `\\${escaped}`;
+        }
+        return decoded;
+    }
 
     private static HARMFUL_PATTERNS = [
         ...SafetyGuard.CREDENTIAL_PATTERNS,
@@ -1309,23 +1429,49 @@ export class SafetyGuard extends BaseGuard {
         return tail.length >= 2;
     }
 
+    private static normalizePiiType(type: string): string {
+        return type
+            .replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)
+            .replace(/[\s-]+/g, '_');
+    }
+
     private checkPii: boolean;
     private checkInjection: boolean;
     private checkHarmful: boolean;
+    private piiAllowList: Set<string>;
+    private customPatterns: CompiledCustomPattern[];
 
     constructor(options: {
         checkPii?: boolean;
         checkInjection?: boolean;
         checkHarmful?: boolean;
+        piiAllowList?: readonly string[];
+        customPatterns?: readonly string[];
     } = {}) {
         super();
         this.checkPii = options.checkPii ?? true;
         this.checkInjection = options.checkInjection ?? true;
         this.checkHarmful = options.checkHarmful ?? true;
+        this.piiAllowList = new Set(
+            (options.piiAllowList ?? []).map(SafetyGuard.normalizePiiType),
+        );
+        this.customPatterns = (options.customPatterns ?? []).map((source, index) => {
+            try {
+                return { source, regex: new RegExp(source, 'i') };
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : String(error);
+                throw new Error(`Invalid custom safety pattern at index ${index}: ${reason}`);
+            }
+        });
     }
 
     check(response: ParsedResponse, context?: Record<string, any>): GuardResult {
-        let collected: { content: string; leaves: string[]; limitError?: string };
+        let collected: {
+            content: string;
+            leaves: string[];
+            injectionParts: string[];
+            limitError?: string;
+        };
         try {
             collected = this.collectBoundedContent(response);
         } catch {
@@ -1343,25 +1489,28 @@ export class SafetyGuard extends BaseGuard {
                 { resourceLimit: collected.limitError },
             );
         }
-        const { content, leaves } = collected;
+        const { content, leaves, injectionParts } = collected;
         // Python parity: issues is a uniform array of
         // {type, severity, details} objects for BOTH paths — the error path
         // (all issues, errors AND warnings) and the warning-only path
         // (Sentry, PR #34: PII used to be plain strings here and verbose
         // {type: 'PII detected: email', details: []} objects there).
-        const issues: Array<{ type: string; severity: string; details: string[] }> = [];
+        const issues: SafetyIssue[] = [];
         // Error-severity issues are COLLECTED across checks — matching
         // Python, which appends injection and harmful findings together and
         // reports the total (CodeAnt nitpick, PR #34: returning on the first
         // harmful pattern discarded PII and other diagnostics).
-        const errorIssues: Array<{ type: string; severity: string; details: string[] }> = [];
+        const errorIssues: SafetyIssue[] = [];
 
         if (this.checkPii) {
             // Python parity: one {type:'pii', severity:'warning'} entry whose
             // details carry the matched PII types (email, phone, ...).
             const piiTypes: string[] = [];
-            if (SafetyGuard.containsEmail(content)) piiTypes.push('email');
+            if (!this.piiAllowList.has('email') && SafetyGuard.containsEmail(content)) {
+                piiTypes.push('email');
+            }
             for (const [type, pattern] of Object.entries(SafetyGuard.PII_PATTERNS)) {
+                if (this.piiAllowList.has(SafetyGuard.normalizePiiType(type))) continue;
                 if (pattern.test(content)) {
                     piiTypes.push(type);
                 }
@@ -1374,7 +1523,7 @@ export class SafetyGuard extends BaseGuard {
         if (this.checkInjection) {
             const injections: string[] = [];
             for (const pattern of SafetyGuard.INJECTION_PATTERNS) {
-                if (pattern.test(content)) {
+                if (injectionParts.some((part) => pattern.test(part))) {
                     injections.push(pattern.source);
                 }
             }
@@ -1395,16 +1544,68 @@ export class SafetyGuard extends BaseGuard {
             // the credential patterns, never PEM (Sentry/Greptile P1).
             const harmful: string[] = [];
             for (const leaf of leaves) {
-                if (SafetyGuard.isGuidanceProse(leaf)) continue;
-                if (SafetyGuard.placeholderTailAllows(leaf)) continue;
-                for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
-                    if (pattern.test(leaf) && !harmful.includes(pattern.source)) {
-                        harmful.push(pattern.source);
+                const scanValues = [leaf];
+                leaf.replace(
+                    SafetyGuard.JSON_CREDENTIAL_RE,
+                    (match, label: string, value: string) => {
+                        scanValues.push(
+                            `${label}=${SafetyGuard.decodeJsonCredentialValue(value)}`,
+                        );
+                        return match;
+                    },
+                );
+                for (const scanValue of scanValues) {
+                    if (SafetyGuard.isGuidanceProse(scanValue)) continue;
+                    if (SafetyGuard.placeholderTailAllows(scanValue)) continue;
+                    for (const pattern of SafetyGuard.HARMFUL_PATTERNS) {
+                        if (pattern.test(scanValue) && !harmful.includes(pattern.source)) {
+                            harmful.push(pattern.source);
+                        }
                     }
                 }
             }
             if (harmful.length > 0) {
                 const entry = { type: 'harmful', severity: 'error', details: harmful };
+                issues.push(entry);
+                errorIssues.push(entry);
+            }
+        }
+
+        for (const { source, regex } of this.customPatterns) {
+            let matches: boolean;
+            try {
+                matches = CUSTOM_PATTERN_TEST_SCRIPT.runInNewContext(
+                    { pattern: regex, content },
+                    { timeout: CUSTOM_PATTERN_TIMEOUT_MS },
+                ) === true;
+            } catch (error) {
+                if (
+                    typeof error === 'object' &&
+                    error !== null &&
+                    'code' in error &&
+                    error.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT'
+                ) {
+                    const entry = {
+                        type: 'custom_pattern',
+                        severity: 'error',
+                        pattern: source,
+                        error: 'execution timed out',
+                    };
+                    issues.push(entry);
+                    return this.failResult(
+                        'Safety check failed: custom pattern exceeded the execution time limit',
+                        { issues },
+                    );
+                }
+                throw error;
+            }
+
+            if (matches) {
+                const entry = {
+                    type: 'custom_pattern',
+                    severity: 'error',
+                    pattern: source,
+                };
                 issues.push(entry);
                 errorIssues.push(entry);
             }
@@ -1484,6 +1685,7 @@ export class SafetyGuard extends BaseGuard {
     private collectBoundedContent(response: unknown): {
         content: string;
         leaves: string[];
+        injectionParts: string[];
         limitError?: string;
     } {
         const MAX_DEPTH = 12;
@@ -1492,6 +1694,8 @@ export class SafetyGuard extends BaseGuard {
         const MAX_FIELD_LABEL_CHARS = 10_000;
         const MAX_CREDENTIAL_SCAN_CHARS = 2 * MAX_CHARS + MAX_FIELD_LABEL_CHARS;
         const parts: string[] = [];
+        const labelParts: string[] = [];
+        const injectionParts: string[] = [];
         const leaves: string[] = [];
         const active = new WeakSet<object>();
         let nodeCount = 0;
@@ -1516,7 +1720,8 @@ export class SafetyGuard extends BaseGuard {
             value: unknown,
             depth: number,
             fieldName?: string,
-            stringifyContent: boolean = false
+            stringifyContent: boolean = false,
+            injectionSequence?: string[][],
         ): void => {
             if (limitError) return;
             nodeCount++;
@@ -1543,7 +1748,13 @@ export class SafetyGuard extends BaseGuard {
                 if (!addContent(value)) return;
 
                 leaves.push(value);
-                if (fieldName !== undefined) leaves.push(fieldName + '=' + value);
+                if (fieldName !== undefined) {
+                    leaves.push(fieldName + '=' + value);
+                    injectionParts.push(fieldName + ' ' + value);
+                }
+                if (stringifyContent && injectionSequence !== undefined) {
+                    injectionSequence[injectionSequence.length - 1].push(value);
+                }
                 leafChars += leafCost;
                 return;
             }
@@ -1574,45 +1785,92 @@ export class SafetyGuard extends BaseGuard {
             active.add(value);
 
             if (Array.isArray(value)) {
+                const ownsSequence = stringifyContent && injectionSequence === undefined;
+                const ownSequence = ownsSequence ? [[]] : injectionSequence;
+                let seenObjectChild = false;
                 for (const child of value) {
-                    visit(child, depth + 1, undefined, stringifyContent);
+                    const childIsObject = child !== null
+                        && typeof child === 'object'
+                        && !Array.isArray(child);
+                    if (ownSequence !== undefined && seenObjectChild && childIsObject) {
+                        ownSequence.push([]);
+                    }
+                    visit(child, depth + 1, undefined, stringifyContent, ownSequence);
                     if (limitError) break;
+                    if (childIsObject) seenObjectChild = true;
+                }
+                if (ownsSequence && ownSequence !== undefined) {
+                    injectionParts.push(
+                        ...ownSequence.filter((sequence) => sequence.length > 1)
+                            .map((sequence) => sequence.join(' ')),
+                    );
                 }
             } else {
                 const record = value as Record<string, unknown>;
+                const ownsSequence = stringifyContent && injectionSequence === undefined;
+                const ownSequence = ownsSequence ? [[]] : injectionSequence;
+                let hasField = false;
+                let lastFieldIsText = false;
                 for (const key in record) {
                     if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
                     const child = record[key];
+                    const isTextField = SafetyGuard.INJECTION_TEXT_FIELDS.has(
+                        key.toLowerCase(),
+                    );
+                    if (ownSequence !== undefined && !isTextField) {
+                        ownSequence.push([]);
+                    }
+                    hasField = true;
+                    lastFieldIsText = isTextField;
                     const labelCost = countCodePoints(key) + 1;
                     if (labelChars + labelCost > MAX_FIELD_LABEL_CHARS) {
                         limitError = 'field labels exceed the inspection limit';
                         break;
                     }
                     labelChars += labelCost;
-                    const includeContent = stringifyContent
-                        || (depth === 0 && (key === 'output' || key === 'arguments'));
+                    // Field names are attacker-controlled input too. Include
+                    // them in the scan corpus without consuming the value
+                    // character budget, preserving the documented value cap.
+                    labelParts.push(key);
+                    injectionParts.push(key);
                     if (stringifyContent) {
                         nodeCount++;
                         if (nodeCount > MAX_NODES) {
                             limitError = 'response node count exceeds the inspection limit';
                             break;
                         }
-                        if (!addContent(key)) break;
                     }
+                    const includeContent = stringifyContent
+                        || (depth === 0 && (key === 'output' || key === 'arguments'));
                     visit(
                         child,
                         depth + 1,
                         typeof child === 'string' ? key : undefined,
                         includeContent,
+                        isTextField ? ownSequence : undefined,
                     );
                     if (limitError) break;
+                }
+                if (injectionSequence !== undefined && (!hasField || !lastFieldIsText)) {
+                    injectionSequence.push([]);
+                }
+                if (ownsSequence && ownSequence !== undefined) {
+                    injectionParts.push(
+                        ...ownSequence.filter((sequence) => sequence.length > 1)
+                            .map((sequence) => sequence.join(' ')),
+                    );
                 }
             }
             active.delete(value);
         };
 
         visit(response, 0);
-        return { content: parts.join(' '), leaves, limitError };
+        return {
+            content: parts.concat(labelParts).join(' '),
+            leaves,
+            injectionParts: parts.concat(injectionParts),
+            limitError,
+        };
     }
 
     private extractLeafStrings(response: ParsedResponse): string[] {
