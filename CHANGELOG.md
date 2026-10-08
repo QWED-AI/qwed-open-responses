@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-09
+
 ### Security — client-executed Responses API items (GHSA-xhq6-w3f2-m5w6)
 
 - **ToolGuard verifies client action items** — `local_shell_call`,
@@ -35,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carries a `tool_call` / `function_call` / `function` / `tool_calls`
   envelope, or a named item whose `tool_name` / `toolName` disagrees with
   `name`, is rejected.
+
+## [0.6.0] - 2026-10-02
 
 ### Security — fail-closed hardening batch (#48, #49, #50, #51, #52, #55, #57, #58, #59)
 

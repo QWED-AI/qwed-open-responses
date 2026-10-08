@@ -290,10 +290,20 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
 
 - **Tool blocking is a configurable blocklist, not a sandbox.** Matching is
   case-insensitive and the default list covers common shells (`bash`, `sh`,
-  `powershell`, `zsh`, ...), and argument pattern scanning also decodes
+  `powershell`, `zsh`, ...) and client action tools (`local_shell`,
+  `apply_patch`, `computer_use`), and argument pattern scanning also decodes
   bounded base64 payloads — but pattern scanning is a **heuristic**, not a
   security boundary. Prefer `allowed_tools` allowlists and OS-level
   sandboxing for real enforcement.
+- **Responses API action items are tool calls (v0.6.1 breaking change).**
+  `local_shell_call`, `shell_call`, `apply_patch_call` and `computer_call`
+  items are checked as the tools `local_shell`, `shell`, `apply_patch` and
+  `computer_use`; `custom_tool_call` and `mcp_approval_request` items are
+  checked under their own `name`. The first four names are on the default
+  blocklist — to run them, create ToolGuard with
+  `use_default_blocklist=False` and list them in `allowed_tools`. Unknown
+  `*_call` / `*_request` items in a response's `output[]` or a stream fail
+  closed.
 - **PII detection produces warnings, not blocks.** PII matches surface as a
   separate warning state (`VerificationResult.warnings`); they do not fail
   `verified` or block unless you create the verifier with
