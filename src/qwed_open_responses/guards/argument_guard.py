@@ -114,12 +114,17 @@ class ArgumentGuard(BaseGuard):
             or has_choice_tool_calls
             or has_content_tool_calls
         )
+        # Client action items (GHSA-xhq6-w3f2-m5w6) are direct calls too.
+        is_direct_call = normalized_type in {
+            "tool_call",
+            "function_call",
+        } or ToolGuard._is_action_item_type(normalized_type)
         calls = (
             ToolGuard.normalize_tool_calls(response)
-            if normalized_type in {"tool_call", "function_call"} or has_nested_call
+            if is_direct_call or has_nested_call
             else []
         )
-        if normalized_type in {"tool_call", "function_call"} or calls:
+        if is_direct_call or calls:
             if not calls or any(
                 call.get("type") in {"__malformed__", "__unrecognized__"}
                 for call in calls

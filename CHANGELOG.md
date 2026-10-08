@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — client-executed Responses API items (GHSA-xhq6-w3f2-m5w6)
+
+- **ToolGuard verifies client action items** — `local_shell_call`,
+  `shell_call`, `apply_patch_call`, `computer_call`, `custom_tool_call` and
+  `mcp_approval_request` items are normalized into tool calls, so the
+  blocklist, allowlist, dangerous-pattern and validator checks apply to them.
+  Previously they read as tool-free content and verified. Applies to direct
+  items, `output[]` members of a response object, `tool_calls[]` entries and
+  the streaming middleware, on both the Python and npm packages.
+- **Canonical tool names** — action items are policy-checked as
+  `local_shell`, `shell`, `apply_patch` and `computer_use`; custom tool and
+  MCP approval items use their own `name`. `local_shell` argv lists are also
+  scanned as a joined command line.
+- **BREAKING: default blocklist adds `local_shell`, `apply_patch` and
+  `computer_use`** — to allow these tools, construct ToolGuard with
+  `use_default_blocklist=False` (Python) / `{ useDefaultBlocklist: false }`
+  (TypeScript) and list them in `allowed_tools` / `allowedTools`.
+- **Unknown executable items fail closed** — any other `*_call` /
+  `*_request` item in a protocol position (streamed items, `output_item`
+  events, `output[]` of a response object) is blocked as unrecognized.
+  Provider-hosted items (`web_search_call`, `file_search_call`,
+  `code_interpreter_call`, `image_generation_call`, `mcp_call`) keep their
+  existing behavior. Ordinary data with such type labels elsewhere is
+  unaffected.
+- **Ambiguous action items fail closed** — an action item that also
+  carries a `tool_call` / `function_call` / `function` / `tool_calls`
+  envelope, or a named item whose `tool_name` / `toolName` disagrees with
+  `name`, is rejected.
+
 ### Security — fail-closed hardening batch (#48, #49, #50, #51, #52, #55, #57, #58, #59)
 
 - **BREAKING: SchemaGuard rejects undeclared root fields by default** (#48)

@@ -92,7 +92,39 @@ class ToolGuard(BaseGuard):
         "execute_command",
         "command_line",
         "terminal",
+        # Canonical names of client-executed Responses API action items
+        # (GHSA-xhq6-w3f2-m5w6): shell commands, file patches and desktop
+        # control are blocked unless the caller opts out of the defaults.
+        "local_shell",
+        "apply_patch",
+        "computer_use",
     }
+
+    # Responses API items that ask the CLIENT to execute an action without a
+    # function name/arguments envelope. Each is normalized into a canonical
+    # tool call (type -> tool name, payload -> arguments) so blocklist,
+    # allowlist, pattern and validator checks apply (GHSA-xhq6-w3f2-m5w6).
+    _CLIENT_ACTION_ITEMS: Dict[str, Tuple[str, str]] = {
+        "local_shell_call": ("local_shell", "action"),
+        "shell_call": ("shell", "action"),
+        "apply_patch_call": ("apply_patch", "operation"),
+        "computer_call": ("computer_use", "action"),
+    }
+    # Client-executed items that carry their own tool name.
+    _NAMED_CLIENT_ITEMS = frozenset({"custom_tool_call", "mcp_approval_request"})
+    # Provider-hosted tool items: executed server-side before the response
+    # is returned, so they report results rather than request execution.
+    # They are exempt only from the "*_call" suffix rule below — any
+    # name/arguments shape they carry is still inspected as before.
+    _HOSTED_TOOL_ITEMS = frozenset(
+        {
+            "web_search_call",
+            "file_search_call",
+            "code_interpreter_call",
+            "image_generation_call",
+            "mcp_call",
+        }
+    )
 
     # Default dangerous patterns in arguments.
     # Compiled with re.IGNORECASE (see __init__) so both implementations
@@ -140,6 +172,48 @@ class ToolGuard(BaseGuard):
         r"\brm((?:\s+(?:-[firdv]+|--(?:recursive|force))){1,8})(?=\s|[;&|)]|$)",
         re.IGNORECASE | re.ASCII,
     )
+
+    @classmethod
+    def _is_action_item_type(
+        cls, normalized_type: str, include_unknown: bool = False
+    ) -> bool:
+        """Return whether an item type requests client-side execution.
+
+        Known client action items always match. With ``include_unknown``,
+        any other ``*_call`` / ``*_request`` type (except provider-hosted
+        items) matches too, so a new or unmodelled executable item fails
+        closed instead of reading as tool-free (GHSA-xhq6-w3f2-m5w6). That
+        suffix rule is applied only where the value is known to be a
+        Responses item — stream items and ``output[]`` members of a
+        response object — because ordinary data uses such type labels
+        (``pull_request``, ``refund_request``, ``phone_call``).
+        """
+        if (
+            normalized_type in cls._CLIENT_ACTION_ITEMS
+            or normalized_type in cls._NAMED_CLIENT_ITEMS
+        ):
+            return True
+        if not include_unknown or normalized_type in cls._HOSTED_TOOL_ITEMS:
+            return False
+        return normalized_type.endswith(("_call", "_request"))
+
+    @classmethod
+    def _has_unknown_response_output_item(cls, response: Dict[str, Any]) -> bool:
+        """Whether a response object's ``output[]`` holds an executable item.
+
+        Covers OpenAI / Open Responses ``{"object": "response", "output":
+        [...]}`` envelopes, where every member is a protocol item.
+        """
+        if cls._normalized_type(response.get("object", "")) != "response":
+            return False
+        output = response.get("output")
+        return isinstance(output, list) and any(
+            isinstance(item, dict)
+            and cls._is_action_item_type(
+                cls._normalized_type(item.get("type", "")), include_unknown=True
+            )
+            for item in output
+        )
 
     @staticmethod
     def _normalize_tool_identity(name: str) -> str:
@@ -545,9 +619,12 @@ class ToolGuard(BaseGuard):
         calls: List[Dict] = []
         calls.extend(cls._extract_known_shapes(response))
 
-        # Add direct Responses API function_call items only when no other
-        # shape matched, so hybrid tool_calls arrays are not double-counted.
-        if not calls and resp_type == "function_call":
+        # Add direct Responses API items (function_call and client action
+        # items) only when no other shape matched, so hybrid tool_calls
+        # arrays are not double-counted.
+        if not calls and (
+            resp_type == "function_call" or cls._is_action_item_type(resp_type)
+        ):
             calls.append(response)
 
         calls = cls._normalize_calls(calls)
@@ -785,6 +862,10 @@ class ToolGuard(BaseGuard):
         if call.get("type") in ("__unrecognized__", "__malformed__"):
             return call
 
+        item_type = cls._normalized_type(call.get("type", ""))
+        if cls._is_action_item_type(item_type):
+            return cls._normalize_action_item(call, item_type)
+
         tool_call = call.get("tool_call")
         function_call = call.get("function_call")
         function = call.get("function")
@@ -835,6 +916,72 @@ class ToolGuard(BaseGuard):
 
         # JSON-encoded argument strings on otherwise-recognized calls.
         return cls._normalize_json_encoded_arguments(call)
+
+    @classmethod
+    def _normalize_action_item(
+        cls, call: Dict[str, Any], item_type: str
+    ) -> Dict[str, Any]:
+        """Normalize a client-executed Responses API item (GHSA-xhq6-w3f2-m5w6).
+
+        The executor dispatches on the item type and its payload, so the
+        canonical name comes from the type and the payload becomes the
+        arguments. Malformed payloads and items that also carry another call
+        envelope fail closed.
+        """
+        if any(
+            key in call
+            for key in (
+                "tool_call",
+                "toolCall",
+                "function_call",
+                "function",
+                "tool_calls",
+                "toolCalls",
+            )
+        ):
+            return cls._ambiguous_hybrid_sentinel()
+
+        if item_type in cls._CLIENT_ACTION_ITEMS:
+            tool_name, payload_key = cls._CLIENT_ACTION_ITEMS[item_type]
+            payload = call.get(payload_key)
+            if not isinstance(payload, dict):
+                return cls._unrecognized_sentinel(tool_name)
+            arguments: Dict[str, Any] = {payload_key: payload}
+            command = payload.get("command")
+            if isinstance(command, list) and all(isinstance(p, str) for p in command):
+                # argv lists split "rm", "-rf" into separate leaves; scan the
+                # joined command line too so argument patterns still match.
+                arguments["command_line"] = " ".join(command)
+            return {"type": "tool_call", "tool_name": tool_name, "arguments": arguments}
+
+        if item_type in cls._NAMED_CLIENT_ITEMS:
+            name = call.get("name")
+            if not cls._valid_tool_name(name):
+                return cls._unrecognized_sentinel(None)
+            for key in ("tool_name", "toolName"):
+                declared = call.get(key)
+                if declared is not None and (
+                    not isinstance(declared, str)
+                    or cls._normalize_tool_identity(declared)
+                    != cls._normalize_tool_identity(name)
+                ):
+                    return cls._ambiguous_hybrid_sentinel()
+            if item_type == "custom_tool_call":
+                raw_input = call.get("input", "")
+                if not isinstance(raw_input, str):
+                    return cls._unrecognized_sentinel(name)
+                return {
+                    "type": "tool_call",
+                    "tool_name": name,
+                    "arguments": {"input": raw_input},
+                }
+            ok, args = cls._parse_tool_arguments(call.get("arguments", {}))
+            if not ok:
+                return cls._unrecognized_sentinel(name)
+            return {"type": "tool_call", "tool_name": name, "arguments": args}
+
+        # Defensive: callers only route known action types here.
+        return cls._unrecognized_sentinel(None)
 
     @staticmethod
     def _valid_tool_name(name: Any) -> bool:
@@ -1042,7 +1189,11 @@ class ToolGuard(BaseGuard):
         has_sibling_collection = any(
             key in response for key in ("tool_calls", "choices", "content")
         )
-        if resp_type in ("tool_call", "function_call") and has_sibling_collection:
+        is_direct_item = resp_type in (
+            "tool_call",
+            "function_call",
+        ) or ToolGuard._is_action_item_type(resp_type)
+        if is_direct_item and has_sibling_collection:
             return [ToolGuard._ambiguous_hybrid_sentinel()]
 
         # Multiple independent top-level collections at once is ambiguous and
@@ -1078,6 +1229,11 @@ class ToolGuard(BaseGuard):
         tool-shaped (an object carrying name/arguments), so ordinary fields
         like ``function: "parse_csv"`` on a structured response still pass.
         """
+        # Response objects: an unknown executable protocol item in output[]
+        # must not read as tool-free (GHSA-xhq6-w3f2-m5w6).
+        if ToolGuard._has_unknown_response_output_item(response):
+            return True
+
         # Tool-shaped objects under recognizable hint keys. Result envelopes
         # may repeat the root ``function``/``tool_name`` fields for
         # correlation, but explicit nested call envelopes remain suspicious.
@@ -1135,6 +1291,10 @@ class ToolGuard(BaseGuard):
             return False
         t = ToolGuard._normalized_type(value.get("type", ""))
         if t in ("tool_use", "function_call", "tool_call"):
+            return True
+        if ToolGuard._is_action_item_type(t):
+            # Client-executed items nested in output[] / wrappers are tool
+            # calls even without name/arguments (GHSA-xhq6-w3f2-m5w6).
             return True
         return "tool_name" in value or ("name" in value and "arguments" in value)
 

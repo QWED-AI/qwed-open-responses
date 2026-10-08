@@ -96,7 +96,59 @@ export class ToolGuard extends BaseGuard {
         // Common aliases used by agent tool registries (#40). Separator
         // folding also covers camelCase and dashed/space-separated spellings.
         'run_command', 'execute_command', 'command_line', 'terminal',
+        // Canonical names of client-executed Responses API action items
+        // (GHSA-xhq6-w3f2-m5w6) — mirrors Python.
+        'local_shell', 'apply_patch', 'computer_use',
     ]);
+
+    // Responses API items that ask the CLIENT to execute an action without a
+    // function name/arguments envelope: type -> [canonical tool name,
+    // payload key]. Normalized into tool calls so every policy applies
+    // (GHSA-xhq6-w3f2-m5w6). Mirrors Python _CLIENT_ACTION_ITEMS.
+    private static CLIENT_ACTION_ITEMS: Record<string, [string, string]> = {
+        local_shell_call: ['local_shell', 'action'],
+        shell_call: ['shell', 'action'],
+        apply_patch_call: ['apply_patch', 'operation'],
+        computer_call: ['computer_use', 'action'],
+    };
+    // Client-executed items that carry their own tool name.
+    private static NAMED_CLIENT_ITEMS = new Set(['custom_tool_call', 'mcp_approval_request']);
+    // Provider-hosted tool items report server-side results; they are exempt
+    // only from the "*_call" suffix rule, not from name/arguments inspection.
+    private static HOSTED_TOOL_ITEMS = new Set([
+        'web_search_call', 'file_search_call', 'code_interpreter_call',
+        'image_generation_call', 'mcp_call',
+    ]);
+
+    /**
+     * Whether an item type requests client-side execution. Known client
+     * action items always match. With `includeUnknown`, any other
+     * `*_call` / `*_request` type (except provider-hosted items) matches
+     * too, so new or unmodelled executable items fail closed. The suffix
+     * rule is applied only to known protocol item positions (output[] of a
+     * response object), because ordinary data uses such type labels
+     * (pull_request, refund_request, phone_call). Mirrors Python.
+     */
+    static isActionItemType(type: string, includeUnknown = false): boolean {
+        const normalizedType = type.trim().toLowerCase();
+        if (
+            Object.prototype.hasOwnProperty.call(ToolGuard.CLIENT_ACTION_ITEMS, normalizedType)
+            || ToolGuard.NAMED_CLIENT_ITEMS.has(normalizedType)
+        ) {
+            return true;
+        }
+        if (!includeUnknown || ToolGuard.HOSTED_TOOL_ITEMS.has(normalizedType)) return false;
+        return normalizedType.endsWith('_call') || normalizedType.endsWith('_request');
+    }
+
+    /** Whether a response object's output[] holds an executable item. */
+    private static hasUnknownResponseOutputItem(response: any): boolean {
+        if (String(response.object || '').trim().toLowerCase() !== 'response') return false;
+        const output = response.output;
+        return Array.isArray(output) && output.some((item: any) =>
+            item !== null && typeof item === 'object' &&
+            ToolGuard.isActionItemType(String(item.type || ''), true));
+    }
 
     // Unified cross-language superset — every pattern case-insensitive.
     // Mirrors Python DEFAULT_DANGEROUS_PATTERNS exactly; the previously
@@ -388,7 +440,8 @@ export class ToolGuard extends BaseGuard {
         // Ambiguous hybrid envelope: a direct tool-call object that ALSO
         // carries a sibling collection. Reject instead of choosing one side,
         // which would let the other escape validation (Greptile P1).
-        const isDirect = respType === 'tool_call' || respType === 'function_call';
+        const isDirect = respType === 'tool_call' || respType === 'function_call'
+            || ToolGuard.isActionItemType(respType);
         const hasSibling = response.toolCalls !== undefined
             || response.tool_calls !== undefined
             || response.choices !== undefined
@@ -495,10 +548,11 @@ export class ToolGuard extends BaseGuard {
             calls.push(ToolGuard.malformedEntry());
         }
 
-        // Responses API direct function_call items (#33 review). Only when
-        // the known shapes yielded nothing — a hybrid envelope carrying both
-        // must not double-count.
-        if (!calls.length && respType === 'function_call') {
+        // Responses API direct items — function_call (#33 review) and client
+        // action items (GHSA-xhq6-w3f2-m5w6). Only when the known shapes
+        // yielded nothing — a hybrid envelope carrying both must not
+        // double-count.
+        if (!calls.length && (respType === 'function_call' || ToolGuard.isActionItemType(respType))) {
             calls.push(response);
         }
 
@@ -508,6 +562,13 @@ export class ToolGuard extends BaseGuard {
         // become fail-closed sentinels.
         const normalized = this.normalizeCalls(calls);
         if (normalized.length === 0) {
+            // Response objects: an unknown executable protocol item in
+            // output[] must not read as tool-free (GHSA-xhq6-w3f2-m5w6).
+            if (ToolGuard.hasUnknownResponseOutputItem(response)) {
+                normalized.push({ type: '__unrecognized__', tool_name: undefined, arguments: {} });
+                return normalized;
+            }
+
             // Bounded recursive scan (#33 review): tool-shaped objects nested
             // inside wrappers/arrays must not slip through as "no tool calls".
             const nestedScan = this.scanNestedToolShape(response, 0);
@@ -757,7 +818,70 @@ export class ToolGuard extends BaseGuard {
         if (value === null || typeof value !== 'object') return false;
         const t = String(value.type || '').toLowerCase();
         if (t === 'tool_use' || t === 'function_call' || t === 'tool_call') return true;
+        // Client-executed items nested in output[] / wrappers are tool calls
+        // even without name/arguments (GHSA-xhq6-w3f2-m5w6).
+        if (ToolGuard.isActionItemType(t)) return true;
         return 'tool_name' in value || ('name' in value && 'arguments' in value);
+    }
+
+    /**
+     * Normalize a client-executed Responses API item (GHSA-xhq6-w3f2-m5w6).
+     * The executor dispatches on the item type and payload, so the canonical
+     * name comes from the type and the payload becomes the arguments.
+     * Malformed payloads and items that also carry another call envelope
+     * fail closed. Mirrors Python.
+     */
+    private normalizeActionItem(
+        call: any,
+        itemType: string,
+        sentinel: (name?: string) => any,
+    ): any {
+        if (['tool_call', 'toolCall', 'function_call', 'function', 'tool_calls', 'toolCalls']
+            .some((key) => key in call)) {
+            return ToolGuard.malformedEntry('ambiguous_hybrid_envelope');
+        }
+
+        if (Object.prototype.hasOwnProperty.call(ToolGuard.CLIENT_ACTION_ITEMS, itemType)) {
+            const [toolName, payloadKey] = ToolGuard.CLIENT_ACTION_ITEMS[itemType];
+            const payload = call[payloadKey];
+            if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+                return sentinel(toolName);
+            }
+            const args: Record<string, any> = { [payloadKey]: payload };
+            const command = payload.command;
+            if (Array.isArray(command) && command.every((part: unknown) => typeof part === 'string')) {
+                // argv lists split "rm", "-rf" into separate leaves; scan the
+                // joined command line too so argument patterns still match.
+                args.command_line = command.join(' ');
+            }
+            return { type: 'tool_call', tool_name: toolName, arguments: args };
+        }
+
+        if (ToolGuard.NAMED_CLIENT_ITEMS.has(itemType)) {
+            const name = call.name;
+            if (!ToolGuard.validToolName(name)) return sentinel(undefined);
+            for (const key of ['tool_name', 'toolName']) {
+                const declared = call[key];
+                if (declared === undefined || declared === null) continue;
+                if (
+                    typeof declared !== 'string' ||
+                    ToolGuard.normalizeToolIdentity(declared) !== ToolGuard.normalizeToolIdentity(name)
+                ) {
+                    return ToolGuard.malformedEntry('ambiguous_hybrid_envelope');
+                }
+            }
+            if (itemType === 'custom_tool_call') {
+                const rawInput = call.input ?? '';
+                if (typeof rawInput !== 'string') return sentinel(name);
+                return { type: 'tool_call', tool_name: name, arguments: { input: rawInput } };
+            }
+            const parsed = this.parseToolArguments(call.arguments ?? {});
+            if (!parsed.ok) return sentinel(name);
+            return { type: 'tool_call', tool_name: name, arguments: parsed.value };
+        }
+
+        // Defensive: callers only route known action types here.
+        return sentinel(undefined);
     }
 
     private normalizeCalls(calls: any[]): any[] {
@@ -773,6 +897,12 @@ export class ToolGuard extends BaseGuard {
             let call = originalCall;
             if (call.type === '__unrecognized__' || call.type === '__malformed__') {
                 out.push(call);
+                continue;
+            }
+
+            const itemType = String(call.type || '').trim().toLowerCase();
+            if (ToolGuard.isActionItemType(itemType)) {
+                out.push(this.normalizeActionItem(call, itemType, sentinel));
                 continue;
             }
 

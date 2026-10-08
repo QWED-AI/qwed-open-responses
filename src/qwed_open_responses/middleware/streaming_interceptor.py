@@ -56,8 +56,14 @@ class OpenResponsesMiddleware:
             process(item)
     """
 
-    # Tool types that require verification before yielding
-    VERIFIABLE_ITEM_TYPES: frozenset[str] = frozenset({"tool_call", "function_call"})
+    # Tool types that require verification before yielding. Client-executed
+    # Responses API action items are verified like function calls; unknown
+    # executable types are blocked as unrecognized (GHSA-xhq6-w3f2-m5w6).
+    VERIFIABLE_ITEM_TYPES: frozenset[str] = frozenset(
+        {"tool_call", "function_call"}
+        | set(ToolGuard._CLIENT_ACTION_ITEMS)
+        | ToolGuard._NAMED_CLIENT_ITEMS
+    )
 
     def __init__(
         self,
@@ -217,6 +223,13 @@ class OpenResponsesMiddleware:
         # Keep one explicit, shared overflow budget instead of multiplying a
         # per-entry recursive hint scan across large collections.
         overflow_scan_limit = ToolGuard._MAX_ARGS_SCAN_NODES * 4
+        # Protocol item positions: the stream item itself, the item carried
+        # by output_item events, and output[] members of a response object.
+        # Unknown executable types fail closed only here, never inside
+        # ordinary payload data (GHSA-xhq6-w3f2-m5w6).
+        item_level_ids = {
+            id(node) for node in OpenResponsesMiddleware._protocol_item_nodes(item)
+        }
 
         while stack:
             if scanned_nodes >= ToolGuard._MAX_ARGS_SCAN_NODES:
@@ -238,8 +251,13 @@ class OpenResponsesMiddleware:
 
             if isinstance(node, dict):
                 normalized_type = ToolGuard._normalized_type(node.get("type", ""))
+                if id(node) in item_level_ids and ToolGuard._is_action_item_type(
+                    normalized_type, include_unknown=True
+                ):
+                    return True
                 is_tool_type = normalized_type not in passthrough_on_scan_limit and (
                     normalized_type.startswith(tool_type_prefixes)
+                    or ToolGuard._is_action_item_type(normalized_type)
                     or (
                         "tool" in normalized_type
                         and ToolGuard._is_tool_shaped_dict(node)
@@ -309,6 +327,23 @@ class OpenResponsesMiddleware:
             stack.extend(children)
 
         return False
+
+    @staticmethod
+    def _protocol_item_nodes(item: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+        """Yield the dicts that sit in a protocol item position."""
+        yield item
+        carried = item.get("item")
+        if isinstance(carried, dict):
+            yield carried
+        response = item.get("response")
+        for envelope in (item, response):
+            if not isinstance(envelope, dict):
+                continue
+            if ToolGuard._normalized_type(envelope.get("object", "")) != "response":
+                continue
+            output = envelope.get("output")
+            if isinstance(output, list):
+                yield from (member for member in output if isinstance(member, dict))
 
     @staticmethod
     def _has_tool_hint(value: Any) -> bool:
@@ -436,6 +471,7 @@ class OpenResponsesMiddleware:
                 else:
                     is_tool_shaped = (
                         node_type.startswith(("tool_call", "function_call", "tool_use"))
+                        or ToolGuard._is_action_item_type(node_type)
                         or ("tool" in node_type and not is_result)
                         or any(
                             key in node
@@ -473,6 +509,11 @@ class OpenResponsesMiddleware:
             tool_call = item.get("function_call")
         if not isinstance(name, str) or not name.strip():
             name = tool_call.get("name") if isinstance(tool_call, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            action_item = ToolGuard._CLIENT_ACTION_ITEMS.get(
+                ToolGuard._normalized_type(item.get("type", ""))
+            )
+            name = action_item[0] if action_item else None
         return name if isinstance(name, str) and name.strip() else "unknown"
 
     def _verify_tool_call(
