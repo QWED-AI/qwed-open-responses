@@ -300,10 +300,13 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
   items are checked as the tools `local_shell`, `shell`, `apply_patch` and
   `computer_use`; `custom_tool_call` and `mcp_approval_request` items are
   checked under their own `name`. The first four names are on the default
-  blocklist — to run them, create ToolGuard with
-  `use_default_blocklist=False` and list them in `allowed_tools`. Unknown
-  `*_call` / `*_request` items in a response's `output[]` or a stream fail
-  closed.
+  blocklist. To run them, create ToolGuard with
+  `use_default_blocklist=False`; this drops the whole default blocklist
+  (shells included), so re-add any names you still want blocked via
+  `blocked_tools`. `allowed_tools` is optional, but for least-privilege
+  execution configure it as an allowlist — and when you do, list every
+  action tool you run in it. Unknown `*_call` / `*_request` items in a
+  response's `output[]` or a stream fail closed.
 - **PII detection produces warnings, not blocks.** PII matches surface as a
   separate warning state (`VerificationResult.warnings`); they do not fail
   `verified` or block unless you create the verifier with
