@@ -356,7 +356,7 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
 
 ## Links
 
-- **Docs:** [docs.qwedai.com/docs/open-responses](https://docs.qwedai.com/docs/open-responses)
+- **Docs:** [docs.qwedai.tech/docs/open-responses](https://docs.qwedai.tech/docs/open-responses)
 - **GitHub:** [QWED-AI/qwed-open-responses](https://github.com/QWED-AI/qwed-open-responses)
 - **PyPI:** [qwed-open-responses](https://pypi.org/project/qwed-open-responses/)
 - **QWED Core:** [QWED-AI/qwed-verification](https://github.com/QWED-AI/qwed-verification)
