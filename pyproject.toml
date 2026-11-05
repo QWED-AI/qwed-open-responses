@@ -10,7 +10,7 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.9"
 authors = [
-    {name = "QWED-AI", email = "support@qwedai.com"}
+    {name = "QWED-AI", email = "support@qwedai.tech"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -61,7 +61,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/QWED-AI/qwed-open-responses"
-Documentation = "https://docs.qwedai.com/docs/open-responses"
+Documentation = "https://docs.qwedai.tech/docs/open-responses"
 Repository = "https://github.com/QWED-AI/qwed-open-responses"
 Issues = "https://github.com/QWED-AI/qwed-open-responses/issues"
 

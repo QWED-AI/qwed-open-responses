@@ -173,7 +173,7 @@ Then run `npm install` to apply. This is not required for Express 4.x users.
 
 - **GitHub:** [QWED-AI/qwed-open-responses](https://github.com/QWED-AI/qwed-open-responses)
 - **PyPI (Python):** [qwed-open-responses](https://pypi.org/project/qwed-open-responses/)
-- **Docs:** [docs.qwedai.com](https://docs.qwedai.com/docs/open-responses/overview)
+- **Docs:** [docs.qwedai.tech](https://docs.qwedai.tech/docs/open-responses/overview)
 
 ## License
 
