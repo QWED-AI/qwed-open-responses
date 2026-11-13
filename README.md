@@ -216,9 +216,11 @@ print(result.passed, result.message)
 `ToolGuard.check()` reads tool calls in these shapes: a single call with
 `"type": "tool_call"` (as above), a `tool_calls[]` list, Chat Completions
 `choices[].message.tool_calls[]`, `content[]` blocks with
-`"type": "tool_use"`, and a single Responses API item: `function_call`,
+`"type": "tool_use"`, a single Responses API item (`function_call`,
 `custom_tool_call`, `mcp_approval_request`, or a client action item such as
-`local_shell_call` (see Scope & Limitations for how those are checked).
+`local_shell_call`), and the same items in the `output[]` of a Responses
+object (see Scope & Limitations for how those are checked). A response that
+carries calls in more than one of these places is blocked.
 Tool-like content in any other shape fails closed, so a bare
 `{"tool_name": ..., "arguments": ...}` with no `"type"` is blocked whatever
 its arguments say. `ResponseVerifier().verify_tool_call()` (see Quick Start)
@@ -329,15 +331,20 @@ client = VerifiedOpenAI(
 )
 
 response = client.chat.completions.create(model=..., messages=[...], tools=[...])
+response = client.responses.create(model=..., input="...", tools=[...])
 # Verified before it is returned: a failed check raises ResponseBlocked
 ```
 
-- `client.responses.create(...)` runs the same guards on Responses API
-  objects. In 0.6.1, ToolGuard does not read tool calls inside a Responses
-  object's `output[]`; it fails closed instead. A `function_call`, a client
-  action item (`local_shell_call`, `shell_call`, `apply_patch_call`,
-  `computer_call`), a `custom_tool_call`, an `mcp_approval_request` or an
-  `mcp_call` raises `ResponseBlocked`, even a safe one. Text and the hosted
+- `client.responses.create(...)` checks each call item in the response's
+  `output[]` the way it checks a single call: a `function_call`, a
+  `custom_tool_call` or an `mcp_approval_request` under its own name, and a
+  client action item (`local_shell_call`, `shell_call`, `apply_patch_call`,
+  `computer_call`) as its action tool, which the default blocklist blocks.
+  Unknown `*_call` / `*_request` items fail closed, and so do remote MCP
+  `mcp_call` items that carry a `name` and `arguments`, as the API returns
+  them; an `mcp_call` without `arguments` reads as tool-free. In 0.6.1
+  every response with a call item in `output[]` raised
+  `ResponseBlocked`, even a safe one. Text and the hosted
   `web_search_call`, `file_search_call`, `code_interpreter_call` and
   `image_generation_call` items pass. The provider has already run those
   hosted tools by the time the response arrives, and ToolGuard does not
@@ -376,6 +383,22 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
   execution configure it as an allowlist — and when you do, list every
   action tool you run in it. Unknown `*_call` / `*_request` items in a
   response's `output[]` or a stream fail closed.
+- **Calls in more than one place fail closed (v0.6.2).** When a response
+  carries a recognised call, call items elsewhere in it block it: `output[]`
+  items beside a `tool_calls`, `choices` or `content` collection, a call
+  `type` at the root, or a stream event's `item` beside another call. This
+  holds even when `object` is missing or not `"response"`. Unknown
+  `*_call` / `*_request` items are caught in the `output[]` of an object
+  with `"object": "response"` or beside a recognised call. On their own
+  anywhere else, `ToolGuard.check()` still blocks one that carries
+  `tool_name`, or both `name` and `arguments`, and reads any other as
+  tool-free (the streaming middleware blocks them all). A Responses
+  object's `output`
+  must be a list of plain objects: pass `ToolGuard.check()` the result of
+  `response.model_dump()`, not the SDK object or `dict(response)`
+  (`ResponseVerifier` and `VerifiedOpenAI` convert SDK objects for you).
+  Calls whose `name`, `tool_name` and `toolName` name different tools, and
+  JSON arguments containing `NaN` or `Infinity`, are blocked too.
 - **PII detection produces warnings, not blocks.** PII matches surface as a
   separate warning state (`VerificationResult.warnings`); they do not fail
   `verified` or block unless you create the verifier with
