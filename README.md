@@ -322,9 +322,12 @@ response = client.chat.completions.create(model=..., messages=[...], tools=[...]
 
 - `client.responses.create(...)` runs the same guards on Responses API
   objects. In 0.6.1, ToolGuard does not read tool calls inside a Responses
-  object's `output[]`; it fails closed instead, so any response that contains
-  a tool call raises `ResponseBlocked`, even a safe one. Text-only responses
-  pass.
+  object's `output[]`; it fails closed instead. A `function_call`, a client
+  action item (`local_shell_call`, `shell_call`, `apply_patch_call`,
+  `computer_call`), a `custom_tool_call`, an `mcp_approval_request` or an
+  `mcp_call` raises `ResponseBlocked`, even a safe one. Text and the hosted
+  `web_search_call`, `file_search_call`, `code_interpreter_call` and
+  `image_generation_call` items pass.
 - Keep `SchemaGuard` out of the client's guards. It validates the whole
   response object rather than the model's JSON, so every response fails.
   Parse the model's JSON and check it as in
