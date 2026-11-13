@@ -340,8 +340,10 @@ response = client.responses.create(model=..., input="...", tools=[...])
   `custom_tool_call` or an `mcp_approval_request` under its own name, and a
   client action item (`local_shell_call`, `shell_call`, `apply_patch_call`,
   `computer_call`) as its action tool, which the default blocklist blocks.
-  Unknown `*_call` / `*_request` items and remote MCP `mcp_call` items fail
-  closed. In 0.6.1 every response with a call item in `output[]` raised
+  Unknown `*_call` / `*_request` items fail closed, and so do remote MCP
+  `mcp_call` items that carry a `name` and `arguments`, as the API returns
+  them; an `mcp_call` without `arguments` reads as tool-free. In 0.6.1
+  every response with a call item in `output[]` raised
   `ResponseBlocked`, even a safe one. Text and the hosted
   `web_search_call`, `file_search_call`, `code_interpreter_call` and
   `image_generation_call` items pass. The provider has already run those
@@ -381,11 +383,15 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
   execution configure it as an allowlist — and when you do, list every
   action tool you run in it. Unknown `*_call` / `*_request` items in a
   response's `output[]` or a stream fail closed.
-- **Calls in more than one place fail closed (v0.6.2).** A response that
-  carries calls in two places, such as `output[]` items beside a
-  `tool_calls`, `choices` or `content` collection, a call `type` at the
-  root, or a stream event's `item` beside another call, is blocked
-  whatever its `object` field says. A Responses object's `output`
+- **Calls in more than one place fail closed (v0.6.2).** When a response
+  carries a recognised call, call items elsewhere in it block it: `output[]`
+  items beside a `tool_calls`, `choices` or `content` collection, a call
+  `type` at the root, or a stream event's `item` beside another call. This
+  holds even when `object` is missing or not `"response"`. Unknown
+  `*_call` / `*_request` items are caught in the `output[]` of an object
+  with `"object": "response"` or beside a recognised call; on their own
+  anywhere else, `ToolGuard.check()` reads them as tool-free (the streaming
+  middleware still blocks them). A Responses object's `output`
   must be a list of plain objects: pass `ToolGuard.check()` the result of
   `response.model_dump()`, not the SDK object or `dict(response)`
   (`ResponseVerifier` and `VerifiedOpenAI` convert SDK objects for you).
