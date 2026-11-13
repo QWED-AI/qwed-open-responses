@@ -7,6 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-14
+
+### Security: tool calls in a Responses object's `output[]` (GHSA-wjjh-v7vm-hmwr)
+
+Completes the GHSA-xhq6-w3f2-m5w6 fix from 0.6.1.
+
+- **ToolGuard verifies `output[]` call items**: `function_call` items and
+  the client action items (`local_shell_call`, `shell_call`,
+  `apply_patch_call`, `computer_call`, `custom_tool_call`,
+  `mcp_approval_request`) in the `output[]` of a response object
+  (`"object": "response"`) are each checked against the blocklist,
+  allowlist and argument patterns, plus custom validators and
+  `max_calls_per_response` in Python, as they are when passed on their
+  own. Previously any such response failed closed as "unrecognized
+  format", so `VerifiedOpenAI(...).responses.create()` raised
+  `ResponseBlocked` for every response containing a tool call, even a safe
+  one. Python and npm.
+- **Unknown items still fail closed**: any other `*_call` / `*_request`
+  item in `output[]` blocks the response, also when a known call sits
+  beside it. The rest of the response is scanned for tool-shaped content
+  (inside a message item, or a hosted `mcp_call` carrying `name` and
+  `arguments`) whatever the response object's root `type` says.
+- **ArgumentGuard checks `output[]` calls** (Python): `rules` and
+  `tool_rules` apply to each call's arguments. Previously the `output`
+  list was read as one argument set, so no rule was checked.
+- **Ambiguous response objects fail closed**: a response object whose
+  `output[]` holds a call item is rejected as an ambiguous hybrid envelope
+  if it also has a direct call `type`, or carries any other call envelope
+  or collection at the top level: `tool_call`, `toolCall`,
+  `function_call`, `functionCall`, `function`, `tool_use`, `tool_calls`,
+  `toolCalls`, `choices` or `content`. So is an `output[]` call item that
+  carries one of these keys. Previously only the sibling collection was
+  checked, so a call item in `output[]` beside it was never verified.
+- **Calls beside another call source fail closed, whatever `object`
+  says**: once ToolGuard has taken the calls from one envelope
+  (`tool_calls`, `choices[].message.tool_calls`, `tool_use` content
+  blocks, a direct call, or a response object's `output[]`), the rest of
+  the response is scanned for any other call, and finding one blocks the
+  response. Previously that scan ran only when no call had been taken, so
+  one harmless call let another go unchecked: in an `output[]` list whose
+  `object` was missing or not exactly `"response"` (for example
+  `"realtime.response"`), in a stream event's `item`, in a `response`
+  wrapper, in a legacy `message.function_call`, or in a `function_call`
+  content block. Unknown `*_call` / `*_request` items in an `output[]`
+  list, a stream `item` or a `response` wrapper block in that case too.
+  Python and npm.
+- **A response object's `output` must be a list of objects**: any other
+  `output` (a tuple, string or object), and any member that is not an
+  object, blocks the response. Previously Python skipped them, so
+  `ToolGuard().check(dict(sdk_response))` passed a response holding a
+  blocked call, because the members were SDK models rather than dicts.
+  `ResponseVerifier.verify` and `VerifiedOpenAI` already convert SDK
+  objects with `model_dump()` and are unaffected. Python and npm.
+- **ArgumentGuard follows the same call sources** (Python): call items in
+  an `output[]` list, a stream `item` or a `response` wrapper are read as
+  calls whatever `object` says, so they are checked or fail closed
+  instead of being skipped. Previously `{"output": [call]}` without
+  `"object": "response"` passed every rule.
+- **A response object's root `type` exempts nothing** (Python): with no
+  call item in `output[]`, a root `type` of `text`, `message`,
+  `tool_result` or `function_call_output` no longer skips the scan of the
+  rest of the response. npm already scanned it.
+
+### Security: linear-time argument normalisation
+
+- Before the dangerous-pattern scan, both packages fold spaced spellings
+  such as `os . system` with the regex `\s*\.\s*`, which backtracks
+  quadratically over a long whitespace run with no dot. A
+  `custom_tool_call` whose `input` held 99,000 spaces took about 18
+  seconds in Python and 5 in npm, and a response could carry ten. 0.6.2
+  made such items reachable through `responses.create`; root-level calls
+  were affected in 0.6.1 too. Both packages now use linear split-and-strip
+  logic with the same result.
+
+### Security: conflicting tool names and envelope parity
+
+- **Conflicting name fields fail closed** (#64): a call whose `name`,
+  `tool_name` and `toolName` fields name different tools is rejected with
+  its own "name fields disagree" message, in both packages and for
+  standalone calls, `tool_calls[]` entries, nested calls and `output[]`
+  items. Previously ToolGuard screened one field while a consumer could
+  dispatch on another. Fields that agree (ignoring case and surrounding
+  spaces) are accepted.
+- **Same verdicts in Python and npm**: a `function_call` named only by
+  `tool_name` or `toolName` is checked under that name in both packages
+  (npm used to reject it); Python reads `toolName` like npm; a direct call
+  or `tool_calls` collection beside a `toolCalls` collection, a nested
+  call that wraps another call, and `toolCall` / `functionCall` wrappers
+  beside a call's own name are rejected in both. A shared fixture,
+  `tests/fixtures/tool_guard_envelope_parity.json`, runs the same cases
+  against both packages.
+- **npm strips type and name fields like Python**: `type`, `object` and
+  tool names are stripped of the characters Python's `str.strip()`
+  removes (JavaScript's `trim()` also removed U+FEFF but kept U+0085 and
+  U+001C to U+001F), and a non-string `type` or `object` (such as
+  `["response"]`) reads as none. npm now also strips the root `type` and
+  content block types, so a `" tool_use "` block is checked as a call
+  instead of passing.
+- **Other parity fixes**: a root-level client action item carrying
+  `functionCall`, `tool_use`, `choices` or `content` is ambiguous, as an
+  `output[]` item already was; a `custom_tool_call` with `"input": null`
+  fails closed in npm as in Python; Python rejects `NaN` and `Infinity`
+  in JSON arguments, as npm's `JSON.parse` does.
+- **ArgumentGuard** (Python): `number` rules reject NaN and infinite
+  values, which compared false with every bound and so passed `min` and
+  `max`; `tool_rules` match tool names ignoring surrounding whitespace as
+  well as case.
+
 ## [0.6.1] - 2026-10-09
 
 ### Security — client-executed Responses API items (GHSA-xhq6-w3f2-m5w6)

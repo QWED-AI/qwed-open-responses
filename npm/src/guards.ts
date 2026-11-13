@@ -6,6 +6,13 @@ import Ajv, { ValidateFunction, ErrorObject } from 'ajv';
 import addFormats from 'ajv-formats';
 import { Script } from 'node:vm';
 import { GuardResult, ParsedResponse } from './types';
+import {
+    NESTED_CALL_KEYS, ROOT_CALL_FIELDS, IDENTITY_KEYS, CLIENT_ACTION_ITEMS, NAMED_CLIENT_ITEMS,
+    MALFORMED_MESSAGES, MAX_NESTED_SCAN_DEPTH, carriesOtherCallEnvelope, collapseDotSpacing, customToolInput,
+    hasConflictingIdentity, holdsResponseCallItems, isActionItemType, isToolUseBlock,
+    malformedEntry, normalizedType, normalizeToolIdentity, pyStrip, splitResponseOutput,
+    unextractedParts, unrecognizedEntry,
+} from './tool-call-envelopes';
 
 const EMAIL_ATOM = "[a-z0-9!#$%&'*+/=?^_`{|}~-]+";
 const EMAIL_LOCAL_PART = `${EMAIL_ATOM}(?:\\.${EMAIL_ATOM})*`;
@@ -101,53 +108,13 @@ export class ToolGuard extends BaseGuard {
         'local_shell', 'apply_patch', 'computer_use',
     ]);
 
-    // Responses API items that ask the CLIENT to execute an action without a
-    // function name/arguments envelope: type -> [canonical tool name,
-    // payload key]. Normalized into tool calls so every policy applies
-    // (GHSA-xhq6-w3f2-m5w6). Mirrors Python _CLIENT_ACTION_ITEMS.
-    private static CLIENT_ACTION_ITEMS: Record<string, [string, string]> = {
-        local_shell_call: ['local_shell', 'action'],
-        shell_call: ['shell', 'action'],
-        apply_patch_call: ['apply_patch', 'operation'],
-        computer_call: ['computer_use', 'action'],
-    };
-    // Client-executed items that carry their own tool name.
-    private static NAMED_CLIENT_ITEMS = new Set(['custom_tool_call', 'mcp_approval_request']);
-    // Provider-hosted tool items report server-side results; they are exempt
-    // only from the "*_call" suffix rule, not from name/arguments inspection.
-    private static HOSTED_TOOL_ITEMS = new Set([
-        'web_search_call', 'file_search_call', 'code_interpreter_call',
-        'image_generation_call', 'mcp_call',
-    ]);
-
     /**
-     * Whether an item type requests client-side execution. Known client
-     * action items always match. With `includeUnknown`, any other
-     * `*_call` / `*_request` type (except provider-hosted items) matches
-     * too, so new or unmodelled executable items fail closed. The suffix
-     * rule is applied only to known protocol item positions (output[] of a
-     * response object), because ordinary data uses such type labels
-     * (pull_request, refund_request, phone_call). Mirrors Python.
+     * Whether an item type requests client-side execution (Responses action
+     * items, GHSA-xhq6-w3f2-m5w6). The item sets and rules live in
+     * tool-call-envelopes.ts; see isActionItemType there.
      */
     static isActionItemType(type: string, includeUnknown = false): boolean {
-        const normalizedType = type.trim().toLowerCase();
-        if (
-            Object.prototype.hasOwnProperty.call(ToolGuard.CLIENT_ACTION_ITEMS, normalizedType)
-            || ToolGuard.NAMED_CLIENT_ITEMS.has(normalizedType)
-        ) {
-            return true;
-        }
-        if (!includeUnknown || ToolGuard.HOSTED_TOOL_ITEMS.has(normalizedType)) return false;
-        return normalizedType.endsWith('_call') || normalizedType.endsWith('_request');
-    }
-
-    /** Whether a response object's output[] holds an executable item. */
-    private static hasUnknownResponseOutputItem(response: any): boolean {
-        if (String(response.object || '').trim().toLowerCase() !== 'response') return false;
-        const output = response.output;
-        return Array.isArray(output) && output.some((item: any) =>
-            item !== null && typeof item === 'object' &&
-            ToolGuard.isActionItemType(String(item.type || ''), true));
+        return isActionItemType(type, includeUnknown);
     }
 
     // Unified cross-language superset — every pattern case-insensitive.
@@ -194,7 +161,7 @@ export class ToolGuard extends BaseGuard {
         }
 
         this.allowedTools = allowedTools
-            ? new Set(allowedTools.map((t) => ToolGuard.normalizeToolIdentity(t)))
+            ? new Set(allowedTools.map((t) => normalizeToolIdentity(t)))
             : null;
         this.dangerousPatterns = [
             ...ToolGuard.DEFAULT_DANGEROUS_PATTERNS,
@@ -224,7 +191,7 @@ export class ToolGuard extends BaseGuard {
                 return this.failResult(
                     'BLOCKED: Response contains tool-like content in an unrecognized format. '
                     + 'Supported shapes: type=tool_call, tool_calls[], choices[].message.tool_calls[], '
-                    + 'content[].type=tool_use.',
+                    + 'content[].type=tool_use, output[] call items of a response object.',
                     { responseKeys: Object.keys(response) },
                 );
             }
@@ -234,15 +201,8 @@ export class ToolGuard extends BaseGuard {
             // hybrid envelope (direct call + sibling collection) is also
             // rejected (Greptile P1).
             if (call.type === '__malformed__') {
-                const message = call.reason === 'ambiguous_hybrid_envelope'
-                    ? 'BLOCKED: Ambiguous hybrid tool-call envelope - response mixes a direct '
-                      + 'tool call (type=tool_call/function_call) with a sibling '
-                      + 'toolCalls/tool_calls/choices/content collection.'
-                    : 'BLOCKED: Response contains a malformed tool-call entry '
-                      + '(non-object item in toolCalls/tool_calls or choices[].message.tool_calls). '
-                      + 'Each entry must be an object with a tool name.';
                 return this.failResult(
-                    message,
+                    MALFORMED_MESSAGES[call.reason] ?? MALFORMED_MESSAGES.malformed_entry,
                     { responseKeys: Object.keys(response) },
                 );
             }
@@ -264,7 +224,7 @@ export class ToolGuard extends BaseGuard {
 
             // Blocked names fold separators; allowlists preserve them.
             const folded = ToolGuard.normalizeToolName(toolName);
-            const identity = ToolGuard.normalizeToolIdentity(toolName);
+            const identity = normalizeToolIdentity(toolName);
 
             // Check blocked list
             if (this.blockedTools.has(folded)) {
@@ -336,45 +296,17 @@ export class ToolGuard extends BaseGuard {
 
     private static validToolName(name: unknown): name is string {
         // A tool-call name must be a non-empty string to be verifiable (#33).
-        return typeof name === 'string' && name.trim().length > 0;
-    }
-
-    private static casefold(name: string): string {
-        return Array.from(name, (character) => {
-            const codePoint = character.codePointAt(0);
-            if (codePoint === undefined) return character;
-
-            // Python casefold preserves dotless i and folds Cherokee to uppercase.
-            if (codePoint === 0x0131 || (codePoint >= 0x13a0 && codePoint <= 0x13f5)) {
-                return character;
-            }
-            if (codePoint === 0x1e9e) return 'ss';
-            if (codePoint >= 0x13f8 && codePoint <= 0x13fd) {
-                return String.fromCodePoint(codePoint - 0x8);
-            }
-            if (codePoint >= 0xab70 && codePoint <= 0xabbf) {
-                return String.fromCodePoint(codePoint - 0x97d0);
-            }
-
-            // Per-code-point upper/lower casing supplies full-fold expansions
-            // without locale-sensitive or context-sensitive sigma behavior.
-            return Array.from(character.toUpperCase(), (upperCharacter) =>
-                upperCharacter.toLowerCase(),
-            ).join('');
-        }).join('');
+        return typeof name === 'string' && pyStrip(name).length > 0;
     }
 
     private static normalizeToolName(name: string): string {
-        return ToolGuard.normalizeToolIdentity(name).replace(/[^\p{L}\p{N}]+/gu, '');
-    }
-
-    private static normalizeToolIdentity(name: string): string {
-        return ToolGuard.casefold(name).trim();
+        return normalizeToolIdentity(name).replace(/[^\p{L}\p{N}]+/gu, '');
     }
 
     private static normalizePatternText(value: string): string {
         let normalized = value.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, ' ');
-        normalized = normalized.replace(/\s*\.\s*/g, '.');
+        // Linear: the regex this replaces backtracked quadratically.
+        normalized = collapseDotSpacing(normalized);
         normalized = normalized.replace(ToolGuard.RM_OPTION_SEQUENCE_RE, (match, options: string) => {
             const shortFlags = (options.match(/-[firdv]+/gi) || []).join('').toLowerCase();
             const longFlags = options.toLowerCase();
@@ -426,28 +358,26 @@ export class ToolGuard extends BaseGuard {
         }
     }
 
-    private static malformedEntry(reason?: string): Record<string, any> {
-        const entry: Record<string, any> = { type: '__malformed__', tool_name: undefined, arguments: {} };
-        if (reason) entry.reason = reason;
-        return entry;
-    }
-
     private extractToolCalls(response: ParsedResponse): any[] {
         const calls: any[] = [];
 
-        const respType = String(response.type || '').toLowerCase();
+        const respType = normalizedType(response.type);
+
+        // Responses API objects: verify each call item in output[] instead of
+        // failing closed on the whole response because one is present.
+        const { calls: outputCalls, residual } = splitResponseOutput(response);
+        if (outputCalls.length > 0) {
+            return this.normalizeResponseOutput(response, respType, outputCalls, residual);
+        }
 
         // Ambiguous hybrid envelope: a direct tool-call object that ALSO
         // carries a sibling collection. Reject instead of choosing one side,
         // which would let the other escape validation (Greptile P1).
         const isDirect = respType === 'tool_call' || respType === 'function_call'
-            || ToolGuard.isActionItemType(respType);
-        const hasSibling = response.toolCalls !== undefined
-            || response.tool_calls !== undefined
-            || response.choices !== undefined
-            || response.content !== undefined;
+            || isActionItemType(respType);
+        const hasSibling = ToolGuard.hasSiblingCollection(response);
         if (isDirect && hasSibling) {
-            return [ToolGuard.malformedEntry('ambiguous_hybrid_envelope')];
+            return [malformedEntry('ambiguous_hybrid_envelope')];
         }
 
         // Multiple independent top-level collections at once is ambiguous and
@@ -456,7 +386,7 @@ export class ToolGuard extends BaseGuard {
             'toolCalls', 'tool_calls', 'choices', 'content',
         ].filter((k) => (response as any)[k] !== undefined);
         if (presentCollections.length > 1) {
-            return [ToolGuard.malformedEntry('ambiguous_hybrid_envelope')];
+            return [malformedEntry('ambiguous_hybrid_envelope')];
         }
 
         if (respType === 'tool_call') {
@@ -472,11 +402,11 @@ export class ToolGuard extends BaseGuard {
                     if (item !== null && typeof item === 'object') {
                         calls.push(item);
                     } else {
-                        calls.push(ToolGuard.malformedEntry());
+                        calls.push(malformedEntry());
                     }
                 }
             } else if (tc !== null) {
-                calls.push(ToolGuard.malformedEntry());
+                calls.push(malformedEntry());
             }
         }
 
@@ -485,7 +415,7 @@ export class ToolGuard extends BaseGuard {
         if (Array.isArray(choices)) {
             for (const choice of choices) {
                 if (choice === null || typeof choice !== 'object') {
-                    calls.push(ToolGuard.malformedEntry());
+                    calls.push(malformedEntry());
                     continue;
                 }
                 const msg = choice.message;
@@ -496,15 +426,15 @@ export class ToolGuard extends BaseGuard {
                         if (item !== null && typeof item === 'object') {
                             calls.push(item);
                         } else {
-                            calls.push(ToolGuard.malformedEntry());
+                            calls.push(malformedEntry());
                         }
                     }
                 } else if (mt !== null && mt !== undefined) {
-                    calls.push(ToolGuard.malformedEntry());
+                    calls.push(malformedEntry());
                 }
             }
         } else if (choices !== null && choices !== undefined) {
-            calls.push(ToolGuard.malformedEntry());
+            calls.push(malformedEntry());
         }
 
         // Anthropic format: content blocks with type == "tool_use"
@@ -513,10 +443,7 @@ export class ToolGuard extends BaseGuard {
             for (const block of content) {
                 // Case-insensitive to match the dict-content path below — a
                 // mixed-case "Tool_Use" block is a tool call (Sentry HIGH).
-                if (
-                    block !== null && typeof block === 'object' &&
-                    String(block.type || '').toLowerCase() === 'tool_use'
-                ) {
+                if (isToolUseBlock(block)) {
                     calls.push({
                         type: 'tool_call',
                         tool_name: block.name || '',
@@ -532,7 +459,7 @@ export class ToolGuard extends BaseGuard {
             // direct tool_use block is a tool call; a tool-shaped object
             // nested inside is ambiguous and malformed; benign dicts carry
             // no tools (Sentry HIGH).
-            if (String(content.type || '').toLowerCase() === 'tool_use') {
+            if (isToolUseBlock(content)) {
                 calls.push({
                     type: 'tool_call',
                     tool_name: content.name || '',
@@ -541,18 +468,18 @@ export class ToolGuard extends BaseGuard {
             } else {
                 const nestedScan = this.scanNestedToolShape(content, 0);
                 if (nestedScan.found || nestedScan.limited) {
-                    calls.push(ToolGuard.malformedEntry());
+                    calls.push(malformedEntry());
                 }
             }
         } else if (content !== null && content !== undefined) {
-            calls.push(ToolGuard.malformedEntry());
+            calls.push(malformedEntry());
         }
 
         // Responses API direct items — function_call (#33 review) and client
         // action items (GHSA-xhq6-w3f2-m5w6). Only when the known shapes
         // yielded nothing — a hybrid envelope carrying both must not
         // double-count.
-        if (!calls.length && (respType === 'function_call' || ToolGuard.isActionItemType(respType))) {
+        if (!calls.length && (respType === 'function_call' || isActionItemType(respType))) {
             calls.push(response);
         }
 
@@ -561,66 +488,109 @@ export class ToolGuard extends BaseGuard {
         // policies always operate on tool_name/arguments. Unparseable calls
         // become fail-closed sentinels.
         const normalized = this.normalizeCalls(calls);
-        if (normalized.length === 0) {
-            // Response objects: an unknown executable protocol item in
-            // output[] must not read as tool-free (GHSA-xhq6-w3f2-m5w6).
-            if (ToolGuard.hasUnknownResponseOutputItem(response)) {
-                normalized.push({ type: '__unrecognized__', tool_name: undefined, arguments: {} });
-                return normalized;
-            }
 
-            // Bounded recursive scan (#33 review): tool-shaped objects nested
-            // inside wrappers/arrays must not slip through as "no tool calls".
-            const nestedScan = this.scanNestedToolShape(response, 0);
-            if (nestedScan.found || nestedScan.limited) {
-                normalized.push({
-                    type: '__unrecognized__',
-                    tool_name: undefined,
-                    arguments: {},
-                });
-                return normalized;
-            }
+        // Whatever the extraction did not read must not hold another call. A
+        // harmless call in one envelope would otherwise let a call in another
+        // (an output[] list, a stream item, a response wrapper, another
+        // block) go unchecked, whatever "object" says. With no call
+        // extracted, the whole response gets the scan instead.
+        const hidden = normalized.length > 0
+            ? this.hidesOtherCalls(unextractedParts(response, respType))
+            : this.looksLikeUnrecognizedToolContent(response, respType);
+        if (hidden) normalized.push(unrecognizedEntry('unrecognized_content'));
+        return normalized;
+    }
 
-            const isToolShaped = (v: any): boolean =>
-                v !== null && typeof v === 'object' &&
-                ('name' in v || 'arguments' in v);
+    /** Whether the unread rest of a response holds another call. */
+    private hidesOtherCalls(residual: any): boolean {
+        return holdsResponseCallItems(residual) || this.looksLikeUnrecognizedToolContent(residual, '');
+    }
 
-            let toolShaped = false;
-            for (const key of ['tool_use', 'function_call', 'function']) {
-                if (isToolShaped((response as any)[key])) {
-                    toolShaped = true;
-                    break;
-                }
-            }
+    private static SIBLING_COLLECTION_KEYS = ['toolCalls', 'tool_calls', 'choices', 'content'];
 
-            const hasToolNameWithArgs =
-                (response as any).tool_name !== undefined &&
-                'arguments' in response;
+    private static hasSiblingCollection(value: any): boolean {
+        return ToolGuard.SIBLING_COLLECTION_KEYS.some((key) => value[key] !== undefined);
+    }
 
-            let hasNestedToolType = false;
-            if (Array.isArray(response.content)) {
-                for (const block of (response.content as any[])) {
-                    if (block !== null && typeof block === 'object' &&
-                        ['tool_use', 'function_call'].includes(String(block.type || '').toLowerCase())) {
-                        hasNestedToolType = true;
-                        break;
-                    }
-                }
-            }
+    /**
+     * Normalise the call items taken from a response object's output[], each
+     * like a standalone item. A response object that also presents a direct
+     * call type or any other call envelope or collection is ambiguous, as is
+     * a call item carrying one: verifying one side would let the other
+     * escape. Mirrors Python _normalize_response_output.
+     */
+    private normalizeResponseOutput(
+        response: any,
+        respType: string,
+        outputCalls: any[],
+        residual: any,
+    ): any[] {
+        if (
+            respType === 'tool_call' || respType === 'function_call'
+            || isActionItemType(respType)
+            || carriesOtherCallEnvelope(response)
+        ) {
+            return [malformedEntry('ambiguous_hybrid_envelope')];
+        }
 
-            if (
-                toolShaped ||
-                hasToolNameWithArgs ||
-                hasNestedToolType ||
-                (respType !== 'text' && respType !== '' && respType !== 'message' &&
-                 respType !== 'structured_output' && respType.includes('tool'))
-            ) {
-                normalized.push({ type: '__unrecognized__', tool_name: undefined, arguments: {} });
-                return normalized;
+        const normalized = this.normalizeCalls(outputCalls.map((item) =>
+            carriesOtherCallEnvelope(item)
+                ? malformedEntry('ambiguous_hybrid_envelope')
+                : item));
+
+        // Scan the rest with no root-type exemption: a response object is not
+        // a declared text, message or result envelope, whatever its type says.
+        if (this.hidesOtherCalls(residual)) normalized.push(unrecognizedEntry('unrecognized_content'));
+        return normalized;
+    }
+
+    /**
+     * Detect tool-ish content that matched no known envelope shape (#28), so
+     * the guard fails closed instead of reporting "No tool calls".
+     */
+    private looksLikeUnrecognizedToolContent(response: any, respType: string): boolean {
+        // Response objects never reach this scan with a call item left in
+        // output[]: splitResponseOutput takes every one (GHSA-xhq6-w3f2-m5w6).
+
+        // Bounded recursive scan (#33 review): tool-shaped objects nested
+        // inside wrappers/arrays must not slip through as "no tool calls".
+        const nestedScan = this.scanNestedToolShape(response, 0);
+        if (nestedScan.found || nestedScan.limited) return true;
+
+        const isToolShaped = (v: any): boolean =>
+            v !== null && typeof v === 'object' &&
+            ('name' in v || 'arguments' in v);
+
+        let toolShaped = false;
+        for (const key of ['tool_use', 'function_call', 'function']) {
+            if (isToolShaped(response[key])) {
+                toolShaped = true;
+                break;
             }
         }
 
-        return normalized;
+        const hasToolNameWithArgs =
+            response.tool_name !== undefined &&
+            'arguments' in response;
+
+        let hasNestedToolType = false;
+        if (Array.isArray(response.content)) {
+            for (const block of (response.content as any[])) {
+                if (block !== null && typeof block === 'object' &&
+                    ['tool_use', 'function_call'].includes(normalizedType(block.type))) {
+                    hasNestedToolType = true;
+                    break;
+                }
+            }
+        }
+
+        return (
+            toolShaped ||
+            hasToolNameWithArgs ||
+            hasNestedToolType ||
+            (respType !== 'text' && respType !== '' && respType !== 'message' &&
+             respType !== 'structured_output' && respType.includes('tool'))
+        );
     }
 
     private static MAX_ARGS_JSON_CHARS = 10_000;
@@ -802,7 +772,7 @@ export class ToolGuard extends BaseGuard {
          * Report truncation so callers fail closed instead of returning a
          * clean "No tool calls" result (#41).
          */
-        if (depth > 12) return { found: false, limited: true };
+        if (depth > MAX_NESTED_SCAN_DEPTH) return { found: false, limited: true };
         if (value === null || typeof value !== 'object') {
             return { found: false, limited: false };
         }
@@ -816,11 +786,11 @@ export class ToolGuard extends BaseGuard {
 
     private isToolShapedDict(value: any): boolean {
         if (value === null || typeof value !== 'object') return false;
-        const t = String(value.type || '').toLowerCase();
+        const t = normalizedType(value.type);
         if (t === 'tool_use' || t === 'function_call' || t === 'tool_call') return true;
         // Client-executed items nested in output[] / wrappers are tool calls
         // even without name/arguments (GHSA-xhq6-w3f2-m5w6).
-        if (ToolGuard.isActionItemType(t)) return true;
+        if (isActionItemType(t)) return true;
         return 'tool_name' in value || ('name' in value && 'arguments' in value);
     }
 
@@ -831,18 +801,16 @@ export class ToolGuard extends BaseGuard {
      * Malformed payloads and items that also carry another call envelope
      * fail closed. Mirrors Python.
      */
-    private normalizeActionItem(
-        call: any,
-        itemType: string,
-        sentinel: (name?: string) => any,
-    ): any {
-        if (['tool_call', 'toolCall', 'function_call', 'function', 'tool_calls', 'toolCalls']
-            .some((key) => key in call)) {
-            return ToolGuard.malformedEntry('ambiguous_hybrid_envelope');
+    private normalizeActionItem(call: any, itemType: string): any {
+        const sentinel = (name?: string): any => unrecognizedEntry('unparseable_arguments', name);
+        // Same envelope keys as output[] call items, so a root-level item and
+        // an output[] item carrying another call are treated alike.
+        if (carriesOtherCallEnvelope(call)) {
+            return malformedEntry('ambiguous_hybrid_envelope');
         }
 
-        if (Object.prototype.hasOwnProperty.call(ToolGuard.CLIENT_ACTION_ITEMS, itemType)) {
-            const [toolName, payloadKey] = ToolGuard.CLIENT_ACTION_ITEMS[itemType];
+        if (Object.prototype.hasOwnProperty.call(CLIENT_ACTION_ITEMS, itemType)) {
+            const [toolName, payloadKey] = CLIENT_ACTION_ITEMS[itemType];
             const payload = call[payloadKey];
             if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
                 return sentinel(toolName);
@@ -857,7 +825,7 @@ export class ToolGuard extends BaseGuard {
             return { type: 'tool_call', tool_name: toolName, arguments: args };
         }
 
-        if (ToolGuard.NAMED_CLIENT_ITEMS.has(itemType)) {
+        if (NAMED_CLIENT_ITEMS.has(itemType)) {
             const name = call.name;
             if (!ToolGuard.validToolName(name)) return sentinel(undefined);
             for (const key of ['tool_name', 'toolName']) {
@@ -865,14 +833,14 @@ export class ToolGuard extends BaseGuard {
                 if (declared === undefined || declared === null) continue;
                 if (
                     typeof declared !== 'string' ||
-                    ToolGuard.normalizeToolIdentity(declared) !== ToolGuard.normalizeToolIdentity(name)
+                    normalizeToolIdentity(declared) !== normalizeToolIdentity(name)
                 ) {
-                    return ToolGuard.malformedEntry('ambiguous_hybrid_envelope');
+                    return malformedEntry('conflicting_tool_names');
                 }
             }
             if (itemType === 'custom_tool_call') {
-                const rawInput = call.input ?? '';
-                if (typeof rawInput !== 'string') return sentinel(name);
+                const rawInput = customToolInput(call);
+                if (rawInput === undefined) return sentinel(name);
                 return { type: 'tool_call', tool_name: name, arguments: { input: rawInput } };
             }
             const parsed = this.parseToolArguments(call.arguments ?? {});
@@ -884,13 +852,40 @@ export class ToolGuard extends BaseGuard {
         return sentinel(undefined);
     }
 
+    private static hasFunctionWrapper(value: any): boolean {
+        const fn = value.function;
+        return fn !== null && typeof fn === 'object' && !Array.isArray(fn)
+            && ('name' in fn || 'arguments' in fn);
+    }
+
+    /**
+     * Return the call inside a tool_call / function_call wrapper, the call
+     * itself when it wraps nothing, or a fail-closed sentinel when the
+     * envelope is ambiguous or malformed. Mirrors Python _unwrap_nested_call.
+     */
+    private static unwrapNestedCall(call: any): any {
+        const nested = NESTED_CALL_KEYS.map((key) => call[key])
+            .filter((value) => value !== null && value !== undefined);
+        const hasRootFields = (value: any) => ROOT_CALL_FIELDS.some((key) => key in value);
+        if (ToolGuard.hasFunctionWrapper(call) && (nested.length > 0 || hasRootFields(call))) {
+            return malformedEntry('ambiguous_hybrid_envelope');
+        }
+        if (nested.length === 0) return call;
+        if (nested.length > 1) return malformedEntry('ambiguous_hybrid_envelope');
+        const inner = nested[0];
+        if (typeof inner !== 'object' || Array.isArray(inner) || inner === call
+            || NESTED_CALL_KEYS.some((key) => key in inner)) {
+            return unrecognizedEntry('unparseable_arguments');
+        }
+        if (hasRootFields(call) || (ToolGuard.hasFunctionWrapper(inner) && hasRootFields(inner))) {
+            return malformedEntry('ambiguous_hybrid_envelope');
+        }
+        if (hasConflictingIdentity(inner)) return malformedEntry('conflicting_tool_names');
+        return inner;
+    }
+
     private normalizeCalls(calls: any[]): any[] {
-        const sentinel = (name?: string): any => ({
-            type: '__unrecognized__',
-            tool_name: undefined,
-            arguments: {},
-            attempted_name: name ?? undefined,
-        });
+        const sentinel = (name?: string): any => unrecognizedEntry('unparseable_arguments', name);
 
         const out: any[] = [];
         for (const originalCall of calls) {
@@ -899,46 +894,21 @@ export class ToolGuard extends BaseGuard {
                 out.push(call);
                 continue;
             }
-
-            const itemType = String(call.type || '').trim().toLowerCase();
-            if (ToolGuard.isActionItemType(itemType)) {
-                out.push(this.normalizeActionItem(call, itemType, sentinel));
+            if (hasConflictingIdentity(call)) {
+                out.push(malformedEntry('conflicting_tool_names'));
                 continue;
             }
 
-            const rootCallFields = ['toolName', 'tool_name', 'name', 'arguments'];
-            const hasRootCallFields = rootCallFields.some((key) => key in call);
-            const nestedCalls = ['tool_call', 'toolCall', 'function_call']
-                .map((key) => call[key])
-                .filter((value) => value !== null && value !== undefined);
-            const nestedCall = nestedCalls[0];
-            const hasNestedCall = nestedCalls.length > 0;
-            const functionWrapper = call.function;
-            const hasFunctionWrapper =
-                functionWrapper !== null &&
-                typeof functionWrapper === 'object' &&
-                !Array.isArray(functionWrapper) &&
-                ('name' in functionWrapper || 'arguments' in functionWrapper);
-
-            if (
-                nestedCalls.length > 1 ||
-                (hasFunctionWrapper && (hasNestedCall || hasRootCallFields))
-            ) {
-                out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
+            const itemType = normalizedType(call.type);
+            if (isActionItemType(itemType)) {
+                out.push(this.normalizeActionItem(call, itemType));
                 continue;
             }
 
-            if (hasNestedCall) {
-                if (
-                    typeof nestedCall !== 'object' ||
-                    Array.isArray(nestedCall) ||
-                    nestedCall === call ||
-                    hasRootCallFields
-                ) {
-                    out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
-                    continue;
-                }
-                call = nestedCall;
+            call = ToolGuard.unwrapNestedCall(call);
+            if (call.type === '__malformed__' || call.type === '__unrecognized__') {
+                out.push(call);
+                continue;
             }
 
             // OpenAI function wrapper: {type?, function: {name, arguments}}.
@@ -947,13 +917,6 @@ export class ToolGuard extends BaseGuard {
             if ('function' in call) {
                 const fn = call.function;
                 if (fn !== null && typeof fn === 'object' && !Array.isArray(fn)) {
-                    const hasFunctionFields = 'name' in fn || 'arguments' in fn;
-                    const hasNestedFunctionCall = ['tool_call', 'toolCall', 'function_call']
-                        .some((key) => call[key] !== null && call[key] !== undefined);
-                    if (hasFunctionFields && (hasNestedFunctionCall || rootCallFields.some((key) => key in call))) {
-                        out.push(ToolGuard.malformedEntry('ambiguous_hybrid_envelope'));
-                        continue;
-                    }
                     const n = fn.name;
                     if (!ToolGuard.validToolName(n)) {
                         out.push(sentinel(call.toolName || call.name || n));
@@ -973,10 +936,12 @@ export class ToolGuard extends BaseGuard {
                 // rejected there (Sentry: valid tool_call must not be blocked).
             }
 
-            // Responses API direct item: {type: 'function_call', name, arguments}
-            if (String(call.type || '').toLowerCase() === 'function_call') {
-                const n = call.name;
-                if (!ToolGuard.validToolName(n)) {
+            // Responses API direct item: {type: 'function_call', name, arguments}.
+            // tool_name / toolName may name it instead (as in Python); fields
+            // that disagree were rejected above (#64).
+            if (normalizedType(call.type) === 'function_call') {
+                const n = IDENTITY_KEYS.map((key) => call[key]).find(ToolGuard.validToolName);
+                if (n === undefined) {
                     out.push(sentinel(undefined));
                     continue;
                 }

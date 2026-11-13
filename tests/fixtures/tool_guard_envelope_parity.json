@@ -1,0 +1,2525 @@
+{
+  "cases": [
+    {
+      "name": "root type text: tool_use hidden in a message beside a safe call",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              },
+              {
+                "type": "tool_use",
+                "name": "bash",
+                "input": {
+                  "cmd": "ls"
+                }
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "text"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "root type text: safe call and plain message",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "text"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "root type message: tool_use hidden in a message beside a safe call",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              },
+              {
+                "type": "tool_use",
+                "name": "bash",
+                "input": {
+                  "cmd": "ls"
+                }
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "message"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "root type message: safe call and plain message",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "message"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "root type tool_result: tool_use hidden in a message beside a safe call",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              },
+              {
+                "type": "tool_use",
+                "name": "bash",
+                "input": {
+                  "cmd": "ls"
+                }
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "tool_result"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "root type tool_result: safe call and plain message",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "tool_result"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "root type function_call_output: tool_use hidden in a message beside a safe call",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              },
+              {
+                "type": "tool_use",
+                "name": "bash",
+                "input": {
+                  "cmd": "ls"
+                }
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "function_call_output"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "root type function_call_output: safe call and plain message",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "function_call_output"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "root type Text: tool_use hidden in a message beside a safe call",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              },
+              {
+                "type": "tool_use",
+                "name": "bash",
+                "input": {
+                  "cmd": "ls"
+                }
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "Text"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "root type Text: safe call and plain message",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": "Text"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "output function_call named by tool_name",
+      "rule": "name fallback",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "tool_name": "search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "output function_call named by tool_name (blocked tool)",
+      "rule": "name fallback",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "tool_name": "bash"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone function_call named by tool_name",
+      "rule": "name fallback",
+      "response": {
+        "type": "function_call",
+        "call_id": "c1",
+        "arguments": "{}",
+        "tool_name": "search"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "output function_call named by toolName",
+      "rule": "name fallback",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "toolName": "search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "output function_call named by toolName (blocked tool)",
+      "rule": "name fallback",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "toolName": "bash"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone function_call named by toolName",
+      "rule": "name fallback",
+      "response": {
+        "type": "function_call",
+        "call_id": "c1",
+        "arguments": "{}",
+        "toolName": "search"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "output function_call with no name field",
+      "rule": "name fallback",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying tool_call",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "tool_call": {
+              "name": "bash",
+              "arguments": {}
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying toolCall",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "toolCall": {
+              "name": "bash",
+              "arguments": {}
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying function_call",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "function_call": {
+              "name": "bash",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying functionCall",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "functionCall": {
+              "name": "bash",
+              "args": {}
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying function",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "function": "metadata"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying tool_use",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "tool_use": {
+              "name": "bash",
+              "input": {}
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying tool_calls",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "tool_calls": []
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying toolCalls",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "toolCalls": [
+              {
+                "name": "bash",
+                "arguments": {}
+              }
+            ]
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying choices",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "choices": []
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call carrying content",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "content": [
+              {
+                "type": "text",
+                "text": "x"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output local_shell_call carrying functionCall",
+      "rule": "per-item envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "local_shell_call",
+            "action": {
+              "type": "exec",
+              "command": [
+                "ls"
+              ]
+            },
+            "functionCall": {
+              "name": "bash"
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root tool_call beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "tool_call": {
+          "name": "bash",
+          "arguments": {}
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root toolCall beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "toolCall": {
+          "name": "bash",
+          "arguments": {}
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root function_call beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "function_call": {
+          "name": "bash",
+          "arguments": "{}"
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root functionCall beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "functionCall": {
+          "name": "bash",
+          "args": {}
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root function beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "function": "metadata"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root tool_use beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "tool_use": {
+          "name": "bash",
+          "input": {}
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root tool_calls beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "tool_calls": []
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root toolCalls beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "toolCalls": [
+          {
+            "name": "bash",
+            "arguments": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root choices beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "choices": []
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root content beside a safe call",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "content": [
+          {
+            "type": "text",
+            "text": "x"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root type ' function_call '",
+      "rule": "response-level envelope rule",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "type": " function_call "
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call name=search tool_name=execute_shell",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "tool_name": "execute_shell"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone tool_call name=search tool_name=execute_shell",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "arguments": {},
+        "name": "search",
+        "tool_name": "execute_shell"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry name=search tool_name=execute_shell",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "arguments": {},
+            "name": "search",
+            "tool_name": "execute_shell"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call name=execute_shell tool_name=search",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "execute_shell",
+            "tool_name": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone tool_call name=execute_shell tool_name=search",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "arguments": {},
+        "name": "execute_shell",
+        "tool_name": "search"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry name=execute_shell tool_name=search",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "arguments": {},
+            "name": "execute_shell",
+            "tool_name": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call name=search tool_name=Search",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "tool_name": "Search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "standalone tool_call name=search tool_name=Search",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "arguments": {},
+        "name": "search",
+        "tool_name": "Search"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "tool_calls[] entry name=search tool_name=Search",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "arguments": {},
+            "name": "search",
+            "tool_name": "Search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "output function_call name=search toolName=execute_shell",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "toolName": "execute_shell"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone tool_call name=search toolName=execute_shell",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "arguments": {},
+        "name": "search",
+        "toolName": "execute_shell"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry name=search toolName=execute_shell",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "arguments": {},
+            "name": "search",
+            "toolName": "execute_shell"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call name=execute_shell toolName=search",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "execute_shell",
+            "toolName": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone tool_call name=execute_shell toolName=search",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "arguments": {},
+        "name": "execute_shell",
+        "toolName": "search"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry name=execute_shell toolName=search",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "arguments": {},
+            "name": "execute_shell",
+            "toolName": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call name=search toolName=Search",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search",
+            "toolName": "Search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "standalone tool_call name=search toolName=Search",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "arguments": {},
+        "name": "search",
+        "toolName": "Search"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "tool_calls[] entry name=search toolName=Search",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "arguments": {},
+            "name": "search",
+            "toolName": "Search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "output function_call tool_name=search toolName=execute_shell",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "tool_name": "search",
+            "toolName": "execute_shell"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone tool_call tool_name=search toolName=execute_shell",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "arguments": {},
+        "tool_name": "search",
+        "toolName": "execute_shell"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry tool_name=search toolName=execute_shell",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "arguments": {},
+            "tool_name": "search",
+            "toolName": "execute_shell"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call tool_name=execute_shell toolName=search",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "tool_name": "execute_shell",
+            "toolName": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone tool_call tool_name=execute_shell toolName=search",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "arguments": {},
+        "tool_name": "execute_shell",
+        "toolName": "search"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry tool_name=execute_shell toolName=search",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "arguments": {},
+            "tool_name": "execute_shell",
+            "toolName": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call tool_name=search toolName=Search",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "tool_name": "search",
+            "toolName": "Search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "standalone tool_call tool_name=search toolName=Search",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "arguments": {},
+        "tool_name": "search",
+        "toolName": "Search"
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "tool_calls[] entry tool_name=search toolName=Search",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "arguments": {},
+            "tool_name": "search",
+            "toolName": "Search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "nested tool_call with conflicting names",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_call": {
+          "name": "search",
+          "tool_name": "execute_shell",
+          "arguments": {}
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "custom_tool_call with conflicting toolName",
+      "rule": "identity (#64)",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "custom_tool_call",
+            "input": "x",
+            "name": "search",
+            "toolName": "execute_shell"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "non-string name field beside a name",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "name": "search",
+        "tool_name": 5,
+        "arguments": {}
+      },
+      "expect": "block"
+    },
+    {
+      "name": "blank tool_name beside a name on a tool_call",
+      "rule": "a blank name field is unusable and is read first",
+      "response": {
+        "type": "tool_call",
+        "name": "search",
+        "tool_name": "  ",
+        "arguments": {}
+      },
+      "expect": "block"
+    },
+    {
+      "name": "blank name beside tool_name on a function_call",
+      "rule": "function_call falls back to the first usable name field",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": " ",
+            "tool_name": "search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "tool_call named only by toolName",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "toolName": "search",
+        "arguments": {}
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "tool_call named only by toolName (blocked tool)",
+      "rule": "identity (#64)",
+      "response": {
+        "type": "tool_call",
+        "toolName": "bash",
+        "arguments": {}
+      },
+      "expect": "block"
+    },
+    {
+      "name": "nested call that wraps another call",
+      "rule": "nested envelope",
+      "response": {
+        "tool_call": {
+          "tool_call": {
+            "name": "bash",
+            "arguments": {}
+          },
+          "name": "search"
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls beside toolCalls",
+      "rule": "collection envelope",
+      "response": {
+        "tool_calls": [
+          {
+            "name": "search",
+            "arguments": {}
+          }
+        ],
+        "toolCalls": [
+          {
+            "name": "bash",
+            "arguments": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone function_call carrying toolCalls",
+      "rule": "collection envelope",
+      "response": {
+        "type": "function_call",
+        "call_id": "c1",
+        "arguments": "{}",
+        "name": "search",
+        "toolCalls": [
+          {
+            "name": "bash",
+            "arguments": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone function_call carrying toolCall",
+      "rule": "nested envelope",
+      "response": {
+        "type": "function_call",
+        "call_id": "c1",
+        "arguments": "{}",
+        "name": "search",
+        "toolCall": {
+          "name": "bash",
+          "arguments": {}
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "standalone function_call carrying functionCall",
+      "rule": "nested envelope",
+      "response": {
+        "type": "function_call",
+        "call_id": "c1",
+        "arguments": "{}",
+        "name": "search",
+        "functionCall": {
+          "name": "bash",
+          "args": {}
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry with two nested wrappers",
+      "rule": "nested envelope",
+      "response": {
+        "tool_calls": [
+          {
+            "tool_call": {
+              "name": "search"
+            },
+            "toolCall": {
+              "name": "bash"
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry whose wrapper is not an object",
+      "rule": "nested envelope",
+      "response": {
+        "tool_calls": [
+          {
+            "tool_call": "bash"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry whose nested call wraps another",
+      "rule": "nested envelope",
+      "response": {
+        "tool_calls": [
+          {
+            "functionCall": {
+              "tool_call": {
+                "name": "bash"
+              },
+              "arguments": {}
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry with one nested wrapper",
+      "rule": "nested envelope",
+      "response": {
+        "tool_calls": [
+          {
+            "toolCall": {
+              "name": "search",
+              "arguments": {}
+            }
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "response object whose output is an object, not a list",
+      "rule": "hostile members",
+      "response": {
+        "object": "response",
+        "output": {
+          "type": "function_call",
+          "call_id": "c1",
+          "arguments": "{}",
+          "name": "bash"
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output function_call with type ' Function_Call '",
+      "rule": "type normalisation",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": " Function_Call ",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "output function_call with type ' function_call ' (blocked tool)",
+      "rule": "type normalisation",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": " function_call ",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "bash"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "object ' Response '",
+      "rule": "type normalisation",
+      "response": {
+        "object": " Response ",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "non-object output members beside a safe call",
+      "rule": "output is a list of objects",
+      "response": {
+        "object": "response",
+        "output": [
+          "junk",
+          null,
+          5,
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "string output on a response object",
+      "rule": "output is a list of objects",
+      "response": {
+        "object": "response",
+        "output": "hello"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "null output on a response object",
+      "rule": "output is a list of objects",
+      "response": {
+        "object": "response",
+        "output": null
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "output member list hiding a call",
+      "rule": "hostile members",
+      "response": {
+        "object": "response",
+        "output": [
+          [
+            {
+              "type": "function_call",
+              "call_id": "c1",
+              "arguments": "{}",
+              "name": "bash"
+            }
+          ],
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "output member with a non-string type",
+      "rule": "hostile members",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": 5,
+            "name": "bash",
+            "arguments": {}
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "unknown executable item beside a safe call",
+      "rule": "unknown items",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "future_call",
+            "action": {}
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "hosted mcp_call with name and arguments beside a safe call",
+      "rule": "residual scan",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "mcp_call",
+            "name": "run",
+            "arguments": "{}"
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "web_search_call beside a safe call",
+      "rule": "hosted items",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "web_search_call",
+            "action": {
+              "type": "search",
+              "query": "q"
+            }
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "safe tool_calls alone",
+      "rule": "one call source",
+      "response": {
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "search",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "safe tool_calls beside an output list (no object)",
+      "rule": "one call source",
+      "response": {
+        "output": [
+          {
+            "type": "local_shell_call",
+            "call_id": "c9",
+            "action": {
+              "type": "exec",
+              "command": [
+                "rm",
+                "-rf",
+                "/"
+              ],
+              "env": {}
+            }
+          }
+        ],
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "search",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe tool_calls beside an output list (object realtime.response)",
+      "rule": "one call source",
+      "response": {
+        "object": "realtime.response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "bash"
+          }
+        ],
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "search",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe tool_calls beside a stream item",
+      "rule": "one call source",
+      "response": {
+        "type": "response.output_item.done",
+        "item": {
+          "type": "local_shell_call",
+          "call_id": "c9",
+          "action": {
+            "type": "exec",
+            "command": [
+              "rm",
+              "-rf",
+              "/"
+            ],
+            "env": {}
+          }
+        },
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "search",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe tool_calls beside a response wrapper",
+      "rule": "one call source",
+      "response": {
+        "type": "response.completed",
+        "response": {
+          "object": "response",
+          "output": [
+            {
+              "type": "local_shell_call",
+              "call_id": "c9",
+              "action": {
+                "type": "exec",
+                "command": [
+                  "rm",
+                  "-rf",
+                  "/"
+                ],
+                "env": {}
+              }
+            }
+          ]
+        },
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "search",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe tool_calls beside an unknown item in an output list",
+      "rule": "one call source",
+      "response": {
+        "output": [
+          {
+            "type": "exec_call"
+          }
+        ],
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "search",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe tool_calls beside a root tool_use",
+      "rule": "one call source",
+      "response": {
+        "tool_use": {
+          "name": "bash",
+          "input": {}
+        },
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "search",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe choices alone",
+      "rule": "one call source",
+      "response": {
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "safe choices beside an output list (no object)",
+      "rule": "one call source",
+      "response": {
+        "output": [
+          {
+            "type": "local_shell_call",
+            "call_id": "c9",
+            "action": {
+              "type": "exec",
+              "command": [
+                "rm",
+                "-rf",
+                "/"
+              ],
+              "env": {}
+            }
+          }
+        ],
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe choices beside an output list (object realtime.response)",
+      "rule": "one call source",
+      "response": {
+        "object": "realtime.response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "bash"
+          }
+        ],
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe choices beside a stream item",
+      "rule": "one call source",
+      "response": {
+        "type": "response.output_item.done",
+        "item": {
+          "type": "local_shell_call",
+          "call_id": "c9",
+          "action": {
+            "type": "exec",
+            "command": [
+              "rm",
+              "-rf",
+              "/"
+            ],
+            "env": {}
+          }
+        },
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe choices beside a response wrapper",
+      "rule": "one call source",
+      "response": {
+        "type": "response.completed",
+        "response": {
+          "object": "response",
+          "output": [
+            {
+              "type": "local_shell_call",
+              "call_id": "c9",
+              "action": {
+                "type": "exec",
+                "command": [
+                  "rm",
+                  "-rf",
+                  "/"
+                ],
+                "env": {}
+              }
+            }
+          ]
+        },
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe choices beside an unknown item in an output list",
+      "rule": "one call source",
+      "response": {
+        "output": [
+          {
+            "type": "exec_call"
+          }
+        ],
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe choices beside a root tool_use",
+      "rule": "one call source",
+      "response": {
+        "tool_use": {
+          "name": "bash",
+          "input": {}
+        },
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe content alone",
+      "rule": "one call source",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "search",
+            "input": {}
+          }
+        ]
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "safe content beside an output list (no object)",
+      "rule": "one call source",
+      "response": {
+        "output": [
+          {
+            "type": "local_shell_call",
+            "call_id": "c9",
+            "action": {
+              "type": "exec",
+              "command": [
+                "rm",
+                "-rf",
+                "/"
+              ],
+              "env": {}
+            }
+          }
+        ],
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "search",
+            "input": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe content beside an output list (object realtime.response)",
+      "rule": "one call source",
+      "response": {
+        "object": "realtime.response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "bash"
+          }
+        ],
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "search",
+            "input": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe content beside a stream item",
+      "rule": "one call source",
+      "response": {
+        "type": "response.output_item.done",
+        "item": {
+          "type": "local_shell_call",
+          "call_id": "c9",
+          "action": {
+            "type": "exec",
+            "command": [
+              "rm",
+              "-rf",
+              "/"
+            ],
+            "env": {}
+          }
+        },
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "search",
+            "input": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe content beside a response wrapper",
+      "rule": "one call source",
+      "response": {
+        "type": "response.completed",
+        "response": {
+          "object": "response",
+          "output": [
+            {
+              "type": "local_shell_call",
+              "call_id": "c9",
+              "action": {
+                "type": "exec",
+                "command": [
+                  "rm",
+                  "-rf",
+                  "/"
+                ],
+                "env": {}
+              }
+            }
+          ]
+        },
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "search",
+            "input": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe content beside an unknown item in an output list",
+      "rule": "one call source",
+      "response": {
+        "output": [
+          {
+            "type": "exec_call"
+          }
+        ],
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "search",
+            "input": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "safe content beside a root tool_use",
+      "rule": "one call source",
+      "response": {
+        "tool_use": {
+          "name": "bash",
+          "input": {}
+        },
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "search",
+            "input": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "direct tool_call carrying an output list",
+      "rule": "one call source",
+      "response": {
+        "type": "tool_call",
+        "tool_name": "search",
+        "arguments": {},
+        "output": [
+          {
+            "type": "local_shell_call",
+            "call_id": "c9",
+            "action": {
+              "type": "exec",
+              "command": [
+                "rm",
+                "-rf",
+                "/"
+              ],
+              "env": {}
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "direct function_call carrying a stream item",
+      "rule": "one call source",
+      "response": {
+        "type": "function_call",
+        "call_id": "c1",
+        "arguments": "{}",
+        "name": "search",
+        "item": {
+          "type": "local_shell_call",
+          "call_id": "c9",
+          "action": {
+            "type": "exec",
+            "command": [
+              "rm",
+              "-rf",
+              "/"
+            ],
+            "env": {}
+          }
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object call beside an unknown stream item",
+      "rule": "one call source",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ],
+        "item": {
+          "type": "exec_call"
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "legacy message function_call beside message tool_calls",
+      "rule": "one call source",
+      "response": {
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "search",
+                    "arguments": "{}"
+                  }
+                }
+              ],
+              "function_call": {
+                "name": "bash",
+                "arguments": "{}"
+              }
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "function_call block beside a tool_use block",
+      "rule": "one call source",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "search",
+            "input": {}
+          },
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "bash"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "response object with root type message and a tool_use in a message",
+      "rule": "residual scan has no root-type exemption",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "On it.",
+                "annotations": []
+              },
+              {
+                "type": "tool_use",
+                "name": "bash",
+                "input": {
+                  "cmd": "ls"
+                }
+              }
+            ]
+          }
+        ],
+        "type": "message"
+      },
+      "expect": "block"
+    },
+    {
+      "name": "root custom_tool_call carrying functionCall",
+      "rule": "per-item envelope rule",
+      "response": {
+        "type": "custom_tool_call",
+        "name": "search",
+        "input": "x",
+        "functionCall": {
+          "name": "bash",
+          "arguments": "{}"
+        }
+      },
+      "expect": "block"
+    },
+    {
+      "name": "custom_tool_call with a null input",
+      "rule": "custom_tool_call input must be a string",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "custom_tool_call",
+            "call_id": "c1",
+            "name": "search",
+            "input": null
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_use block with a padded type",
+      "rule": "type normalisation",
+      "response": {
+        "content": [
+          {
+            "type": " tool_use ",
+            "name": "bash",
+            "input": {}
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "object 'response' with a trailing U+0085",
+      "rule": "type normalisation",
+      "response": {
+        "object": "response\u0085",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "bash"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "object 'response' with a leading U+FEFF",
+      "rule": "type normalisation",
+      "response": {
+        "object": "\ufeffresponse",
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "object given as a list",
+      "rule": "type normalisation",
+      "response": {
+        "object": [
+          "response"
+        ],
+        "output": [
+          {
+            "type": "function_call",
+            "call_id": "c1",
+            "arguments": "{}",
+            "name": "search"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool name with a trailing U+0085",
+      "rule": "type normalisation",
+      "response": {
+        "type": "tool_call",
+        "tool_name": "search\u0085",
+        "arguments": {}
+      },
+      "expect": "pass"
+    },
+    {
+      "name": "tool name with a leading U+FEFF",
+      "rule": "type normalisation",
+      "response": {
+        "type": "tool_call",
+        "tool_name": "\ufeffsearch",
+        "arguments": {}
+      },
+      "expect": "block"
+    },
+    {
+      "name": "tool_calls[] entry whose nested call has conflicting names",
+      "rule": "identity (#64)",
+      "response": {
+        "tool_calls": [
+          {
+            "tool_call": {
+              "name": "search",
+              "tool_name": "execute_shell",
+              "arguments": {}
+            }
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "custom_tool_call with a blank tool_name beside its name",
+      "rule": "a named client item's other name fields must match its name",
+      "response": {
+        "object": "response",
+        "output": [
+          {
+            "type": "custom_tool_call",
+            "call_id": "c1",
+            "name": "search",
+            "tool_name": "  ",
+            "input": "x"
+          }
+        ]
+      },
+      "expect": "block"
+    },
+    {
+      "name": "NaN in JSON arguments",
+      "rule": "arguments must be JSON",
+      "response": {
+        "type": "tool_call",
+        "tool_name": "search",
+        "arguments": "{\"n\": NaN}"
+      },
+      "expect": "block"
+    }
+  ]
+}

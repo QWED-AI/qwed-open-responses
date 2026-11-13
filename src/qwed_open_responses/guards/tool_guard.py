@@ -126,6 +126,53 @@ class ToolGuard(BaseGuard):
         }
     )
 
+    # Keys under which one call can wrap another. camelCase spellings match
+    # the npm package, so both treat the same envelope the same way.
+    _NESTED_CALL_KEYS = ("tool_call", "toolCall", "function_call", "functionCall")
+    # Root fields that name a call or carry its arguments.
+    _ROOT_CALL_FIELDS = ("tool_name", "toolName", "name", "arguments")
+    # Fields a consumer may dispatch on. All that are present must agree (#64).
+    _IDENTITY_KEYS = ("name", "tool_name", "toolName")
+    # Keys that carry another call envelope or call collection. A Responses
+    # output[] call item, or the response object around it, carrying one of
+    # them is ambiguous: verifying one side would let the other escape.
+    _OTHER_CALL_ENVELOPE_KEYS = _NESTED_CALL_KEYS + (
+        "function",
+        "tool_use",
+        "tool_calls",
+        "toolCalls",
+        "choices",
+        "content",
+    )
+
+    # Root types the unrecognised-content scan exempts from some checks
+    # (see _looks_like_unrecognized_tool_content).
+    _EXEMPT_ROOT_TYPES = frozenset(
+        {"text", "message", "tool_result", "function_call_output"}
+    )
+
+    # check() messages for each __malformed__ sentinel reason.
+    _MALFORMED_MESSAGES = {
+        "ambiguous_hybrid_envelope": (
+            "BLOCKED: Ambiguous hybrid tool-call envelope - response "
+            "mixes a direct tool call (type=tool_call/function_call) "
+            "with a sibling tool_calls/choices/content collection."
+        ),
+        "conflicting_tool_names": (
+            "BLOCKED: Tool call name fields disagree - name, tool_name and "
+            "toolName must all name the same tool."
+        ),
+        "malformed_output": (
+            "BLOCKED: A response object's output must be a list of objects. "
+            "Pass response.model_dump(), not SDK objects."
+        ),
+        "malformed_entry": (
+            "BLOCKED: Response contains a malformed tool-call entry "
+            "(non-object item in tool_calls or choices[].message.tool_calls). "
+            "Each entry must be an object with a tool name."
+        ),
+    }
+
     # Default dangerous patterns in arguments.
     # Compiled with re.IGNORECASE (see __init__) so both implementations
     # block the same payloads — "RM -RF /" must not pass on Python while
@@ -198,22 +245,109 @@ class ToolGuard(BaseGuard):
         return normalized_type.endswith(("_call", "_request"))
 
     @classmethod
-    def _has_unknown_response_output_item(cls, response: Dict[str, Any]) -> bool:
-        """Whether a response object's ``output[]`` holds an executable item.
+    def _split_response_output(
+        cls, response: Dict[str, Any]
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Separate the call items in a response object's ``output[]``.
 
-        Covers OpenAI / Open Responses ``{"object": "response", "output":
-        [...]}`` envelopes, where every member is a protocol item.
+        Returns ``(calls, residual)``. ``calls`` holds every ``function_call``
+        and client action item as-is, plus an ``__unrecognized__`` sentinel
+        for each other executable ``*_call`` / ``*_request`` item, so an
+        unknown item still fails closed when a known call sits beside it.
+        ``residual`` is the response with only the remaining members
+        (messages, reasoning, provider-hosted items) left in ``output``, for
+        the existing scan for unrecognised tool content. A value that is not a
+        response object, or holds no such item, returns ``([], response)``.
+
+        A response object's ``output`` must be a list of objects. Any other
+        value, and any member that is not an object (for example an SDK model
+        passed without ``model_dump()``), becomes a malformed sentinel, so it
+        fails closed instead of reading as tool-free.
         """
         if cls._normalized_type(response.get("object", "")) != "response":
-            return False
+            return [], response
         output = response.get("output")
-        return isinstance(output, list) and any(
-            isinstance(item, dict)
-            and cls._is_action_item_type(
-                cls._normalized_type(item.get("type", "")), include_unknown=True
-            )
-            for item in output
+        if output is None:
+            return [], response
+        if not isinstance(output, list):
+            return [cls._malformed_sentinel(output, "malformed_output")], {
+                **response,
+                "output": [],
+            }
+        calls: List[Dict[str, Any]] = []
+        remaining: List[Any] = []
+        for item in output:
+            if not isinstance(item, dict):
+                calls.append(cls._malformed_sentinel(item, "malformed_output"))
+                continue
+            item_type = cls._normalized_type(item.get("type", ""))
+            if item_type == "function_call" or cls._is_action_item_type(item_type):
+                calls.append(item)
+            elif cls._is_action_item_type(item_type, include_unknown=True):
+                calls.append(cls._unrecognized_sentinel(reason="unknown_output_item"))
+            else:
+                remaining.append(item)
+        if not calls:
+            return [], response
+        return calls, {**response, "output": remaining}
+
+    @classmethod
+    def _carries_other_call_envelope(cls, value: Dict[str, Any]) -> bool:
+        """Whether a value also carries another call envelope or collection."""
+        return any(key in value for key in cls._OTHER_CALL_ENVELOPE_KEYS)
+
+    @classmethod
+    def _has_conflicting_identity(cls, call: Dict[str, Any]) -> bool:
+        """Whether the fields that name a call disagree (#64).
+
+        A consumer may dispatch on ``name``, ``tool_name`` or ``toolName``, so
+        every one that is present must name the same tool, or the guard could
+        screen one tool while another runs. Blank strings count as absent; a
+        non-string value beside another name always conflicts.
+        """
+        present = [
+            value
+            for value in (call.get(key) for key in cls._IDENTITY_KEYS)
+            if value is not None and not (isinstance(value, str) and not value.strip())
+        ]
+        if len(present) < 2:
+            return False
+        if not all(isinstance(value, str) for value in present):
+            return True
+        return len({cls._normalize_tool_identity(value) for value in present}) > 1
+
+    @classmethod
+    def _is_response_call_item(cls, item: Any) -> bool:
+        """Whether a value is a Responses call item, known or unknown."""
+        if not isinstance(item, dict):
+            return False
+        item_type = cls._normalized_type(item.get("type", ""))
+        return item_type == "function_call" or cls._is_action_item_type(
+            item_type, include_unknown=True
         )
+
+    @classmethod
+    def _holds_response_call_items(cls, value: Dict[str, Any]) -> bool:
+        """Whether a value presents Responses call items, whatever its ``object``.
+
+        Looks at the protocol positions only: ``output[]`` members, a stream
+        event's ``item``, and the same positions inside a ``response``
+        wrapper. Used where another call source was already extracted, so an
+        unknown ``*_call`` item there fails closed too. A chain of wrappers
+        deeper than the scan bound fails closed.
+        """
+        for _ in range(cls._MAX_NESTED_SCAN_DEPTH):
+            output = value.get("output")
+            if isinstance(output, (list, tuple)) and any(
+                cls._is_response_call_item(member) for member in output
+            ):
+                return True
+            if cls._is_response_call_item(value.get("item")):
+                return True
+            value = value.get("response")
+            if not isinstance(value, dict):
+                return False
+        return True
 
     @staticmethod
     def _normalize_tool_identity(name: str) -> str:
@@ -227,6 +361,28 @@ class ToolGuard(BaseGuard):
         return re.sub(r"[\W_]+", "", folded, flags=re.UNICODE)
 
     @staticmethod
+    def _collapse_dot_spacing(value: str) -> str:
+        """Remove whitespace around each ``.`` in linear time.
+
+        Gives the same result as ``re.sub(r"\\s*\\.\\s*", ".", value)``
+        (``str.strip`` removes exactly the characters ``\\s`` matches), but
+        that regex backtracks quadratically over a long whitespace run with
+        no dot, and tool arguments reach it with up to 100,000 characters.
+        """
+        if "." not in value:
+            return value
+        parts = value.split(".")
+        last = len(parts) - 1
+        pieces = []
+        for index, part in enumerate(parts):
+            if index:
+                part = part.lstrip()
+            if index < last:
+                part = part.rstrip()
+            pieces.append(part)
+        return ".".join(pieces)
+
+    @staticmethod
     def _normalize_pattern_text(value: str) -> str:
         """Normalize common command separators before regex matching.
 
@@ -235,7 +391,7 @@ class ToolGuard(BaseGuard):
         and ``rm -fr`` without changing user-supplied regex definitions.
         """
         normalized = re.sub(r"/\*[\s\S]*?(?:\*/|$)", " ", value)
-        normalized = re.sub(r"\s*\.\s*", ".", normalized)
+        normalized = ToolGuard._collapse_dot_spacing(normalized)
 
         def normalize_rm_flags(match: re.Match[str]) -> str:
             options = re.findall(
@@ -332,6 +488,11 @@ class ToolGuard(BaseGuard):
         return max_depth
 
     @staticmethod
+    def _reject_constant(name: str) -> Any:
+        """``json.loads`` hook: fail on the non-JSON NaN / Infinity literals."""
+        raise ValueError(f"{name} is not valid JSON")
+
+    @staticmethod
     def _safe_parse_json_object(payload: str) -> Tuple[bool, Any]:
         """Parse a bounded, structurally-validated JSON object string.
 
@@ -356,7 +517,9 @@ class ToolGuard(BaseGuard):
         if ToolGuard._max_sequence_depth(stripped) > ToolGuard._MAX_ARGS_JSON_DEPTH:
             return False, None
         try:
-            parsed = json.loads(stripped)
+            # NaN and Infinity are not JSON. Rejecting them matches the npm
+            # package (JSON.parse) and keeps them out of numeric range checks.
+            parsed = json.loads(stripped, parse_constant=ToolGuard._reject_constant)
         except (ValueError, TypeError, RecursionError):
             # RecursionError: a bounded payload can still exceed the JSON
             # decoder recursion depth (deeply nested objects) - fail closed
@@ -458,27 +621,21 @@ class ToolGuard(BaseGuard):
 
         # Check each tool call
         for call in tool_calls:
-            tool_name = call.get("tool_name") or call.get("name")
+            # Name fields that disagree were rejected during normalisation
+            # (#64), so whichever is present names the call.
+            tool_name = (
+                call.get("tool_name") or call.get("name") or call.get("toolName")
+            )
 
             # Malformed entry (#33): non-object tool_calls/choices member —
             # fail closed, never forward unvalidated content. An ambiguous
             # hybrid envelope (direct call + sibling collection) is also
             # rejected (Greptile P1).
             if call.get("type") == "__malformed__":
-                if call.get("reason") == "ambiguous_hybrid_envelope":
-                    message = (
-                        "BLOCKED: Ambiguous hybrid tool-call envelope - response "
-                        "mixes a direct tool call (type=tool_call/function_call) "
-                        "with a sibling tool_calls/choices/content collection."
-                    )
-                else:
-                    message = (
-                        "BLOCKED: Response contains a malformed tool-call entry "
-                        "(non-object item in tool_calls or choices[].message.tool_calls). "
-                        "Each entry must be an object with a tool name."
-                    )
                 return self.fail_result(
-                    message,
+                    self._MALFORMED_MESSAGES.get(
+                        call.get("reason"), self._MALFORMED_MESSAGES["malformed_entry"]
+                    ),
                     details={"response_keys": list(response.keys())},
                 )
 
@@ -489,7 +646,7 @@ class ToolGuard(BaseGuard):
                 return self.fail_result(
                     "BLOCKED: Response contains tool-like content in an unrecognized format. "
                     "Supported shapes: type=tool_call, tool_calls[], choices[].message.tool_calls[], "
-                    "content[].type=tool_use.",
+                    "content[].type=tool_use, output[] call items of a response object.",
                     details={"response_keys": list(response.keys())},
                 )
 
@@ -616,6 +773,14 @@ class ToolGuard(BaseGuard):
         """
         resp_type = cls._normalized_type(response.get("type", ""))
 
+        # Responses API objects: verify each call item in output[] instead of
+        # failing closed on the whole response because one is present.
+        output_calls, residual = cls._split_response_output(response)
+        if output_calls:
+            return cls._normalize_response_output(
+                response, resp_type, output_calls, residual
+            )
+
         calls: List[Dict] = []
         calls.extend(cls._extract_known_shapes(response))
 
@@ -629,11 +794,141 @@ class ToolGuard(BaseGuard):
 
         calls = cls._normalize_calls(calls)
 
-        if not calls:
-            if cls._looks_like_unrecognized_tool_content(response, resp_type):
-                calls.append(
-                    {"type": "__unrecognized__", "tool_name": None, "arguments": {}}
-                )
+        # Whatever the extraction did not read must not hold another call. A
+        # harmless call in one envelope would otherwise let a call in another
+        # (an output[] list, a stream item, a response wrapper, another
+        # block) go unchecked, whatever "object" says. With no call
+        # extracted, the whole response gets the scan instead.
+        if calls:
+            hidden = cls._hides_other_calls(cls._unextracted_parts(response, resp_type))
+        else:
+            hidden = cls._looks_like_unrecognized_tool_content(
+                response, cls._scan_root_type(response, resp_type)
+            )
+        if hidden:
+            calls.append(cls._unrecognized_sentinel(reason="unrecognized_content"))
+        return calls
+
+    @classmethod
+    def _scan_root_type(cls, response: Dict[str, Any], resp_type: str) -> str:
+        """Root type for the scan of a response with no extracted call.
+
+        A response object keeps its calls in ``output[]``, so a root type of
+        text, message or a tool result exempts nothing on it.
+        """
+        if (
+            resp_type in cls._EXEMPT_ROOT_TYPES
+            and cls._normalized_type(response.get("object", "")) == "response"
+        ):
+            return ""
+        return resp_type
+
+    @classmethod
+    def _hides_other_calls(cls, residual: Dict[str, Any]) -> bool:
+        """Whether the unread rest of a response holds another call."""
+        return cls._holds_response_call_items(
+            residual
+        ) or cls._looks_like_unrecognized_tool_content(residual, "")
+
+    @classmethod
+    def _unextracted_parts(
+        cls, response: Dict[str, Any], resp_type: str
+    ) -> Dict[str, Any]:
+        """The parts of a response that known-shape extraction did not read.
+
+        Drops the direct call's own fields, the ``tool_calls`` collection,
+        ``choices[].message.tool_calls`` and ``tool_use`` content blocks, and
+        keeps everything else for the scan for other calls.
+        """
+        residual = dict(response)
+        if resp_type in ("tool_call", "function_call") or cls._is_action_item_type(
+            resp_type
+        ):
+            for key in cls._direct_call_fields(resp_type):
+                residual.pop(key, None)
+        residual.pop("tool_calls", None)
+        choices = residual.get("choices")
+        if isinstance(choices, list):
+            residual["choices"] = [
+                cls._without_message_tool_calls(choice) for choice in choices
+            ]
+        content = residual.get("content")
+        if isinstance(content, list):
+            residual["content"] = [
+                block for block in content if not cls._is_tool_use_block(block)
+            ]
+        elif cls._is_tool_use_block(content):
+            del residual["content"]
+        return residual
+
+    @classmethod
+    def _direct_call_fields(cls, resp_type: str) -> Tuple[str, ...]:
+        """Fields a direct call of this root type is read from."""
+        fields = ("type", "arguments", "function") + (
+            cls._IDENTITY_KEYS + cls._NESTED_CALL_KEYS
+        )
+        if resp_type in cls._CLIENT_ACTION_ITEMS:
+            fields += (cls._CLIENT_ACTION_ITEMS[resp_type][1],)
+        elif resp_type == "custom_tool_call":
+            fields += ("input",)
+        return fields
+
+    @staticmethod
+    def _without_message_tool_calls(choice: Any) -> Any:
+        """A ``choices[]`` member without the ``message.tool_calls`` it gave."""
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            return choice
+        message = {k: v for k, v in choice["message"].items() if k != "tool_calls"}
+        return {**choice, "message": message}
+
+    @staticmethod
+    def _is_tool_use_block(block: Any) -> bool:
+        """Whether a content block is an Anthropic ``tool_use`` call."""
+        return (
+            isinstance(block, dict)
+            and ToolGuard._normalized_type(block.get("type", "")) == "tool_use"
+        )
+
+    @classmethod
+    def _normalize_response_output(
+        cls,
+        response: Dict[str, Any],
+        resp_type: str,
+        output_calls: List[Dict[str, Any]],
+        residual: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Normalise the call items taken from a response object's ``output[]``.
+
+        Each item gets the same handling as a standalone item, so conflicting
+        names and unparseable arguments fail closed. A response object that
+        also presents a direct call type, or any other call envelope or
+        collection (``_OTHER_CALL_ENVELOPE_KEYS``), is ambiguous: verifying
+        one side would let the other escape, so it is rejected. The same goes
+        for a call item that carries one.
+        """
+        if (
+            resp_type in ("tool_call", "function_call")
+            or cls._is_action_item_type(resp_type)
+            or cls._carries_other_call_envelope(response)
+        ):
+            return [cls._ambiguous_hybrid_sentinel()]
+
+        calls: List[Dict[str, Any]] = [
+            (
+                cls._ambiguous_hybrid_sentinel()
+                if cls._carries_other_call_envelope(item)
+                else item
+            )
+            for item in output_calls
+        ]
+        calls = cls._normalize_calls(calls)
+
+        # Scan the rest of the response with no root-type exemption: a
+        # response object is not a declared text, message or result envelope,
+        # whatever its "type" says, so tool-shaped content left in a message,
+        # a provider-hosted item or a stream item must still fail closed.
+        if cls._hides_other_calls(residual):
+            calls.append(cls._unrecognized_sentinel(reason="unrecognized_content"))
         return calls
 
     @staticmethod
@@ -842,14 +1137,30 @@ class ToolGuard(BaseGuard):
         return value.strip().casefold() if isinstance(value, str) else ""
 
     @staticmethod
-    def _unrecognized_sentinel(name: Any = None) -> Dict[str, Any]:
-        """Fail-closed sentinel for calls whose arguments cannot be parsed."""
+    def _unrecognized_sentinel(
+        name: Any = None, reason: str = "unparseable_arguments"
+    ) -> Dict[str, Any]:
+        """Fail-closed sentinel for a call that cannot be read.
+
+        By default, a call whose arguments cannot be parsed. ``reason`` also
+        marks unknown output items and tool content in no known format.
+        """
         return {
             "type": "__unrecognized__",
             "tool_name": None,
             "arguments": {},
-            "reason": "unparseable_arguments",
+            "reason": reason,
             "attempted_name": name,
+        }
+
+    @staticmethod
+    def _conflicting_names_sentinel() -> Dict[str, Any]:
+        """Fail-closed sentinel for a call whose name fields disagree (#64)."""
+        return {
+            "type": "__malformed__",
+            "tool_name": None,
+            "arguments": {},
+            "reason": "conflicting_tool_names",
         }
 
     @classmethod
@@ -861,48 +1172,16 @@ class ToolGuard(BaseGuard):
         """
         if call.get("type") in ("__unrecognized__", "__malformed__"):
             return call
+        if cls._has_conflicting_identity(call):
+            return cls._conflicting_names_sentinel()
 
         item_type = cls._normalized_type(call.get("type", ""))
         if cls._is_action_item_type(item_type):
             return cls._normalize_action_item(call, item_type)
 
-        tool_call = call.get("tool_call")
-        function_call = call.get("function_call")
-        function = call.get("function")
-        has_function_wrapper = isinstance(function, dict) and any(
-            key in function for key in ("name", "arguments")
-        )
-        has_root_call_fields = any(
-            key in call for key in ("tool_name", "name", "arguments")
-        )
-        if has_function_wrapper and (
-            tool_call is not None or function_call is not None or has_root_call_fields
-        ):
-            return ToolGuard._ambiguous_hybrid_sentinel()
-        if tool_call is not None and function_call is not None:
-            return ToolGuard._ambiguous_hybrid_sentinel()
-        nested_call = tool_call if tool_call is not None else function_call
-        if nested_call is not None:
-            if not isinstance(nested_call, dict):
-                return cls._unrecognized_sentinel(None)
-            if nested_call is call or any(
-                key in nested_call for key in ("tool_call", "function_call")
-            ):
-                return cls._unrecognized_sentinel(None)
-            if any(key in call for key in ("tool_name", "name", "arguments")):
-                return ToolGuard._ambiguous_hybrid_sentinel()
-            call = nested_call
-
-            # A nested direct call must not hide a conflicting function
-            # wrapper. Validate the complete envelope instead of allowing the
-            # wrapper's name to replace the name exposed to consumers.
-            nested_function = call.get("function")
-            if (
-                isinstance(nested_function, dict)
-                and any(key in nested_function for key in ("name", "arguments"))
-                and any(key in call for key in ("tool_name", "name", "arguments"))
-            ):
-                return ToolGuard._ambiguous_hybrid_sentinel()
+        call = cls._unwrap_nested_call(call)
+        if call.get("type") in ("__unrecognized__", "__malformed__"):
+            return call
 
         # OpenAI function wrapper: {function: {name, arguments-as-JSON-string}}.
         resolved = cls._normalize_function_wrapper(call)
@@ -917,6 +1196,53 @@ class ToolGuard(BaseGuard):
         # JSON-encoded argument strings on otherwise-recognized calls.
         return cls._normalize_json_encoded_arguments(call)
 
+    @staticmethod
+    def _has_function_wrapper(value: Dict[str, Any]) -> bool:
+        """Whether ``function`` holds an OpenAI ``{name, arguments}`` wrapper."""
+        function = value.get("function")
+        return isinstance(function, dict) and any(
+            key in function for key in ("name", "arguments")
+        )
+
+    @classmethod
+    def _unwrap_nested_call(cls, call: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the call inside a ``tool_call`` / ``function_call`` wrapper.
+
+        Returns ``call`` itself when it wraps nothing, and a fail-closed
+        sentinel when the envelope is ambiguous (two wrappers, a wrapper
+        beside root call fields, or a nested call whose own name fields or
+        function wrapper conflict) or malformed.
+        """
+        nested = [
+            call[key] for key in cls._NESTED_CALL_KEYS if call.get(key) is not None
+        ]
+        has_root_call_fields = any(key in call for key in cls._ROOT_CALL_FIELDS)
+        if cls._has_function_wrapper(call) and (nested or has_root_call_fields):
+            return cls._ambiguous_hybrid_sentinel()
+        if not nested:
+            return call
+        if len(nested) > 1:
+            return cls._ambiguous_hybrid_sentinel()
+        nested_call = nested[0]
+        if not isinstance(nested_call, dict):
+            return cls._unrecognized_sentinel(None)
+        if nested_call is call or any(
+            key in nested_call for key in cls._NESTED_CALL_KEYS
+        ):
+            return cls._unrecognized_sentinel(None)
+        if has_root_call_fields:
+            return cls._ambiguous_hybrid_sentinel()
+        # A nested direct call must not hide a conflicting function wrapper or
+        # name. Validate the complete envelope instead of allowing one name to
+        # replace the name exposed to consumers.
+        if cls._has_function_wrapper(nested_call) and any(
+            key in nested_call for key in cls._ROOT_CALL_FIELDS
+        ):
+            return cls._ambiguous_hybrid_sentinel()
+        if cls._has_conflicting_identity(nested_call):
+            return cls._conflicting_names_sentinel()
+        return nested_call
+
     @classmethod
     def _normalize_action_item(
         cls, call: Dict[str, Any], item_type: str
@@ -928,17 +1254,9 @@ class ToolGuard(BaseGuard):
         arguments. Malformed payloads and items that also carry another call
         envelope fail closed.
         """
-        if any(
-            key in call
-            for key in (
-                "tool_call",
-                "toolCall",
-                "function_call",
-                "function",
-                "tool_calls",
-                "toolCalls",
-            )
-        ):
+        # Same envelope keys as output[] call items, so a root-level item and
+        # an output[] item carrying another call are treated alike.
+        if cls._carries_other_call_envelope(call):
             return cls._ambiguous_hybrid_sentinel()
 
         if item_type in cls._CLIENT_ACTION_ITEMS:
@@ -965,7 +1283,7 @@ class ToolGuard(BaseGuard):
                     or cls._normalize_tool_identity(declared)
                     != cls._normalize_tool_identity(name)
                 ):
-                    return cls._ambiguous_hybrid_sentinel()
+                    return cls._conflicting_names_sentinel()
             if item_type == "custom_tool_call":
                 raw_input = call.get("input", "")
                 if not isinstance(raw_input, str):
@@ -1023,13 +1341,19 @@ class ToolGuard(BaseGuard):
         """
         if cls._normalized_type(call.get("type", "")) != "function_call":
             return None
-        name = call.get("name")
-        if not cls._valid_tool_name(name):
-            # Some Open Responses producers use the canonical tool_name field
-            # on a function_call item. Use it when name is missing or invalid,
-            # while still rejecting calls without a usable name.
-            name = call.get("tool_name")
-        if not cls._valid_tool_name(name):
+        # Some Open Responses producers name a function_call item with the
+        # canonical tool_name (or toolName) field instead of name. Any of them
+        # is accepted; _normalize_one has already rejected items whose name
+        # fields disagree (#64), and calls without a usable name still fail.
+        name = next(
+            (
+                call[key]
+                for key in cls._IDENTITY_KEYS
+                if cls._valid_tool_name(call.get(key))
+            ),
+            None,
+        )
+        if name is None:
             return cls._unrecognized_sentinel(None)
         ok, args = cls._parse_tool_arguments(call.get("arguments", {}))
         if not ok:
@@ -1054,18 +1378,21 @@ class ToolGuard(BaseGuard):
         return [cls._normalize_one(call) for call in calls]
 
     @staticmethod
-    def _malformed_sentinel(item: Any) -> Dict[str, Any]:
+    def _malformed_sentinel(
+        item: Any, reason: str = "malformed_entry"
+    ) -> Dict[str, Any]:
         """Fail-closed sentinel for a non-dict tool-call entry (#33).
 
         Invalid entries in a tool_calls/choices array can never be validated,
         so they become an ``__malformed__`` sentinel that ``check()`` rejects
         instead of being silently discarded — or crashing on ``.get(...)``.
+        ``reason`` is ``malformed_output`` for a response object's output.
         """
         return {
             "type": "__malformed__",
             "tool_name": None,
             "arguments": {},
-            "reason": "malformed_entry",
+            "reason": reason,
             "value": item,
         }
 
@@ -1186,9 +1513,10 @@ class ToolGuard(BaseGuard):
         # Ambiguous hybrid envelope: a direct tool-call object that ALSO
         # carries a sibling collection. Reject instead of choosing one
         # side - the other would escape validation (Greptile P1).
-        has_sibling_collection = any(
-            key in response for key in ("tool_calls", "choices", "content")
-        )
+        # toolCalls is the npm spelling: Python does not extract it, so it
+        # must not sit unverified beside a call that is extracted.
+        collection_keys = ("tool_calls", "toolCalls", "choices", "content")
+        has_sibling_collection = any(key in response for key in collection_keys)
         is_direct_item = resp_type in (
             "tool_call",
             "function_call",
@@ -1198,9 +1526,7 @@ class ToolGuard(BaseGuard):
 
         # Multiple independent top-level collections at once is ambiguous and
         # would double-count under max_calls_per_response - reject (Sentry LOW).
-        present_collections = [
-            k for k in ("tool_calls", "choices", "content") if k in response
-        ]
+        present_collections = [k for k in collection_keys if k in response]
         if len(present_collections) > 1:
             return [ToolGuard._ambiguous_hybrid_sentinel()]
 
@@ -1229,10 +1555,9 @@ class ToolGuard(BaseGuard):
         tool-shaped (an object carrying name/arguments), so ordinary fields
         like ``function: "parse_csv"`` on a structured response still pass.
         """
-        # Response objects: an unknown executable protocol item in output[]
-        # must not read as tool-free (GHSA-xhq6-w3f2-m5w6).
-        if ToolGuard._has_unknown_response_output_item(response):
-            return True
+        # Response objects never reach this scan with a call item left in
+        # output[]: _split_response_output takes every one, known or not
+        # (GHSA-xhq6-w3f2-m5w6).
 
         # Tool-shaped objects under recognizable hint keys. Result envelopes
         # may repeat the root ``function``/``tool_name`` fields for
@@ -1299,12 +1624,6 @@ class ToolGuard(BaseGuard):
         return "tool_name" in value or ("name" in value and "arguments" in value)
 
     @classmethod
-    def _contains_nested_tool_shape(cls, value: Any, depth: int) -> bool:
-        """Return whether a bounded recursive scan finds a tool shape."""
-        found, _scan_limited = cls._scan_nested_tool_shape(value, depth)
-        return found
-
-    @classmethod
     def _scan_nested_tool_shape(cls, value: Any, depth: int) -> Tuple[bool, bool]:
         """Find tool shapes and report when the bounded scan was truncated.
 
@@ -1322,7 +1641,8 @@ class ToolGuard(BaseGuard):
                 if found or scan_limited:
                     return found, scan_limited
             return False, False
-        if isinstance(value, list):
+        # Tuples too: a Python caller may pass one where JSON has a list.
+        if isinstance(value, (list, tuple)):
             for child in value:
                 found, scan_limited = cls._scan_nested_tool_shape(child, depth + 1)
                 if found or scan_limited:

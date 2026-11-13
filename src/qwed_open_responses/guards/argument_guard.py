@@ -7,6 +7,7 @@ Ensures arguments are within expected ranges and formats.
 from typing import Any, Dict, Optional, List, Callable
 from .base import BaseGuard, GuardResult
 from .tool_guard import ToolGuard
+import math
 import re
 
 
@@ -59,7 +60,10 @@ class ArgumentGuard(BaseGuard):
         """
         self.rules = rules or {}
         self.tool_rules = (
-            {tool_name.casefold(): rules for tool_name, rules in tool_rules.items()}
+            {
+                ToolGuard._normalize_tool_identity(tool_name): rules
+                for tool_name, rules in tool_rules.items()
+            }
             if tool_rules is not None
             else None
         )
@@ -113,6 +117,13 @@ class ArgumentGuard(BaseGuard):
             or "tool_calls" in response
             or has_choice_tool_calls
             or has_content_tool_calls
+            # Call items in a response object's output[] are tool calls too;
+            # without this the output list was read as one argument set. The
+            # same goes for call items in any output[] list, stream item or
+            # response wrapper, whatever "object" says: ToolGuard then fails
+            # them closed instead of this guard skipping them.
+            or bool(ToolGuard._split_response_output(response)[0])
+            or ToolGuard._holds_response_call_items(response)
         )
         # Client action items (GHSA-xhq6-w3f2-m5w6) are direct calls too.
         is_direct_call = normalized_type in {
@@ -132,10 +143,14 @@ class ArgumentGuard(BaseGuard):
                 return self.fail_result("Invalid or ambiguous tool-call arguments")
             argument_sets = []
             for call in calls:
-                tool_name = call.get("tool_name") or call.get("name")
+                tool_name = (
+                    call.get("tool_name") or call.get("name") or call.get("toolName")
+                )
                 rules = self.rules
                 if self.tool_rules is not None and isinstance(tool_name, str):
-                    rules = self.tool_rules.get(tool_name.casefold(), self.rules)
+                    rules = self.tool_rules.get(
+                        ToolGuard._normalize_tool_identity(tool_name), self.rules
+                    )
                 argument_sets.append((call.get("arguments", {}), rules))
         elif has_tool_call_collection:
             argument_sets = []
@@ -191,6 +206,9 @@ class ArgumentGuard(BaseGuard):
         elif rule_type == "number":
             if not isinstance(value, (int, float)):
                 errors.append(f"{name}: expected number, got {type(value).__name__}")
+            elif not math.isfinite(value):
+                # NaN compares false with every bound, so it would pass both.
+                errors.append(f"{name}: expected a finite number, got {value}")
             else:
                 if "min" in rule and value < rule["min"]:
                     errors.append(f"{name}: {value} < min ({rule['min']})")
