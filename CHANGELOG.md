@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed: tool calls in a Responses object's `output[]`
+
+- **ToolGuard verifies `output[]` call items**: `function_call` items and
+  the client action items (`local_shell_call`, `shell_call`,
+  `apply_patch_call`, `computer_call`, `custom_tool_call`,
+  `mcp_approval_request`) in the `output[]` of a response object
+  (`"object": "response"`) are each checked against the blocklist,
+  allowlist, argument patterns, custom validators and
+  `max_calls_per_response`, as they are when passed on their own.
+  Previously any such response failed closed as "unrecognized format", so
+  `VerifiedOpenAI(...).responses.create()` raised `ResponseBlocked` for
+  every response containing a tool call, even a safe one. Python and npm.
+- **Unknown items still fail closed**: any other `*_call` / `*_request`
+  item in `output[]` blocks the response, also when a known call sits
+  beside it. Tool-shaped content elsewhere in the response (inside a
+  message item, or a hosted `mcp_call` carrying `name` and `arguments`)
+  still blocks as before.
+- **ArgumentGuard checks `output[]` calls** (Python): `rules` and
+  `tool_rules` apply to each call's arguments. Previously the `output`
+  list was read as one argument set, so no rule was checked.
+
+### Security
+
+- **Ambiguous response objects fail closed**: a response object whose
+  `output[]` holds a call item and that also carries a top-level
+  `tool_calls`, `choices` or `content` collection (npm: also `toolCalls`),
+  or a direct call `type`, is rejected as an ambiguous hybrid envelope.
+  Previously only the sibling collection was checked, so a call item in
+  `output[]` beside it was never verified.
+
 ## [0.6.1] - 2026-10-09
 
 ### Security — client-executed Responses API items (GHSA-xhq6-w3f2-m5w6)

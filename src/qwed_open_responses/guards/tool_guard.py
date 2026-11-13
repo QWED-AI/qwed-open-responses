@@ -198,6 +198,51 @@ class ToolGuard(BaseGuard):
         return normalized_type.endswith(("_call", "_request"))
 
     @classmethod
+    def _split_response_output(
+        cls, response: Dict[str, Any]
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Separate the call items in a response object's ``output[]``.
+
+        Returns ``(calls, residual)``. ``calls`` holds every ``function_call``
+        and client action item as-is, plus an ``__unrecognized__`` sentinel
+        for each other executable ``*_call`` / ``*_request`` item, so an
+        unknown item still fails closed when a known call sits beside it.
+        ``residual`` is the response with only the remaining members
+        (messages, reasoning, provider-hosted items) left in ``output``, for
+        the existing scan for unrecognised tool content. A value that is not a
+        response object, or holds no such item, returns ``([], response)``.
+        """
+        if cls._normalized_type(response.get("object", "")) != "response":
+            return [], response
+        output = response.get("output")
+        if not isinstance(output, list):
+            return [], response
+        calls: List[Dict[str, Any]] = []
+        remaining: List[Any] = []
+        for item in output:
+            item_type = (
+                cls._normalized_type(item.get("type", ""))
+                if isinstance(item, dict)
+                else ""
+            )
+            if item_type == "function_call" or cls._is_action_item_type(item_type):
+                calls.append(item)
+            elif cls._is_action_item_type(item_type, include_unknown=True):
+                calls.append(
+                    {
+                        "type": "__unrecognized__",
+                        "tool_name": None,
+                        "arguments": {},
+                        "reason": "unknown_output_item",
+                    }
+                )
+            else:
+                remaining.append(item)
+        if not calls:
+            return [], response
+        return calls, {**response, "output": remaining}
+
+    @classmethod
     def _has_unknown_response_output_item(cls, response: Dict[str, Any]) -> bool:
         """Whether a response object's ``output[]`` holds an executable item.
 
@@ -489,7 +534,7 @@ class ToolGuard(BaseGuard):
                 return self.fail_result(
                     "BLOCKED: Response contains tool-like content in an unrecognized format. "
                     "Supported shapes: type=tool_call, tool_calls[], choices[].message.tool_calls[], "
-                    "content[].type=tool_use.",
+                    "content[].type=tool_use, output[] call items of a response object.",
                     details={"response_keys": list(response.keys())},
                 )
 
@@ -616,6 +661,14 @@ class ToolGuard(BaseGuard):
         """
         resp_type = cls._normalized_type(response.get("type", ""))
 
+        # Responses API objects: verify each call item in output[] instead of
+        # failing closed on the whole response because one is present.
+        output_calls, residual = cls._split_response_output(response)
+        if output_calls:
+            return cls._normalize_response_output(
+                response, resp_type, output_calls, residual
+            )
+
         calls: List[Dict] = []
         calls.extend(cls._extract_known_shapes(response))
 
@@ -634,6 +687,48 @@ class ToolGuard(BaseGuard):
                 calls.append(
                     {"type": "__unrecognized__", "tool_name": None, "arguments": {}}
                 )
+        return calls
+
+    @classmethod
+    def _normalize_response_output(
+        cls,
+        response: Dict[str, Any],
+        resp_type: str,
+        output_calls: List[Dict[str, Any]],
+        residual: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Normalise the call items taken from a response object's ``output[]``.
+
+        Each item gets the same handling as a standalone item, so nested call
+        envelopes, conflicting names and unparseable arguments fail closed.
+        A response object that also presents a direct call type or a sibling
+        ``tool_calls`` / ``choices`` / ``content`` collection is ambiguous:
+        verifying one side would let the other escape, so it is rejected.
+        """
+        sibling_keys = ("tool_calls", "choices", "content")
+        if (
+            resp_type in ("tool_call", "function_call")
+            or cls._is_action_item_type(resp_type)
+            or any(key in response for key in sibling_keys)
+        ):
+            return [cls._ambiguous_hybrid_sentinel()]
+
+        calls: List[Dict[str, Any]] = [
+            (
+                cls._ambiguous_hybrid_sentinel()
+                if any(key in item for key in sibling_keys)
+                else item
+            )
+            for item in output_calls
+        ]
+        calls = cls._normalize_calls(calls)
+
+        # The rest of the response is scanned exactly as before, so tool-shaped
+        # content in a message or provider-hosted item still fails closed.
+        if cls._looks_like_unrecognized_tool_content(residual, resp_type):
+            calls.append(
+                {"type": "__unrecognized__", "tool_name": None, "arguments": {}}
+            )
         return calls
 
     @staticmethod

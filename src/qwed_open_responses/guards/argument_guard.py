@@ -113,6 +113,9 @@ class ArgumentGuard(BaseGuard):
             or "tool_calls" in response
             or has_choice_tool_calls
             or has_content_tool_calls
+            # Call items in a response object's output[] are tool calls too;
+            # without this the output list was read as one argument set.
+            or bool(ToolGuard._split_response_output(response)[0])
         )
         # Client action items (GHSA-xhq6-w3f2-m5w6) are direct calls too.
         is_direct_call = normalized_type in {
