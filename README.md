@@ -389,9 +389,11 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
   `type` at the root, or a stream event's `item` beside another call. This
   holds even when `object` is missing or not `"response"`. Unknown
   `*_call` / `*_request` items are caught in the `output[]` of an object
-  with `"object": "response"` or beside a recognised call; on their own
-  anywhere else, `ToolGuard.check()` reads them as tool-free (the streaming
-  middleware still blocks them). A Responses object's `output`
+  with `"object": "response"` or beside a recognised call. On their own
+  anywhere else, `ToolGuard.check()` still blocks one that carries
+  `tool_name`, or both `name` and `arguments`, and reads any other as
+  tool-free (the streaming middleware blocks them all). A Responses
+  object's `output`
   must be a list of plain objects: pass `ToolGuard.check()` the result of
   `response.model_dump()`, not the SDK object or `dict(response)`
   (`ResponseVerifier` and `VerifiedOpenAI` convert SDK objects for you).
