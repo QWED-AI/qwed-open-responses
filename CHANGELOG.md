@@ -115,6 +115,20 @@ Completes the GHSA-xhq6-w3f2-m5w6 fix from 0.6.1.
   `max`; `tool_rules` match tool names ignoring surrounding whitespace as
   well as case.
 
+### Changed
+
+- **Package metadata**: the support email is `support@qwedai.tech` and the
+  PyPI `Documentation` link is `https://docs.qwedai.tech/docs/open-responses`,
+  replacing the `qwedai.com` addresses (#74).
+- **README**: every Python example runs as written and prints the result
+  shown under it; the OpenAI SDK notes say what `responses.create` checks
+  in `output[]`; Scope & Limitations lists the 0.6.2 fail-closed cases; the
+  header uses the new QWED logo (#76, #79).
+- **CI and development dependencies**: Python 3.9 is tested on Ubuntu
+  24.04, and npm `overrides` resolve `body-parser` 2.4.0 and `qs` 6.16.1 or
+  later for the development install, clearing two Snyk findings. The
+  runtime dependencies of both packages are unchanged (#77).
+
 ## [0.6.1] - 2026-10-09
 
 ### Security — client-executed Responses API items (GHSA-xhq6-w3f2-m5w6)
