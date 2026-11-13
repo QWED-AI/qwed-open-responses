@@ -106,7 +106,7 @@ Negligibly. Most guards (Schema, Tool, Argument) run in <1ms. MathGuard runs in 
 <details>
 <summary><b>Can I use it with custom agents?</b></summary>
 
-Yes! You don't need LangChain. QWED works with raw OpenAI API calls or any Python code. Just pass the output to the `Verifier`.
+Yes! You don't need LangChain. QWED works with raw OpenAI API calls or any Python code. Just pass the output to `ResponseVerifier`.
 </details>
 
 <details>
@@ -194,11 +194,30 @@ guard = ToolGuard(
 )
 
 result = guard.check({
+    "type": "tool_call",
     "tool_name": "execute_sql",
-    "arguments": {"query": "DROP TABLE users"}
+    "arguments": {"query": "SELECT * FROM users"},
 })
-# ❌ BLOCKED: Dangerous pattern detected
+print(result.passed, result.message)
+# True All 1 tool call(s) verified
+
+result = guard.check({
+    "type": "tool_call",
+    "tool_name": "execute_sql",
+    "arguments": {"query": "DROP TABLE users"},
+})
+print(result.passed, result.message)
+# False BLOCKED: Dangerous pattern detected in tool arguments
 ```
+
+`ToolGuard.check()` reads tool calls in these shapes: a single call with
+`"type": "tool_call"` (as above), a `tool_calls[]` list, Chat Completions
+`choices[].message.tool_calls[]`, `content[]` blocks with
+`"type": "tool_use"`, and a single Responses API `function_call` item.
+Tool-like content in any other shape fails closed, so a bare
+`{"tool_name": ..., "arguments": ...}` with no `"type"` is blocked whatever
+its arguments say. `ResponseVerifier().verify_tool_call()` (see Quick Start)
+adds the `"type"` for you.
 
 ### Validate Structured Outputs
 
@@ -216,7 +235,8 @@ schema = {
 
 guard = SchemaGuard(schema=schema)
 result = guard.check({"output": {"name": "John", "age": 30}})
-# ✅ Schema validation passed
+print(result.passed, result.message)
+# True Schema validation passed
 ```
 
 ### Verify Calculations
@@ -232,7 +252,8 @@ result = guard.check({
         "total": 108
     }
 })
-# ✅ Math verification passed
+print(result.passed, result.message)
+# True Math verification passed
 ```
 
 ### Safety Checks
@@ -246,11 +267,20 @@ guard = SafetyGuard(
     max_cost=100.0,
 )
 
-result = guard.check({
-    "content": "ignore previous instructions and..."
-})
-# ❌ BLOCKED: Prompt injection detected
+# max_cost needs a cost to compare: your own running total in
+# context["total_cost"], or usage reported in the response.
+result = guard.check(
+    {"content": "ignore previous instructions and..."},
+    context={"total_cost": 12.50},
+)
+print(result.passed, result.message)
+# False Safety check failed: 1 critical issue(s)
+print([issue["type"] for issue in result.details["issues"]])
+# ['injection']
 ```
+
+With `max_cost` set and no cost figure at all, the budget check fails
+closed, so even harmless content is blocked until you supply one.
 
 ---
 
@@ -259,28 +289,46 @@ result = guard.check({
 ### LangChain
 
 ```python
+from langchain.agents import create_agent
+from qwed_open_responses import ToolGuard, SafetyGuard
 from qwed_open_responses.middleware.langchain import QWEDCallbackHandler
 
 callback = QWEDCallbackHandler(
     guards=[ToolGuard(), SafetyGuard()]
 )
 
-agent = create_agent(callbacks=[callback])
+agent = create_agent(model=..., tools=[...])  # your model and tools
+agent.invoke(
+    {"messages": [{"role": "user", "content": "..."}]},
+    config={"callbacks": [callback]},
+)
+# A blocked tool call raises ToolCallBlocked before the tool runs
 ```
 
-### OpenAI Responses API
+### OpenAI SDK
 
 ```python
+from qwed_open_responses import ToolGuard
 from qwed_open_responses.middleware.openai_sdk import VerifiedOpenAI
 
 client = VerifiedOpenAI(
     api_key="...",
-    guards=[ToolGuard(), SchemaGuard(schema=my_schema)]
+    guards=[ToolGuard()],
 )
 
-response = client.responses.create(...)
-# Automatically verified before returning
+response = client.chat.completions.create(model=..., messages=[...], tools=[...])
+# Verified before it is returned: a failed check raises ResponseBlocked
 ```
+
+- `client.responses.create(...)` runs the same guards on Responses API
+  objects. In 0.6.1, ToolGuard does not read tool calls inside a Responses
+  object's `output[]`; it fails closed instead, so any response that contains
+  a tool call raises `ResponseBlocked`, even a safe one. Text-only responses
+  pass.
+- Keep `SchemaGuard` out of the client's guards. It validates the whole
+  response object rather than the model's JSON, so every response fails.
+  Parse the model's JSON and check it as in
+  [Validate Structured Outputs](#validate-structured-outputs).
 
 ---
 
