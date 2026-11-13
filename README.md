@@ -269,9 +269,9 @@ guard = SafetyGuard(
     max_cost=100.0,
 )
 
-# max_cost needs a cost to compare. Pass your own running total in
-# context["total_cost"]: usage reported in the response comes from the
-# model and can be under-reported. The guard adds the two together.
+# max_cost needs a cost to compare. Pass what you have spent before this
+# response in context["total_cost"]; the guard adds the response's own
+# reported usage cost on top, so do not include this response in it.
 result = guard.check(
     {"content": "ignore previous instructions and..."},
     context={"total_cost": 12.50},
@@ -283,7 +283,9 @@ print([issue["type"] for issue in result.details["issues"]])
 ```
 
 With `max_cost` set and no cost figure at all, the budget check fails
-closed, so even harmless content is blocked until you supply one.
+closed, so even harmless content is blocked until you supply one. The
+usage a response reports comes from the model and can be under-reported,
+so reconcile it with your provider's billing records for a hard cap.
 
 ---
 
@@ -334,12 +336,16 @@ response = client.chat.completions.create(model=..., messages=[...], tools=[...]
   `computer_call`), a `custom_tool_call`, an `mcp_approval_request` or an
   `mcp_call` raises `ResponseBlocked`, even a safe one. Text and the hosted
   `web_search_call`, `file_search_call`, `code_interpreter_call` and
-  `image_generation_call` items pass.
+  `image_generation_call` items pass. The provider has already run those
+  hosted tools by the time the response arrives, and ToolGuard does not
+  check them, so `allowed_tools` and `blocked_tools` cannot stop them.
+  Limit hosted tools in the `tools` you send with the request.
 - Keep `SchemaGuard` out of the client's guards. It does not parse the
   model's JSON: on a Responses object it validates the `output[]` list, and
-  on a Chat Completions object the whole object. A schema for your JSON
-  therefore blocks every response, and an empty schema `{}` passes without
-  checking anything. Parse the model's JSON and check it as in
+  on a Chat Completions object the whole object. A schema written for your
+  JSON is checked against the wrong data: depending on the schema, it
+  blocks responses or passes them without checking the JSON (an empty
+  schema `{}` passes everything). Parse the model's JSON and check it as in
   [Validate Structured Outputs](#validate-structured-outputs).
 
 ---
