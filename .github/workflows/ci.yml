@@ -11,10 +11,18 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.python-version }})
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     strategy:
+      # Report every Python version even if one job fails.
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12"]
+        include:
+          # ubuntu-latest is Ubuntu 26.04, which has no Python 3.9 build.
+          # pyproject.toml still supports 3.9, so test it on Ubuntu 24.04.
+          - python-version: "3.9"
+            os: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
