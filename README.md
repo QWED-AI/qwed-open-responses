@@ -106,7 +106,7 @@ Negligibly. Most guards (Schema, Tool, Argument) run in <1ms. MathGuard runs in 
 <details>
 <summary><b>Can I use it with custom agents?</b></summary>
 
-Yes! You don't need LangChain. QWED works with raw OpenAI API calls or any Python code. Just pass the output to `ResponseVerifier`.
+Yes! You don't need LangChain. QWED works with raw OpenAI API calls or any Python code. Pass the output to `ResponseVerifier` with at least one guard, for example `ResponseVerifier(default_guards=[ToolGuard()]).verify(output)`. With no guards it fails closed and blocks every output.
 </details>
 
 <details>
@@ -213,7 +213,9 @@ print(result.passed, result.message)
 `ToolGuard.check()` reads tool calls in these shapes: a single call with
 `"type": "tool_call"` (as above), a `tool_calls[]` list, Chat Completions
 `choices[].message.tool_calls[]`, `content[]` blocks with
-`"type": "tool_use"`, and a single Responses API `function_call` item.
+`"type": "tool_use"`, and a single Responses API item: `function_call`,
+`custom_tool_call`, `mcp_approval_request`, or a client action item such as
+`local_shell_call` (see Scope & Limitations for how those are checked).
 Tool-like content in any other shape fails closed, so a bare
 `{"tool_name": ..., "arguments": ...}` with no `"type"` is blocked whatever
 its arguments say. `ResponseVerifier().verify_tool_call()` (see Quick Start)
@@ -267,8 +269,9 @@ guard = SafetyGuard(
     max_cost=100.0,
 )
 
-# max_cost needs a cost to compare: your own running total in
-# context["total_cost"], or usage reported in the response.
+# max_cost needs a cost to compare. Pass your own running total in
+# context["total_cost"]: usage reported in the response comes from the
+# model and can be under-reported. The guard adds the two together.
 result = guard.check(
     {"content": "ignore previous instructions and..."},
     context={"total_cost": 12.50},
@@ -287,6 +290,10 @@ closed, so even harmless content is blocked until you supply one.
 ## Framework Integrations
 
 ### LangChain
+
+This example needs LangChain 1.x, which added `create_agent`. The
+`[langchain]` extra still accepts 0.x releases, so install 1.x explicitly:
+`pip install "qwed-open-responses[langchain]" "langchain>=1.0"`.
 
 ```python
 from langchain.agents import create_agent
@@ -328,9 +335,11 @@ response = client.chat.completions.create(model=..., messages=[...], tools=[...]
   `mcp_call` raises `ResponseBlocked`, even a safe one. Text and the hosted
   `web_search_call`, `file_search_call`, `code_interpreter_call` and
   `image_generation_call` items pass.
-- Keep `SchemaGuard` out of the client's guards. It validates the whole
-  response object rather than the model's JSON, so every response fails.
-  Parse the model's JSON and check it as in
+- Keep `SchemaGuard` out of the client's guards. It does not parse the
+  model's JSON: on a Responses object it validates the `output[]` list, and
+  on a Chat Completions object the whole object. A schema for your JSON
+  therefore blocks every response, and an empty schema `{}` passes without
+  checking anything. Parse the model's JSON and check it as in
   [Validate Structured Outputs](#validate-structured-outputs).
 
 ---
