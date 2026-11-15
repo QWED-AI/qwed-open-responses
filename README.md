@@ -459,7 +459,7 @@ Read this before relying on QWED as a trust boundary (issue #31 audit):
 
 Apache 2.0 - See [LICENSE](LICENSE)
 
-Redistributions keep the attribution in [NOTICE](NOTICE), and [TRADEMARKS.md](TRADEMARKS.md) says how the QWED name and logo may be used.
+Redistributions keep the attribution in [NOTICE](https://github.com/QWED-AI/qwed-open-responses/blob/main/NOTICE), and [TRADEMARKS.md](https://github.com/QWED-AI/qwed-open-responses/blob/main/TRADEMARKS.md) says how the QWED name and logo may be used.
 
 ---
 
